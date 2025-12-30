@@ -9,13 +9,18 @@ class OpenAiEmbeddingsPlugin extends ModelPlugin {
     getRequestParameters(text, parameters, prompt) {
         const combinedParameters = { ...this.promptParameters, ...this.model.params, ...parameters };
         const { modelPromptText } = this.getCompiledPrompt(text, combinedParameters, prompt);
-        const { model } = combinedParameters;
+        const { model, dimensions } = combinedParameters;
         const requestParameters = {
             data:  {
                 input: combinedParameters?.input?.length ? combinedParameters.input :  modelPromptText || text,
                 model
             }
         };
+        // Support dimensions parameter for text-embedding-3 models
+        // This allows using text-embedding-3-large at 1536 dimensions for better quality
+        if (dimensions) {
+            requestParameters.data.dimensions = dimensions;
+        }
         return requestParameters;
     }
 

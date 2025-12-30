@@ -9,6 +9,8 @@ import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
 import { Prompt } from '../../../server/prompt.js';
 import { getToolsForEntity, loadEntityConfig } from './tools/shared/sys_entity_tools.js';
 import CortexResponse from '../../../lib/cortexResponse.js';
+// Continuity Memory Architecture (parallel system)
+import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
 
 // Helper function to generate a smart error response using the agent
 async function generateErrorResponse(error, args, pathwayResolver) {
@@ -79,7 +81,10 @@ export default {
         entityId: ``,
         researchMode: false,
         userInfo: '',
-        model: 'oai-gpt41'
+        model: 'oai-gpt41',
+        // Continuity Memory Architecture (parallel system)
+        // Set to true to enable narrative memory with relational anchors and identity evolution
+        useContinuityMemory: false
     },
     timeout: 600,
 
@@ -449,7 +454,7 @@ export default {
         let pathwayResolver = resolver;
 
         // Load input parameters and information into args
-        const { entityId, voiceResponse, aiMemorySelfModify, chatId, researchMode } = { ...pathwayResolver.pathway.inputParameters, ...args };
+        const { entityId, voiceResponse, aiMemorySelfModify, chatId, researchMode, useContinuityMemory } = { ...pathwayResolver.pathway.inputParameters, ...args };
         
         const entityConfig = loadEntityConfig(entityId);
         const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
@@ -458,6 +463,10 @@ export default {
         // Determine useMemory: entityConfig.useMemory === false is a hard disable (entity can't use memory)
         // Otherwise args.useMemory can disable it, default true
         args.useMemory = entityConfig?.useMemory === false ? false : (args.useMemory ?? true);
+        
+        // Determine useContinuityMemory: entityConfig can override, otherwise use args
+        // This enables the narrative memory layer (Continuity Architecture)
+        args.useContinuityMemory = entityConfig?.useContinuityMemory ?? useContinuityMemory ?? false;
 
         // Initialize chat history if needed
         if (!args.chatHistory || args.chatHistory.length === 0) {
@@ -521,7 +530,8 @@ export default {
             voiceResponse,
             aiMemorySelfModify,
             chatId,
-            researchMode
+            researchMode,
+            useContinuityMemory: args.useContinuityMemory
         };
 
         pathwayResolver.args = {...args};
@@ -531,10 +541,15 @@ export default {
         const memoryTemplates = args.useMemory ? 
             `{{renderTemplate AI_MEMORY_INSTRUCTIONS}}\n\n{{renderTemplate AI_MEMORY}}\n\n{{renderTemplate AI_MEMORY_CONTEXT}}\n\n` : '';
 
+        // Continuity Memory context injection (narrative layer - parallel system)
+        // This provides rich relational context, emotional resonance, and identity evolution
+        const continuityContextTemplate = args.useContinuityMemory ? 
+            `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n` : '';
+
         const instructionTemplates = entityInstructions ? (entityInstructions + '\n\n') : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n{{renderTemplate AI_EXPERTISE}}\n\n`;
 
         const promptMessages = [
-            {"role": "system", "content": `${promptPrefix}${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_SEARCH_SYNTAX}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${memoryTemplates}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+            {"role": "system", "content": `${promptPrefix}${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_SEARCH_SYNTAX}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${memoryTemplates}${continuityContextTemplate}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
             "{{chatHistory}}",
         ];
 

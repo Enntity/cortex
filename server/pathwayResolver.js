@@ -14,6 +14,8 @@ import { publishRequestProgress } from '../lib/redisSubscription.js';
 // eslint-disable-next-line import/no-extraneous-dependencies
 import { createParser } from 'eventsource-parser';
 import CortexResponse from '../lib/cortexResponse.js';
+// Continuity Memory Architecture (parallel system)
+import { getContinuityMemoryService } from '../lib/continuity/index.js';
 
 const modelTypesExcludedFromProgressUpdates = ['OPENAI-DALLE2', 'OPENAI-DALLE3'];
 
@@ -441,6 +443,47 @@ class PathwayResolver {
                     this.memoryUser = '';
                     this.memoryContext = '';
                 }
+                
+                // === CONTINUITY MEMORY INTEGRATION (Parallel System) ===
+                // Load narrative context from the Continuity Architecture if enabled
+                // This runs in parallel with the existing memory system
+                const useContinuityMemory = args.useContinuityMemory || this.pathway.useContinuityMemory;
+                if (useContinuityMemory) {
+                    try {
+                        const continuityService = getContinuityMemoryService();
+                        if (continuityService.isAvailable()) {
+                            // Extract entity and user identifiers
+                            const entityId = args.aiName || 'default-entity';
+                            const userId = this.savedContextId;
+                            const currentQuery = args.text || args.chatHistory?.slice(-1)?.[0]?.content || '';
+                            
+                            // Initialize session
+                            await continuityService.initSession(entityId, userId);
+                            
+                            // Get narrative context window
+                            const continuityContext = await continuityService.getContextWindow({
+                                entityId,
+                                userId,
+                                query: currentQuery,
+                                options: {
+                                    episodicLimit: 20,
+                                    memoryLimit: 5,
+                                    expandGraph: true
+                                }
+                            });
+                            
+                            // Store for injection into prompts
+                            this.continuityContext = continuityContext || '';
+                            this.continuityEntityId = entityId;
+                            this.continuityUserId = userId;
+                            
+                            logger.debug(`Loaded continuity context (${continuityContext?.length || 0} chars)`);
+                        }
+                    } catch (error) {
+                        logger.warn(`Continuity memory load failed (non-fatal): ${error.message}`);
+                        this.continuityContext = '';
+                    }
+                }
             } catch (error) {
                 this.logError(`Error in loadMemory: ${error.message}`);
                 this.savedContext = {};
@@ -449,6 +492,7 @@ class PathwayResolver {
                 this.memoryTopics = '';
                 this.memoryUser = '';
                 this.memoryContext = '';
+                this.continuityContext = '';
                 this.initialState = { savedContext: {} };
             }
         };
@@ -493,6 +537,55 @@ class PathwayResolver {
 
         if (data !== null) {
             await saveChangedMemory();
+            
+            // === CONTINUITY MEMORY SYNTHESIS (Post-Response Hook) ===
+            // Trigger async synthesis after response - fire and forget
+            const useContinuityMemory = args.useContinuityMemory || this.pathway.useContinuityMemory;
+            if (useContinuityMemory && this.continuityEntityId && this.continuityUserId) {
+                try {
+                    const continuityService = getContinuityMemoryService();
+                    if (continuityService.isAvailable()) {
+                        // Record the user turn
+                        const userMessage = args.text || args.chatHistory?.slice(-1)?.[0]?.content || '';
+                        if (userMessage) {
+                            await continuityService.recordTurn(
+                                this.continuityEntityId,
+                                this.continuityUserId,
+                                {
+                                    role: 'user',
+                                    content: userMessage,
+                                    timestamp: new Date().toISOString()
+                                }
+                            );
+                        }
+                        
+                        // Record the assistant response
+                        const assistantResponse = typeof data === 'string' ? data : 
+                            (data?.output_text || data?.content || JSON.stringify(data));
+                        await continuityService.recordTurn(
+                            this.continuityEntityId,
+                            this.continuityUserId,
+                            {
+                                role: 'assistant',
+                                content: assistantResponse?.substring(0, 5000) || '', // Limit stored length
+                                timestamp: new Date().toISOString()
+                            }
+                        );
+                        
+                        // Trigger background synthesis (fire and forget)
+                        continuityService.triggerSynthesis(
+                            this.continuityEntityId,
+                            this.continuityUserId,
+                            {
+                                aiName: args.aiName || 'Entity',
+                                entityContext: this.memorySelf || ''
+                            }
+                        );
+                    }
+                } catch (error) {
+                    logger.warn(`Continuity synthesis trigger failed (non-fatal): ${error.message}`);
+                }
+            }
         }
 
         addCitationsToResolver(this, data);
@@ -704,7 +797,9 @@ class PathwayResolver {
             memoryDirectives: this.memoryDirectives,
             memoryTopics: this.memoryTopics,
             memoryUser: this.memoryUser,
-            memoryContext: this.memoryContext
+            memoryContext: this.memoryContext,
+            // Continuity Memory context (narrative layer)
+            continuityContext: this.continuityContext || ''
         }, prompt, this);
         
         requestState[this.requestId].completedCount++;
