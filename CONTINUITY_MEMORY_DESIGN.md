@@ -1506,7 +1506,141 @@ Respond with JSON:
 
 ---
 
-## 8. Tools for Entity
+## 8. Pathways and Rate Limiting
+
+### Continuity Memory Pathways
+
+The continuity memory system uses dedicated pathways that integrate with Cortex's rate limiting system to ensure all Azure AI Search operations are properly throttled.
+
+#### `continuity_memory_upsert`
+
+Rate-limited pathway for upserting continuity memory documents to Azure AI Search.
+
+**Location**: `pathways/system/continuity_memory_upsert.js`
+
+**Input Parameters**:
+- `indexName` (string): Azure AI Search index name (default: `index-continuity-memory`)
+- `document` (string): JSON stringified continuity memory document
+- `inputVector` (string, optional): Pre-computed embedding vector
+
+**Usage**:
+```javascript
+await callPathway('continuity_memory_upsert', {
+    indexName: 'index-continuity-memory',
+    document: JSON.stringify(memoryDoc)
+});
+```
+
+**Integration**: Used internally by `AzureMemoryIndex.upsertMemory()`. All memory upserts go through this pathway to ensure rate limiting.
+
+#### `continuity_memory_delete`
+
+Rate-limited pathway for deleting continuity memory documents from Azure AI Search.
+
+**Location**: `pathways/system/continuity_memory_delete.js`
+
+**Input Parameters**:
+- `indexName` (string): Azure AI Search index name (default: `index-continuity-memory`)
+- `docId` (string): Document ID to delete
+
+**Usage**:
+```javascript
+await callPathway('continuity_memory_delete', {
+    indexName: 'index-continuity-memory',
+    docId: memoryId
+});
+```
+
+**Integration**: Used internally by `AzureMemoryIndex.deleteMemory()`. All memory deletes go through this pathway to ensure rate limiting.
+
+#### `continuity_narrative_summary`
+
+LLM-powered pathway for generating concise narrative summaries from retrieved memories. This creates the `narrativeContext` that gets cached in Redis for context injection.
+
+**Location**: `pathways/system/continuity_narrative_summary.js`
+
+**Input Parameters**:
+- `currentQuery` (string): The user's current message/query
+- `memoriesText` (string): Formatted text of retrieved memories
+
+**Output**: Narrative summary string (2-4 sentences)
+
+**Usage**:
+```javascript
+const summary = await callPathway('continuity_narrative_summary', {
+    currentQuery: 'Tell me about our previous conversations',
+    memoriesText: formattedMemories
+});
+```
+
+**Integration**: Called by `ContextBuilder.generateNarrativeSummary()` to create cached narrative context. Uses GPT-4.1-mini for cost-effective synthesis.
+
+#### `continuity_deep_synthesis`
+
+Externally triggerable pathway for deep memory consolidation and pattern recognition. Designed to be called by external timers, cron jobs, or scheduled tasks.
+
+**Location**: `pathways/system/continuity_deep_synthesis.js`
+
+**Input Parameters**:
+- `entityId` (string, required): Entity identifier (AI name)
+- `userId` (string, required): User/context identifier
+- `maxMemories` (integer, default: 50): Maximum memories to analyze
+- `daysToLookBack` (integer, default: 7): How far back to look for memories
+
+**Output**: JSON with consolidation results:
+```json
+{
+  "success": true,
+  "entityId": "labeeb",
+  "userId": "user123",
+  "consolidated": 3,
+  "patterns": 2,
+  "links": 5
+}
+```
+
+**Usage**:
+```javascript
+// Via GraphQL mutation
+mutation {
+  continuity_deep_synthesis(
+    entityId: "labeeb"
+    userId: "user123"
+    maxMemories: 100
+    daysToLookBack: 14
+  ) {
+    result
+  }
+}
+
+// Via callPathway
+const result = await callPathway('continuity_deep_synthesis', {
+    entityId: 'labeeb',
+    userId: 'user123',
+    maxMemories: 100,
+    daysToLookBack: 14
+});
+```
+
+**Scheduling**: This pathway should be triggered periodically (e.g., daily or weekly) for each active entity/user pair. Example cron job:
+```bash
+# Run deep synthesis daily at 2 AM
+0 2 * * * curl -X POST http://cortex-server/graphql -d '{"query": "mutation { continuity_deep_synthesis(entityId: \"labeeb\", userId: \"user123\") { result } }"}'
+```
+
+**Integration**: Calls `ContinuityMemoryService.runDeepSynthesis()` which uses `NarrativeSynthesizer.runDeepSynthesis()` to perform consolidation, pattern recognition, and graph linking.
+
+### Rate Limiting Architecture
+
+All continuity memory Azure operations go through the `azure-cognitive` model endpoint, which provides:
+- **Automatic rate limiting**: Uses Cortex's existing rate limiter for Azure Cognitive Services
+- **Consistent throttling**: Same rate limits as other cognitive operations
+- **Error handling**: Proper retry logic and error propagation
+- **Monitoring**: All operations appear in Cortex's request monitoring
+
+The `azureCognitivePlugin` has been extended to support `continuity-upsert` and `continuity-delete` modes, which use the same `index` endpoint as standard operations but with the continuity memory document schema.
+
+## 9. Tools for Entity
 
 ### SearchMemory Tool (Continuity)
 
@@ -1593,7 +1727,7 @@ export default {
 
 ---
 
-## 10. Open Questions
+## 11. Open Questions
 
 1. **Memory Decay**: How aggressively should we decay old memories? Should we have explicit "forgetting" or just reduced recall priority?
 

@@ -15,9 +15,11 @@ import logger from '../../../../lib/logger.js';
 export default {
     inputParameters: {
         query: ``,           // Search query
-        memoryTypes: [],     // Filter by types: ANCHOR, ARTIFACT, IDENTITY, etc.
-        limit: 5,            // Max results
-        expandGraph: false,  // Whether to expand to related memories
+        memoryTypes: { type: 'array', items: { type: 'string' } },  // Filter by types: ANCHOR, ARTIFACT, IDENTITY, etc.
+        limit: { type: 'integer', default: 5 },  // Max results
+        expandGraph: { type: 'boolean', default: false },  // Whether to expand to related memories
+        contextId: ``,       // User/context identifier
+        aiName: ``,          // Entity identifier
     },
     
     // Tool definition for OpenAI format
@@ -58,7 +60,7 @@ This searches your long-term memory beyond the current context window.`,
     resolver: async (_parent, args, _contextValue, _info) => {
         const { 
             query, 
-            memoryTypes = [], 
+            memoryTypes, 
             limit = 5, 
             expandGraph = false,
             contextId,
@@ -76,9 +78,10 @@ This searches your long-term memory beyond the current context window.`,
                 });
             }
             
-            // Map string types to enum values
-            const typeFilters = memoryTypes.length > 0 
-                ? memoryTypes.map(t => ContinuityMemoryType[t] || t)
+            // Map string types to enum values (handle null/undefined)
+            const typesArray = Array.isArray(memoryTypes) ? memoryTypes : [];
+            const typeFilters = typesArray.length > 0 
+                ? typesArray.map(t => ContinuityMemoryType[t] || t)
                 : null;
             
             const entityId = aiName || 'default-entity';

@@ -35,8 +35,45 @@ class AzureCognitivePlugin extends ModelPlugin {
     async getRequestParameters(text, parameters, prompt, mode, indexName, savedContextId, cortexRequest) {
         const combinedParameters = { ...this.promptParameters, ...parameters };
         const { modelPromptText } = this.getCompiledPrompt(text, combinedParameters, prompt);
-        const { inputVector, calculateInputVector, privateData, filter, docId, title, chunkNo, chatId, semanticConfiguration } = combinedParameters;
+        const { inputVector, calculateInputVector, privateData, filter, docId, title, chunkNo, chatId, semanticConfiguration, document } = combinedParameters;
         const data = {};
+
+        // === CONTINUITY MEMORY MODES ===
+        // These modes handle the specialized continuity memory document schema
+        
+        if (mode === 'continuity-delete') {
+            // Direct delete by document ID for continuity memory
+            // No search needed - we know the exact ID to delete
+            return {
+                data: {
+                    value: [{
+                        '@search.action': 'delete',
+                        id: docId
+                    }]
+                }
+            };
+        }
+        
+        if (mode === 'continuity-upsert') {
+            // Upsert a continuity memory document
+            // The document is passed as a JSON string in the 'document' parameter or 'text'
+            try {
+                const doc = document ? JSON.parse(document) : JSON.parse(text);
+                
+                // Ensure the document has the @search.action for upsert
+                return {
+                    data: {
+                        value: [{
+                            '@search.action': 'mergeOrUpload',
+                            ...doc
+                        }]
+                    }
+                };
+            } catch (error) {
+                logger.error(`Failed to parse continuity memory document: ${error.message}`);
+                throw new Error(`Invalid continuity memory document: ${error.message}`);
+            }
+        }
 
         if (mode == 'delete') {
             let searchUrl = this.ensureMode(this.requestUrl(text), 'search');
@@ -210,7 +247,15 @@ class AzureCognitivePlugin extends ModelPlugin {
     async execute(text, parameters, prompt, cortexRequest) {
         const { requestId, savedContextId, savedContext } = cortexRequest.pathwayResolver;
         const mode = this.promptParameters.mode || 'search';
-        let url = this.ensureMode(this.requestUrl(text), mode == 'delete' ? 'index' : mode);
+        
+        // Determine the URL mode based on the operation type
+        // Continuity and delete modes use 'index' endpoint, others use their own mode
+        let urlMode = mode;
+        if (mode === 'delete' || mode === 'continuity-upsert' || mode === 'continuity-delete') {
+            urlMode = 'index';
+        }
+        
+        let url = this.ensureMode(this.requestUrl(text), urlMode);
         const indexName = parameters.indexName || 'indexcortex';
         url = this.ensureIndex(url, indexName);
         const headers = cortexRequest.headers;

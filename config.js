@@ -192,6 +192,30 @@ var config = convict({
                 },
                 "maxTokenLength": 8192,
             },
+            "oai-text-embedding-3-large": {
+                "type": "OPENAI-EMBEDDINGS",
+                "url": "https://api.openai.com/v1/embeddings",
+                "headers": {
+                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                    "Content-Type": "application/json"
+                },
+                "params": {
+                    "model": "text-embedding-3-large"
+                },
+                "maxTokenLength": 8192,
+            },
+            "oai-text-embedding-3-small": {
+                "type": "OPENAI-EMBEDDINGS",
+                "url": "https://api.openai.com/v1/embeddings",
+                "headers": {
+                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                    "Content-Type": "application/json"
+                },
+                "params": {
+                    "model": "text-embedding-3-small"
+                },
+                "maxTokenLength": 8192,
+            },
             "oai-gpt5-chat": {
                 "type": "OPENAI-VISION",
                 "url": "https://api.openai.com/v1/chat/completions",
