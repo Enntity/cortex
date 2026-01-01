@@ -58,6 +58,13 @@ export default {
             });
         }
 
+        const { contextId, contextKey } = args;
+        if (!contextId) {
+            return JSON.stringify({ 
+                error: 'contextId is required. It should be provided via agentContext or contextId parameter.' 
+            });
+        }
+
         // Validate memories array
         if (!args.memories || !Array.isArray(args.memories) || args.memories.length === 0) {
             return JSON.stringify({ error: 'memories must be a non-empty array' });
@@ -102,9 +109,9 @@ export default {
         for (const [section, memoryLines] of Object.entries(memoriesBySection)) {
             // Read current memory for the section
             let currentMemory = await callPathway('sys_read_memory', {
-                contextId: args.contextId,
+                contextId: contextId,
                 section: section,
-                contextKey: args.contextKey
+                contextKey: contextKey
             });
 
             // Combine existing memory with new memories
@@ -114,10 +121,10 @@ export default {
 
             // Save directly to memory
             const result = await callPathway('sys_save_memory', {
-                contextId: args.contextId,
+                contextId: contextId,
                 section: section,
                 aiMemory: updatedMemory,
-                contextKey: args.contextKey
+                contextKey: contextKey
             });
             
             results[section] = result;

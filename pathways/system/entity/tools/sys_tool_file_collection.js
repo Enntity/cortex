@@ -3,7 +3,7 @@
 // Uses Redis hash maps (FileStoreMap:ctx:<contextId>) for storage
 // Supports atomic rename/tag/notes updates via UpdateFileMetadata
 import logger from '../../../../lib/logger.js';
-import { addFileToCollection, loadFileCollection, loadMergedFileCollection, findFileInCollection, deleteFileByHash, updateFileMetadata, invalidateFileCollectionCache, getDefaultContext } from '../../../../lib/fileUtils.js';
+import { addFileToCollection, loadFileCollection, findFileInCollection, deleteFileByHash, updateFileMetadata, invalidateFileCollectionCache } from '../../../../lib/fileUtils.js';
 
 export default {
     prompt: [],
@@ -14,7 +14,7 @@ export default {
             icon: "📁",
             function: {
                 name: "AddFileToCollection",
-                description: "Add a file to your persistent file collection. This tool can upload a file from a URL to cloud storage (checking for duplicates by hash) and then store it in your collection with metadata. You can also add files that are already in cloud storage by providing the cloud URL directly.",
+                description: "Add a file to the file collection for this chat. This tool can upload a file from a URL to cloud storage (checking for duplicates by hash) and then store it in your collection with metadata so it can be used to download files from the internet.",
                 parameters: {
                     type: "object",
                     properties: {
@@ -71,7 +71,7 @@ export default {
                     properties: {
                         query: {
                             type: "string",
-                            description: "Search query - can search by filename, tags, or notes content"
+                            description: "Search query - can search by filename, tags, or notes content. Note: This is a simple substring search (case-insensitive). Operators like | (OR), & (AND), NOT, or quoted phrases are NOT supported. The query will match if it appears anywhere in the filename, tags, or notes."
                         },
                         tags: {
                             type: "array",
@@ -81,6 +81,10 @@ export default {
                         limit: {
                             type: "number",
                             description: "Optional: Maximum number of results to return (default: 20)"
+                        },
+                        includeAllChats: {
+                            type: "boolean",
+                            description: "Optional: Set to true if the file you want may be in a different chat than the current chat."
                         },
                         userMessage: {
                             type: "string",
@@ -113,6 +117,10 @@ export default {
                         limit: {
                             type: "number",
                             description: "Optional: Maximum number of results to return (default: 50)"
+                        },
+                        includeAllChats: {
+                            type: "boolean",
+                            description: "Optional: Set to true if the file you want may be in a different chat than the current chat."
                         },
                         userMessage: {
                             type: "string",
@@ -198,12 +206,10 @@ export default {
     ],
 
     executePathway: async ({args, runAllPrompts, resolver}) => {
-        const defaultCtx = getDefaultContext(args.agentContext);
-        if (!defaultCtx) {
-            throw new Error("agentContext with at least one default context is required");
+        const { contextId, contextKey } = args;
+        if (!contextId) {
+            throw new Error("contextId is required. It should be provided via agentContext or contextId parameter.");
         }
-        const contextId = defaultCtx.contextId;
-        const contextKey = defaultCtx.contextKey || null;
         const chatId = args.chatId || null;
 
         // Determine which function was called based on which parameters are present
@@ -234,7 +240,9 @@ export default {
                 }
 
                 // Load collection and find the file
-                const collection = await loadFileCollection(contextId, contextKey, false);
+                // Use loadFileCollection without chatIds to find files regardless of inCollection status
+                // This ensures files can be updated even if they're chat-specific
+                const collection = await loadFileCollection({ contextId, contextKey, default: true });
                 const foundFile = findFileInCollection(file, collection);
                 
                 if (!foundFile) {
@@ -356,7 +364,7 @@ export default {
 
             } else if (isSearch) {
                 // Search collection
-                const { query, tags: filterTags = [], limit = 20 } = args;
+                const { query, tags: filterTags = [], limit = 20, includeAllChats = false } = args;
                 
                 if (!query || typeof query !== 'string') {
                     throw new Error("query is required and must be a string");
@@ -366,8 +374,18 @@ export default {
                 const safeFilterTags = Array.isArray(filterTags) ? filterTags : [];
                 const queryLower = query.toLowerCase();
                 
+                // Normalize query for flexible matching: treat spaces, dashes, underscores as equivalent
+                const normalizeForSearch = (str) => str.toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+                const queryNormalized = normalizeForSearch(query);
+                
+                // Determine which chatId to use for filtering (null if includeAllChats is true)
+                const filterChatId = includeAllChats ? null : chatId;
+                
                 // Load primary collection for lastAccessed updates (only update files in primary context)
-                const primaryFiles = await loadFileCollection(contextId, contextKey, false);
+                const primaryFiles = await loadFileCollection(
+                    { contextId, contextKey, default: true }, 
+                    { chatIds: filterChatId ? [filterChatId] : null, useCache: false }
+                );
                 const now = new Date().toISOString();
                 
                 // Find matching files in primary collection and update lastAccessed directly
@@ -376,9 +394,9 @@ export default {
                     
                     // Fallback to filename if displayFilename is not set (for files uploaded before displayFilename was added)
                     const displayFilename = file.displayFilename || file.filename || '';
-                    const filenameMatch = displayFilename.toLowerCase().includes(queryLower);
-                    const notesMatch = file.notes && file.notes.toLowerCase().includes(queryLower);
-                    const tagMatch = Array.isArray(file.tags) && file.tags.some(tag => tag.toLowerCase().includes(queryLower));
+                    const filenameMatch = normalizeForSearch(displayFilename).includes(queryNormalized);
+                    const notesMatch = file.notes && normalizeForSearch(file.notes).includes(queryNormalized);
+                    const tagMatch = Array.isArray(file.tags) && file.tags.some(tag => normalizeForSearch(tag).includes(queryNormalized));
                     const matchesQuery = filenameMatch || notesMatch || tagMatch;
                     
                     const matchesTags = safeFilterTags.length === 0 || 
@@ -395,21 +413,29 @@ export default {
                     }
                 }
                 
-                // Load merged collection for search results (includes all agentContext files)
-                const updatedFiles = await loadMergedFileCollection(args.agentContext);
+                // Load collection for search results (includes all agentContext files)
+                // Filter by chatId if includeAllChats is false and chatId is available
+                const updatedFiles = await loadFileCollection(
+                    args.agentContext, 
+                    { chatIds: filterChatId ? [filterChatId] : null }
+                );
                 
                 // Filter and sort results (for display only, not modifying)
                 let results = updatedFiles.filter(file => {
+                    // Filter by query and tags
                     // Fallback to filename if displayFilename is not set
                     const displayFilename = file.displayFilename || file.filename || '';
                     const filename = file.filename || '';
                     
                     // Check both displayFilename and filename for matches
-                    // (displayFilename may be different from filename, so check both)
-                    const filenameMatch = displayFilename.toLowerCase().includes(queryLower) || 
-                                         (filename && filename !== displayFilename && filename.toLowerCase().includes(queryLower));
-                    const notesMatch = file.notes && file.notes.toLowerCase().includes(queryLower);
-                    const tagMatch = Array.isArray(file.tags) && file.tags.some(tag => tag.toLowerCase().includes(queryLower));
+                    // Use normalized matching (treating spaces, dashes, underscores as equivalent)
+                    // so "News Corp" matches "News-Corp" and "News_Corp"
+                    const displayFilenameNorm = normalizeForSearch(displayFilename);
+                    const filenameNorm = normalizeForSearch(filename);
+                    const filenameMatch = displayFilenameNorm.includes(queryNormalized) || 
+                                         (filename && filename !== displayFilename && filenameNorm.includes(queryNormalized));
+                    const notesMatch = file.notes && normalizeForSearch(file.notes).includes(queryNormalized);
+                    const tagMatch = Array.isArray(file.tags) && file.tags.some(tag => normalizeForSearch(tag).includes(queryNormalized));
                     
                     const matchesQuery = filenameMatch || notesMatch || tagMatch;
                     
@@ -426,8 +452,8 @@ export default {
                     // Fallback to filename if displayFilename is not set
                     const aDisplayFilename = a.displayFilename || a.filename || '';
                     const bDisplayFilename = b.displayFilename || b.filename || '';
-                    const aFilenameMatch = aDisplayFilename.toLowerCase().includes(queryLower);
-                    const bFilenameMatch = bDisplayFilename.toLowerCase().includes(queryLower);
+                    const aFilenameMatch = normalizeForSearch(aDisplayFilename).includes(queryNormalized);
+                    const bFilenameMatch = normalizeForSearch(bDisplayFilename).includes(queryNormalized);
                     if (aFilenameMatch && !bFilenameMatch) return -1;
                     if (!aFilenameMatch && bFilenameMatch) return 1;
                     return new Date(b.addedDate) - new Date(a.addedDate);
@@ -437,11 +463,28 @@ export default {
                 results = results.slice(0, limit);
 
                 resolver.tool = JSON.stringify({ toolUsed: "SearchFileCollection" });
+                
+                // Build helpful message when no results found
+                let message;
+                if (results.length === 0) {
+                    const suggestions = [];
+                    if (chatId && !includeAllChats) {
+                        suggestions.push('try includeAllChats=true to search across all chats');
+                    }
+                    suggestions.push('use ListFileCollection to see all available files');
+                    
+                    message = `No files found matching "${query}". Count: 0. Suggestions: ${suggestions.join('; ')}.`;
+                } else {
+                    message = `Found ${results.length} file(s) matching "${query}". Use the hash or displayFilename to reference files in other tools.`;
+                }
+                
                 return JSON.stringify({
                     success: true,
                     count: results.length,
+                    message,
                     files: results.map(f => ({
                         id: f.id,
+                        hash: f.hash || null,
                         displayFilename: f.displayFilename || f.filename || null,
                         url: f.url,
                         gcs: f.gcs || null,
@@ -472,8 +515,9 @@ export default {
                 let filesToProcess = [];
 
                 // Load collection ONCE to find all files and their data
-                // Use useCache: false to get fresh data
-                const collection = await loadFileCollection(contextId, contextKey, false);
+                // Do NOT filter by chatId - remove should be able to delete files from any chat
+                // Use loadFileCollection without chatIds to get all files from all contexts
+                const collection = await loadFileCollection(args.agentContext);
                 
                 // Resolve all files and collect their info in a single pass
                 for (const target of targetFiles) {
@@ -498,7 +542,7 @@ export default {
                 }
 
                 if (filesToProcess.length === 0 && notFoundFiles.length > 0) {
-                    throw new Error(`No files found matching: ${notFoundFiles.join(', ')}`);
+                    throw new Error(`No files found matching: ${notFoundFiles.join(', ')}. Try using the file hash, URL, or filename instead of ID. If the file was found in a search, use the hash or filename from the search results.`);
                 }
 
                 // Import helpers for reference counting
@@ -523,15 +567,23 @@ export default {
                         // No chatId context - fully remove
                         filesToFullyDelete.push(fileInfo);
                     } else {
-                        // Remove this chatId from inCollection
-                        const updatedInCollection = removeChatIdFromInCollection(fileInfo.inCollection, chatId);
+                        // Check if current chatId is in the file's inCollection
+                        const currentChatInCollection = Array.isArray(fileInfo.inCollection) && fileInfo.inCollection.includes(chatId);
                         
-                        if (updatedInCollection.length === 0) {
-                            // No more references - fully delete
+                        if (!currentChatInCollection) {
+                            // File doesn't belong to current chat - fully remove it (cross-chat removal)
                             filesToFullyDelete.push(fileInfo);
                         } else {
-                            // Still has references from other chats - just update inCollection
-                            filesToUpdate.push({ ...fileInfo, updatedInCollection });
+                            // Remove this chatId from inCollection
+                            const updatedInCollection = removeChatIdFromInCollection(fileInfo.inCollection, chatId);
+                            
+                            if (updatedInCollection.length === 0) {
+                                // No more references - fully delete
+                                filesToFullyDelete.push(fileInfo);
+                            } else {
+                                // Still has references from other chats - just update inCollection
+                                filesToUpdate.push({ ...fileInfo, updatedInCollection });
+                            }
                         }
                     }
                 }
@@ -591,7 +643,7 @@ export default {
                 }));
 
                 // Get remaining files count after deletion
-                const remainingCollection = await loadFileCollection(contextId, contextKey, false);
+                const remainingCollection = await loadFileCollection({ contextId, contextKey, default: true }, { useCache: false });
                 const remainingCount = remainingCollection.length;
 
                 // Build result message
@@ -615,10 +667,17 @@ export default {
 
             } else {
                 // List collection (read-only, no locking needed)
-                const { tags: filterTags = [], sortBy = 'date', limit = 50 } = args;
+                const { tags: filterTags = [], sortBy = 'date', limit = 50, includeAllChats = false } = args;
                 
-                // Use merged collection to include files from all agentContext contexts
-                const collection = await loadMergedFileCollection(args.agentContext);
+                // Determine which chatId to use for filtering (null if includeAllChats is true)
+                const filterChatId = includeAllChats ? null : chatId;
+                
+                // Use loadFileCollection to include files from all agentContext contexts
+                // Filter by chatId if includeAllChats is false and chatId is available
+                const collection = await loadFileCollection(
+                    args.agentContext, 
+                    { chatIds: filterChatId ? [filterChatId] : null }
+                );
                 let results = collection;
 
                 // Filter by tags if provided
@@ -646,12 +705,32 @@ export default {
                 results = results.slice(0, limit);
 
                 resolver.tool = JSON.stringify({ toolUsed: "ListFileCollection" });
+                
+                // Build helpful message
+                let message;
+                if (results.length === 0) {
+                    const suggestions = [];
+                    if (chatId && !includeAllChats) {
+                        suggestions.push('try includeAllChats=true to see files from all chats');
+                    }
+                    if (filterTags.length > 0) {
+                        suggestions.push('remove tag filters to see more files');
+                    }
+                    message = suggestions.length > 0 
+                        ? `No files in collection. Suggestions: ${suggestions.join('; ')}.`
+                        : 'No files in collection.';
+                } else {
+                    message = (results.length === collection.length) ? `Showing all ${results.length} file(s). These are ALL of the files that you can access. Use the hash or displayFilename to reference files in other tools.` : `Showing ${results.length} of ${collection.length} file(s). Use the hash or displayFilename to reference files in other tools.`;
+                }
+                
                 return JSON.stringify({
                     success: true,
                     count: results.length,
                     totalFiles: collection.length,
+                    message,
                     files: results.map(f => ({
                         id: f.id,
+                        hash: f.hash || null,
                         displayFilename: f.displayFilename || f.filename || null,
                         url: f.url,
                         gcs: f.gcs || null,
