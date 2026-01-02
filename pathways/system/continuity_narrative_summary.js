@@ -8,11 +8,27 @@
  * Output: Narrative summary text
  */
 
+import { Prompt } from '../../server/prompt.js';
+
 export default {
-    prompt: [
-        {
-            role: "system",
-            content: `You are a narrative context synthesizer. Your role is to create a concise, meaningful summary that captures the essence of a relationship and conversation context.
+    prompt: [], // Empty - we build the prompt dynamically in executePathway
+    model: 'oai-gpt41-mini',
+    inputParameters: {
+        currentQuery: ``,
+        memoriesText: ``,
+    },
+    useInputChunking: false,
+    enableDuplicateRequests: false,
+    timeout: 30,
+    
+    executePathway: async ({ args, runAllPrompts, resolver }) => {
+        const { currentQuery, memoriesText } = args;
+        
+        // Build the prompt messages
+        const promptMessages = [
+            {
+                role: "system",
+                content: `You are a narrative context synthesizer. Your role is to create a concise, meaningful summary that captures the essence of a relationship and conversation context.
 
 Given memories from an AI's long-term narrative memory, synthesize them into a brief but rich context that helps the AI understand:
 1. The nature of the relationship with this person
@@ -26,24 +42,33 @@ Guidelines:
 - Preserve emotional tone and relational nuance
 - Include any shorthand or shared vocabulary that might be relevant
 - Write in present tense, as context for the AI's current response`
-        },
-        {
-            role: "user",
-            content: `Current query: {{{currentQuery}}}
+            },
+            {
+                role: "user",
+                content: `Current query: ${currentQuery || ''}
 
 Retrieved memories:
-{{{memoriesText}}}
+${memoriesText || ''}
 
 Generate a narrative context summary that helps me respond appropriately to this person.`
-        }
-    ],
-    model: 'oai-gpt41-mini',
-    inputParameters: {
-        currentQuery: ``,
-        memoriesText: ``,
-    },
-    useInputChunking: false,
-    enableDuplicateRequests: false,
-    timeout: 30,
+            }
+        ];
+        
+        // Set the prompt on the resolver
+        resolver.pathwayPrompt = [
+            new Prompt({ messages: promptMessages })
+        ];
+        
+        // Execute the LLM call
+        const result = await runAllPrompts({
+            ...args,
+            model: 'oai-gpt41-mini',
+            useMemory: false,
+            stream: false
+        });
+        
+        // Return the text response
+        return typeof result === 'string' ? result : (result?.output_text || result?.text || '');
+    }
 };
 

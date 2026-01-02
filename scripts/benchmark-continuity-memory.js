@@ -85,7 +85,7 @@ async function benchmarkUpsert(service, sampleCount) {
             type: ContinuityMemoryType.ANCHOR,
             content,
             importance: 5 + (i % 5),
-            tags: ['benchmark', `sample-${i}`]
+            tags: ['benchmark', `sample-${i}`] // Tagged with 'benchmark' for cleanup
         });
         const end = performance.now();
         
@@ -215,20 +215,42 @@ async function cleanup(service) {
     console.log('\n🧹 Cleaning up benchmark data...');
     
     try {
-        // Delete memories
-        let deleted = 0;
-        for (const id of results.memoryIds) {
-            await service.deleteMemory(id);
-            deleted++;
+        // Comprehensive cleanup: delete all benchmark-tagged memories for this entity/user
+        const result = await service.deleteAllMemories(TEST_ENTITY_ID, TEST_USER_ID, {
+            tags: ['benchmark']
+        });
+        console.log(`  Deleted ${result.deleted} benchmark memories from Azure`);
+        
+        // Fallback: if comprehensive cleanup didn't catch everything, delete tracked IDs
+        if (result.deleted < results.memoryIds.length) {
+            console.log(`  Note: Comprehensive cleanup found ${result.deleted} memories, but ${results.memoryIds.length} were tracked.`);
+            console.log(`  Attempting to delete remaining tracked IDs...`);
+            for (const id of results.memoryIds) {
+                try {
+                    await service.deleteMemory(id);
+                } catch (error) {
+                    // Ignore individual delete errors
+                }
+            }
         }
-        console.log(`  Deleted ${deleted} test memories from Azure`);
         
         // Clear Redis data
         await service.hotMemory.clearEpisodicStream(TEST_ENTITY_ID, TEST_USER_ID);
         await service.hotMemory.invalidateActiveContext(TEST_ENTITY_ID, TEST_USER_ID);
-        console.log('  Cleared Redis test data');
+        console.log('  Cleared Redis benchmark data');
     } catch (error) {
         console.error(`  Cleanup error: ${error.message}`);
+        // Fallback: try to delete tracked IDs
+        if (results.memoryIds.length > 0) {
+            console.log('  Attempting fallback cleanup of tracked IDs...');
+            for (const id of results.memoryIds) {
+                try {
+                    await service.deleteMemory(id);
+                } catch (err) {
+                    // Ignore individual delete errors
+                }
+            }
+        }
     }
 }
 

@@ -455,19 +455,66 @@ class PathwayResolver {
                             // Extract entity and user identifiers
                             const entityId = args.aiName || 'default-entity';
                             const userId = this.savedContextId;
-                            const currentQuery = args.text || args.chatHistory?.slice(-1)?.[0]?.content || '';
+                            
+                            // Extract current query from args.text or last USER message in chatHistory
+                            // Prefer user messages over assistant/tool responses for semantic search
+                            let currentQuery = args.text || '';
+                            if (!currentQuery && args.chatHistory?.length > 0) {
+                                // Find the last user message (not assistant/tool response)
+                                let lastUserMessage = null;
+                                for (let i = args.chatHistory.length - 1; i >= 0; i--) {
+                                    const msg = args.chatHistory[i];
+                                    if (msg?.role === 'user' || msg?.role === 'human') {
+                                        lastUserMessage = msg;
+                                        break;
+                                    }
+                                }
+                                
+                                // Fallback to last message if no user message found
+                                const messageToUse = lastUserMessage || args.chatHistory.slice(-1)[0];
+                                const content = messageToUse?.content;
+                                
+                                if (typeof content === 'string') {
+                                    // Skip if it looks like a tool response JSON
+                                    if (!content.trim().startsWith('{') || !content.includes('"success"')) {
+                                        currentQuery = content;
+                                    }
+                                } else if (Array.isArray(content)) {
+                                    // Content is array - could be strings or objects
+                                    const firstItem = content[0];
+                                    if (typeof firstItem === 'string') {
+                                        // Skip if it looks like a tool response JSON
+                                        if (!firstItem.trim().startsWith('{') || !firstItem.includes('"success"')) {
+                                            // Try to parse as JSON (stringified content block)
+                                            try {
+                                                const parsed = JSON.parse(firstItem);
+                                                currentQuery = parsed.text || parsed.content || firstItem;
+                                            } catch {
+                                                currentQuery = firstItem;
+                                            }
+                                        }
+                                    } else if (firstItem?.text) {
+                                        currentQuery = firstItem.text;
+                                    } else if (firstItem?.content) {
+                                        currentQuery = firstItem.content;
+                                    }
+                                }
+                            }
+                            currentQuery = typeof currentQuery === 'string' ? currentQuery : '';
                             
                             // Initialize session
                             await continuityService.initSession(entityId, userId);
                             
-                            // Get narrative context window
+                            // Get narrative context window (layered: bootstrap + topic)
                             const continuityContext = await continuityService.getContextWindow({
                                 entityId,
                                 userId,
                                 query: currentQuery,
                                 options: {
                                     episodicLimit: 20,
-                                    memoryLimit: 5,
+                                    topicMemoryLimit: 10,         // Topic-specific semantic search
+                                    bootstrapRelationalLimit: 5,  // Top relationship anchors (always included)
+                                    bootstrapMinImportance: 6,    // Minimum importance for relational base
                                     expandGraph: true
                                 }
                             });

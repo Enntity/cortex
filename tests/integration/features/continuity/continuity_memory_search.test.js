@@ -77,10 +77,14 @@ test.before(async () => {
     // Initialize session
     await service.initSession(TEST_ENTITY_ID, TEST_USER_ID, true);
     
-    // Load test memories
+    // Load test memories - tag all with 'test' for cleanup
     for (const memory of TEST_MEMORIES) {
         try {
-            const id = await service.addMemory(TEST_ENTITY_ID, TEST_USER_ID, memory);
+            const testMemory = {
+                ...memory,
+                tags: [...(memory.tags || []), 'test']
+            };
+            const id = await service.addMemory(TEST_ENTITY_ID, TEST_USER_ID, testMemory);
             if (id) {
                 memoryIds.push(id);
             }
@@ -94,13 +98,24 @@ test.before(async () => {
 });
 
 test.after.always('cleanup', async () => {
-    // Delete test memories
-    if (service && memoryIds.length > 0) {
-        for (const id of memoryIds) {
-            try {
-                await service.deleteMemory(id);
-            } catch (error) {
-                // Ignore cleanup errors
+    if (service) {
+        // Comprehensive cleanup: delete all test-tagged memories for this entity/user
+        try {
+            const result = await service.deleteAllMemories(TEST_ENTITY_ID, TEST_USER_ID, {
+                tags: ['test']
+            });
+            console.log(`Cleaned up ${result.deleted} test memories from Azure`);
+        } catch (error) {
+            console.error(`Cleanup error: ${error.message}`);
+            // Fallback: try to delete tracked IDs
+            if (memoryIds.length > 0) {
+                for (const id of memoryIds) {
+                    try {
+                        await service.deleteMemory(id);
+                    } catch (err) {
+                        // Ignore cleanup errors
+                    }
+                }
             }
         }
         
@@ -125,7 +140,7 @@ async function executeSearch(query, memoryTypes = null, expandGraph = false) {
     const response = await testServer.executeOperation({
         query: `
             query TestSearch($query: String!, $memoryTypes: [String], $limit: Int, $expandGraph: Boolean, $contextId: String, $aiName: String) {
-                sys_search_continuity_memory(
+                sys_tool_search_continuity_memory(
                     query: $query,
                     memoryTypes: $memoryTypes,
                     limit: $limit,
@@ -151,7 +166,7 @@ async function executeSearch(query, memoryTypes = null, expandGraph = false) {
         throw new Error(JSON.stringify(response.body.singleResult.errors));
     }
     
-    const result = response.body?.singleResult?.data?.sys_search_continuity_memory?.result;
+    const result = response.body?.singleResult?.data?.sys_tool_search_continuity_memory?.result;
     return result ? JSON.parse(result) : null;
 }
 
@@ -159,7 +174,7 @@ test.serial('search returns results for general query', async (t) => {
     const result = await executeSearch('user preferences and communication style');
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
     t.true(Array.isArray(result.memories), 'Should have memories array');
 });
 
@@ -167,7 +182,7 @@ test.serial('search finds emotional conversation memories', async (t) => {
     const result = await executeSearch('conversations about grief and loss', ['ANCHOR']);
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
     t.true(result.memories.length > 0, 'Should find at least one memory');
     
     // Verify at least one result contains grief-related content
@@ -181,7 +196,7 @@ test.serial('search filters by IDENTITY type', async (t) => {
     const result = await executeSearch('growth and changes over time', ['IDENTITY']);
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
     
     if (result.memories.length > 0) {
         // All returned memories should be IDENTITY type
@@ -194,7 +209,7 @@ test.serial('search finds shared vocabulary artifacts', async (t) => {
     const result = await executeSearch('shared vocabulary and shorthand', ['ARTIFACT']);
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
     t.true(result.memories.length > 0, 'Should find at least one memory');
 });
 
@@ -202,7 +217,7 @@ test.serial('search finds synthesized insights', async (t) => {
     const result = await executeSearch('synthesized insights about the user', ['ARTIFACT']);
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
     t.true(result.memories.length > 0, 'Should find at least one memory');
 });
 
@@ -210,7 +225,7 @@ test.serial('search finds hobby-related memories', async (t) => {
     const result = await executeSearch('hiking and photography');
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
     
     if (result.memories.length > 0) {
         const hasHobbyContent = result.memories.some(m => 
@@ -224,14 +239,14 @@ test.serial('search with expandGraph option', async (t) => {
     const result = await executeSearch('user interests and personality', null, true);
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
 });
 
 test.serial('search with no results returns empty array', async (t) => {
     const result = await executeSearch('completely unrelated topic about quantum physics and black holes');
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
     t.true(Array.isArray(result.memories), 'Should have memories array');
 });
 
@@ -239,14 +254,14 @@ test.serial('search handles null memoryTypes gracefully', async (t) => {
     const result = await executeSearch('user preferences', null, false);
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
 });
 
 test.serial('search result contains expected fields', async (t) => {
     const result = await executeSearch('user preferences');
     
     t.truthy(result, 'Should return a result');
-    t.false(result.error, 'Should not have an error');
+    t.true(result.success, 'Should be successful');
     
     if (result.memories.length > 0) {
         const memory = result.memories[0];

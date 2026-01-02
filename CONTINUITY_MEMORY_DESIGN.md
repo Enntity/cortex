@@ -299,35 +299,81 @@ export class ContinuityMemoryService {
    * PHASE 1: Pre-Response Context Building
    * 
    * Called before the LLM generates a response.
-   * Blends hot (recent) and cold (long-term) memory into a context window.
+   * Uses a layered context assembly approach:
+   * 
+   * 1. BOOTSTRAP LAYER (Identity + Relationship)
+   *    - CORE memories: Fundamental identity, constraints, behavior rules
+   *    - Relational base: Top relationship anchors by importance
+   *    - Fetched based on WHO (entity/user), not WHAT (query)
+   *    - Always included regardless of current topic
+   * 
+   * 2. TOPIC LAYER (Query-Informed)
+   *    - Semantic search for topic-specific memories
+   *    - Additive to bootstrap, fills in contextual details
+   * 
+   * 3. SYNTHESIS
+   *    - Combine layers, deduplicate, format for prompt injection
    * 
    * @param entityId - The entity identifier
    * @param userId - The user/context identifier  
    * @param currentQuery - The user's current message
+   * @param options - Configuration options
    * @returns Formatted context string for LLM system prompt
    */
   async getContextWindow(
     entityId: string,
     userId: string,
-    currentQuery: string
+    currentQuery: string,
+    options?: {
+      episodicLimit?: number;              // Episodic stream size (default: 20)
+      topicMemoryLimit?: number;           // Topic-specific search limit (default: 10)
+      bootstrapRelationalLimit?: number;   // Top relational anchors to always include (default: 5)
+      bootstrapMinImportance?: number;     // Minimum importance for relational base (default: 6)
+      expandGraph?: boolean;                // Enable graph expansion (default: true)
+      maxGraphDepth?: number;              // Graph expansion depth (default: 1)
+    }
   ): Promise<string> {
-    // 1. Parallel fetch: hot context + semantic search
+    // 1. Get hot memory (session state)
     const [
       episodicStream,
       activeCache,
-      expressionState,
-      relevantMemories
+      expressionState
     ] = await Promise.all([
-      this.hotMemory.getEpisodicStream(entityId, userId, 20),
+      this.hotMemory.getEpisodicStream(entityId, userId, options?.episodicLimit || 20),
       this.hotMemory.getActiveContext(entityId, userId),
-      this.hotMemory.getExpressionState(entityId, userId),
-      this.coldMemory.searchSemantic(entityId, userId, currentQuery, 5)
+      this.hotMemory.getExpressionState(entityId, userId)
     ]);
     
-    // 2. Graph expansion: fetch related memories for richer context
-    const expandedMemories = await this.coldMemory.expandGraph(relevantMemories);
+    // 2. BOOTSTRAP LAYER: Identity + Relationship foundation
+    //    Fetched based on WHO, not WHAT - always present
+    const [coreMemories, relationalBase] = await Promise.all([
+      this.coldMemory.getByType(entityId, userId, ContinuityMemoryType.CORE, 10),
+      this.coldMemory.getTopByImportance(entityId, userId, {
+        types: [ContinuityMemoryType.ANCHOR],
+        limit: options?.bootstrapRelationalLimit || 5,
+        minImportance: options?.bootstrapMinImportance || 6
+      })
+    ]);
     
-    // 3. Build and format context
+    // 3. TOPIC LAYER: Query-informed semantic search
+    //    Additive to bootstrap, fills in topic-specific details
+    const topicMemories = await this.coldMemory.searchSemantic(
+      entityId, userId, currentQuery, options?.topicMemoryLimit || 10
+    );
+    
+    // 4. Graph expansion from topic memories
+    const expandedMemories = options?.expandGraph !== false
+      ? await this.coldMemory.expandGraph(topicMemories, options?.maxGraphDepth || 1)
+      : [];
+    
+    // 5. Combine layers (bootstrap takes priority, deduplicated)
+    const relevantMemories = this._combineAndDedupeMemories(
+      coreMemories,
+      relationalBase,
+      topicMemories
+    );
+    
+    // 6. Build and format context
     return this.contextBuilder.buildContextWindow({
       episodicStream,
       activeCache,
@@ -750,6 +796,54 @@ export class AzureMemoryIndex {
   }
   
   /**
+   * Get top memories by importance (not query-dependent)
+   * 
+   * Used for bootstrap context - fetches the most important memories for a 
+   * given entity/user relationship regardless of the current query topic.
+   * This enables the "seeded context" pattern where identity and relational
+   * foundation is established before topic-specific search.
+   * 
+   * @param entityId - Entity identifier
+   * @param userId - User identifier
+   * @param options - Configuration options
+   * @param options.types - Filter by memory types (e.g., ['CORE', 'ANCHOR'])
+   * @param options.limit - Maximum results to return (default: 10)
+   * @param options.minImportance - Minimum importance threshold 1-10 (default: 5)
+   * @returns Memories sorted by importance DESC, then recency
+   */
+  async getTopByImportance(
+    entityId: string,
+    userId: string,
+    options?: {
+      types?: ContinuityMemoryType[];
+      limit?: number;
+      minImportance?: number;
+    }
+  ): Promise<ContinuityMemoryNode[]> {
+    const { types = null, limit = 10, minImportance = 5 } = options || {};
+    
+    // Build filter: entity + user + optional types + importance threshold
+    let filter = `entityId eq '${entityId}' and userId eq '${userId}'`;
+    if (types && types.length > 0) {
+      const typeFilter = types.map(t => `type eq '${t}'`).join(' or ');
+      filter += ` and (${typeFilter})`;
+    }
+    filter += ` and importance ge ${minImportance}`;
+    
+    // Call cognitive search with ordering by importance
+    const response = await callPathway('cognitive_search', {
+      text: '*',
+      indexName: this.indexName,
+      filter,
+      orderby: 'importance desc, timestamp desc',
+      top: limit
+    });
+    
+    const parsed = JSON.parse(response);
+    return parsed.value || [];
+  }
+  
+  /**
    * Expand graph by fetching related memories
    */
   async expandGraph(
@@ -930,136 +1024,160 @@ export class AzureMemoryIndex {
 The `PathwayResolver` class in `server/pathwayResolver.js` is where memory is loaded before each request. We'll add a parallel code path for the Continuity system.
 
 ```javascript
-// server/pathwayResolver.js (modifications)
+// server/pathwayResolver.js (actual implementation)
 
-import { ContinuityMemoryService } from '../lib/continuity/index.js';
+import { getContinuityMemoryService } from '../lib/continuity/index.js';
 
-// In constructor or as singleton
-const continuityMemory = new ContinuityMemoryService({
-  redis: { connectionString: config.get('storageConnectionString') },
-  azureSearch: { indexName: 'index-continuity-memory' }
-});
-
-// In promptAndParse method
-async promptAndParse(args) {
-  const { contextId, useMemory, useContinuityMemory } = args;
-  
-  // ... existing code ...
-  
-  const loadMemory = async () => {
-    // Existing memory loading...
-    
-    // NEW: Continuity Memory (parallel system)
-    if (useContinuityMemory && contextId) {
-      try {
-        const entityId = args.entityId || 'default';
-        const query = this.extractQueryFromChatHistory(args.chatHistory);
-        
-        // Get continuity context window
-        this.continuityContext = await continuityMemory.getContextWindow(
-          entityId,
-          contextId,
-          query
-        );
-        
-        // Get expression state
-        this.expressionState = await continuityMemory.getExpressionState(
-          entityId,
-          contextId
-        );
-      } catch (error) {
-        this.logError(`Continuity memory error: ${error.message}`);
-        this.continuityContext = '';
-        this.expressionState = null;
-      }
+// In loadMemory method (called during promptAndParse)
+const useContinuityMemory = args.useContinuityMemory || this.pathway.useContinuityMemory;
+if (useContinuityMemory) {
+  try {
+    const continuityService = getContinuityMemoryService();
+    if (continuityService.isAvailable()) {
+      // Extract entity and user identifiers
+      const entityId = args.aiName || 'default-entity';
+      const userId = this.savedContextId;
+      const currentQuery = args.text || args.chatHistory?.slice(-1)?.[0]?.content || '';
+      
+      // Initialize session
+      await continuityService.initSession(entityId, userId);
+      
+      // Get narrative context window (layered: bootstrap + topic)
+      const continuityContext = await continuityService.getContextWindow({
+        entityId,
+        userId,
+        query: currentQuery,
+        options: {
+          episodicLimit: 20,
+          topicMemoryLimit: 10,         // Topic-specific semantic search
+          bootstrapRelationalLimit: 5,  // Top relationship anchors (always included)
+          bootstrapMinImportance: 6,    // Minimum importance for relational base
+          expandGraph: true
+        }
+      });
+      
+      // Store for injection into prompts
+      this.continuityContext = continuityContext || '';
+      this.continuityEntityId = entityId;
+      this.continuityUserId = userId;
     }
-  };
-  
-  // ... rest of method ...
+      } catch (error) {
+    logger.warn(`Continuity memory load failed (non-fatal): ${error.message}`);
+        this.continuityContext = '';
+  }
 }
 ```
+
+**Key Points**:
+- Uses singleton pattern via `getContinuityMemoryService()` (not direct instantiation)
+- Extracts `entityId` from `args.aiName` (falls back to 'default-entity')
+- Extracts `userId` from `this.savedContextId` (the context ID)
+- Extracts `currentQuery` from the last user message or `args.text`
+- Calls `initSession()` before getting context window
+- Stores context in `this.continuityContext` for template injection
 
 ### Entity Agent Integration
 
 The `sys_entity_agent.js` pathway will trigger synthesis after responses.
 
 ```javascript
-// pathways/system/entity/sys_entity_agent.js (modifications)
+// pathways/system/entity/sys_entity_agent.js (actual implementation)
 
-import { ContinuityMemoryService } from '../../../lib/continuity/index.js';
+import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
 
-// In executePathway
-executePathway: async ({args, runAllPrompts, resolver}) => {
-  const { useContinuityMemory, entityId, contextId } = args;
-  
-  // ... existing code ...
-  
-  // After getting the response:
-  const response = await runAllPrompts({...});
-  
-  // NEW: Record turn and trigger synthesis
-  if (useContinuityMemory && contextId) {
-    const continuityMemory = new ContinuityMemoryService({...});
-    
-    // Record the turn
-    const lastUserMessage = args.chatHistory.filter(m => m.role === 'user').slice(-1)[0];
-    
-    await continuityMemory.recordTurn(entityId, contextId, {
+// In executePathway, after getting response
+const useContinuityMemory = entityConfig?.useContinuityMemory ?? useContinuityMemory ?? false;
+
+// ... existing code to get response ...
+
+// After response is generated (in post-response hook):
+if (useContinuityMemory && this.continuityEntityId && this.continuityUserId) {
+  try {
+    const continuityService = getContinuityMemoryService();
+    if (continuityService.isAvailable()) {
+      // Record user turn (from chat history)
+      const lastUserMessage = args.chatHistory?.filter(m => m.role === 'user').slice(-1)[0];
+      if (lastUserMessage) {
+        await continuityService.recordTurn(
+          this.continuityEntityId,
+          this.continuityUserId,
+          {
       role: 'user',
-      content: lastUserMessage?.content || '',
+            content: lastUserMessage.content,
       timestamp: new Date().toISOString()
-    });
-    
-    await continuityMemory.recordTurn(entityId, contextId, {
+          }
+        );
+      }
+      
+      // Record assistant turn (the response)
+      await continuityService.recordTurn(
+        this.continuityEntityId,
+        this.continuityUserId,
+        {
       role: 'assistant',
-      content: typeof response === 'string' ? response : response.output_text,
-      timestamp: new Date().toISOString(),
-      toolsUsed: resolver.pathwayResultData?.toolUsed
-    });
-    
-    // Fire-and-forget synthesis
-    continuityMemory.triggerSynthesis(entityId, contextId, 'turn');
+          content: typeof response === 'string' ? response : response.text || '',
+          timestamp: new Date().toISOString()
+        }
+      );
+      
+      // Fire-and-forget synthesis (runs asynchronously)
+      continuityService.triggerSynthesis(
+        this.continuityEntityId,
+        this.continuityUserId,
+        {
+          aiName: entityName,
+          entityContext: entityInstructions
+        }
+      );
+    }
+  } catch (error) {
+    logger.warn(`Continuity synthesis trigger failed (non-fatal): ${error.message}`);
   }
-  
-  return response;
 }
 ```
+
+**Key Points**:
+- Uses singleton pattern via `getContinuityMemoryService()`
+- `useContinuityMemory` is determined from `entityConfig` or `args`
+- Records both user and assistant turns
+- Synthesis is fire-and-forget (non-blocking)
+- Uses `this.continuityEntityId` and `this.continuityUserId` set during context loading
 
 ### New Entity Constants
 
 ```javascript
 // lib/entityConstants.js (additions)
 
-// Continuity Memory Templates
-AI_CONTINUITY_CONTEXT: `# Narrative Memory
+// Continuity Memory Template
+AI_CONTINUITY_CONTEXT: `{{#if continuityContext}}# Narrative Context
 
-## Relational Context
+The following is your deeper understanding of this relationship and yourself, synthesized from your ongoing interactions. This is not just information—it's meaning, emotional resonance, and identity.
+
 {{{continuityContext}}}
 
-## Expression State
-{{#if expressionState}}
-Current emotional resonance: {{{expressionState.emotionalResonance.valence}}} ({{expressionState.emotionalResonance.intensity}})
-Communication style: {{{expressionState.basePersonality}}}
-{{#if expressionState.situationalAdjustments}}
-Situational adjustments: {{#each expressionState.situationalAdjustments}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}
-{{/if}}
-{{/if}}
-`,
+Use this context to inform your responses naturally. These are not rules to follow but the fabric of your relationship with this user.
+{{/if}}`
+```
 
-AI_CONTINUITY_INSTRUCTIONS: `# Continuity Memory Instructions
+### Context Window Structure
 
-You have a narrative memory system that goes beyond facts to capture meaning, relationships, and your own evolution.
+The context window is assembled in a specific order to prioritize foundational identity over topic-specific details:
 
-- **Relational Anchors**: These capture the emotional landscape of your relationships. Use them to inform your tone and approach.
-- **Resonance Artifacts**: These are synthesized insights from past conversations. They represent patterns and conclusions you've drawn.
-- **Identity Evolution**: This tracks how you are growing and changing. Reference your own development when relevant.
-- **Expression State**: This tunes how you show up - your emotional resonance and communication style.
+1. **Core Directives** - Fundamental identity, constraints, behavior rules (always present if CORE memories exist)
+2. **Current Expression State** - Emotional resonance and communication style tuning
+3. **Relational Anchors** - Relationship landscape with this user (top anchors by importance)
+4. **Shared Vocabulary** - Communication shorthand and shared language
+5. **Resonance Artifacts** - Synthesized insights relevant to current topic
+6. **Identity Evolution** - Self-growth notes and personal development
+7. **Active Narrative Thread** - Cached narrative summary (if available and fresh)
+8. **Session Context** - Temporal awareness (duration, time since last interaction)
 
 When formulating responses:
-1. Let your relational anchors inform your warmth and approach
-2. Draw on resonance artifacts for recurring themes or insights
-3. Be authentic to your current identity evolution
-4. Adjust your expression based on the situational context
+1. Core directives are the bedrock - they shape all other context
+2. Let your relational anchors inform your warmth and approach
+3. Draw on resonance artifacts for recurring themes or insights
+4. Be authentic to your current identity evolution
+5. Adjust your expression based on the situational context
 `,
 ```
 
@@ -1402,20 +1520,38 @@ Respond with JSON:
 
 ### Configuration
 
+Continuity memory is enabled per-entity via the `entityConfig` in `config/default.json`. Add `useContinuityMemory: true` to the entity configuration:
+
 ```javascript
-// config/default.json additions
+// config/default.json
 {
-  "continuityMemory": {
-    "enabled": true,
-    "indexName": "index-continuity-memory",
-    "synthesisModel": "oai-gpt41-mini",
-    "deepSynthesisModel": "oai-gpt41",
-    "episodicStreamLimit": 50,
-    "contextCacheTTL": 300,
-    "enableBackgroundSynthesis": true
+  "entityConfig": {
+    "labeeb": {
+      "name": "Labeeb",
+      "isDefault": true,
+      "useMemory": true,
+      "useContinuityMemory": true,  // Enable continuity memory for this entity
+      "description": "...",
+      "instructions": "",
+      "tools": ["*"]
+    }
   }
 }
 ```
+
+**Note**: The `useContinuityMemory` flag defaults to `false` in the pathway definition. It must be explicitly enabled in the entity config or passed as a parameter to enable continuity memory.
+
+**System Requirements**:
+- Redis configured (for hot memory) - set `storageConnectionString` in config or `STORAGE_CONNECTION_STRING` env var
+- Azure AI Search configured (for cold memory) - set `azureCognitiveApiUrl` and `azureCognitiveApiKey` in config or environment variables
+- Continuity memory index created - run `scripts/setup-continuity-memory-index.js` to create the index
+
+**Default Configuration** (used if not overridden):
+- Index name: `index-continuity-memory`
+- Synthesis model: `oai-gpt41-mini`
+- Deep synthesis model: `oai-gpt41`
+- Episodic stream limit: 50 turns
+- Context cache TTL: 300 seconds (5 minutes)
 
 ---
 
@@ -1640,6 +1776,43 @@ All continuity memory Azure operations go through the `azure-cognitive` model en
 
 The `azureCognitivePlugin` has been extended to support `continuity-upsert` and `continuity-delete` modes, which use the same `index` endpoint as standard operations but with the continuity memory document schema.
 
+### Memory Deduplication
+
+All memory storage operations (both automatic synthesis and explicit tool storage) use intelligent deduplication to prevent redundant entries and strengthen recurring patterns.
+
+**How it works**:
+1. When storing a new memory, the system searches for semantically similar existing memories (cosine similarity > 0.85)
+2. If duplicates are found, they are merged into a single, stronger memory:
+   - Content is synthesized via LLM if significantly different, otherwise longest is kept
+   - Importance is boosted based on frequency (max +2 boost, cap at 10)
+   - Tags are combined and deduplicated
+   - Emotional states are resolved (most intense wins)
+   - Relational context is merged (shared vocabulary combined, arrays merged)
+   - Recall counts are summed
+   - Confidence is averaged with corroboration boost
+   - Oldest timestamp is preserved as origin
+3. Old duplicate memories are deleted, replaced by the consolidated entry
+
+**Configuration**:
+```javascript
+const service = getContinuityMemoryService({
+    dedupThreshold: 0.85,  // Similarity threshold (0-1)
+    maxClusterSize: 5      // Max memories to merge in one operation
+});
+```
+
+**API**:
+```javascript
+// Store with deduplication (default)
+await service.addMemoryWithDedup(entityId, userId, memory);
+
+// Store without deduplication
+await service.addMemory(entityId, userId, memory);
+
+// Batch consolidation of existing memories
+await service.consolidateMemories(entityId, userId, { type: 'ANCHOR' });
+```
+
 ## 9. Tools for Entity
 
 ### SearchMemory Tool (Continuity)
@@ -1679,51 +1852,228 @@ export default {
     }
   }],
   
-  executePathway: async ({args, resolver}) => {
-    const { query, memoryTypes, entityId, contextId } = args;
-    const continuityMemory = new ContinuityMemoryService({...});
-    
-    const results = await continuityMemory.searchMemory(
-      entityId,
+  resolver: async (_parent, args, _contextValue, _info) => {
+    const { 
+      query, 
+      memoryTypes, 
+      limit = 5, 
+      expandGraph = false,
       contextId,
-      query,
-      { types: memoryTypes, limit: 10, expandGraph: true }
-    );
+      aiName
+    } = args;
     
-    // Format for LLM consumption
-    const formatted = results.map(m => ({
+    try {
+      const continuityService = getContinuityMemoryService();
+      
+      if (!continuityService.isAvailable()) {
+        return JSON.stringify({
+          error: false,
+          message: 'Continuity memory service is not available.',
+          memories: []
+        });
+      }
+      
+      // Map string types to enum values
+      const typesArray = Array.isArray(memoryTypes) ? memoryTypes : [];
+      const typeFilters = typesArray.length > 0 
+        ? typesArray.map(t => ContinuityMemoryType[t] || t)
+        : null;
+      
+      const entityId = aiName || 'default-entity';
+      const userId = contextId;
+      
+      const memories = await continuityService.searchMemory({
+      entityId,
+        userId,
+      query,
+        options: {
+          types: typeFilters,
+          limit,
+          expandGraph
+        }
+      });
+      
+      if (memories.length === 0) {
+        return JSON.stringify({
+          error: false,
+          message: 'No memories found matching your query.',
+          memories: []
+        });
+      }
+      
+      // Format memories for display
+      const formattedMemories = memories.map(m => ({
       type: m.type,
       content: m.content,
-      emotionalContext: m.emotionalState,
-      relationalContext: m.relationalContext,
-      timestamp: m.timestamp
-    }));
-    
-    return JSON.stringify({ memories: formatted });
+        importance: m.importance,
+        emotionalContext: m.emotionalState?.valence || null,
+        recallCount: m.recallCount,
+        relatedCount: m.relatedMemoryIds?.length || 0
+      }));
+      
+      // Also provide a natural language summary
+      const displayText = continuityService.formatMemoriesForDisplay(memories);
+      
+      return JSON.stringify({
+        error: false,
+        message: `Found ${memories.length} relevant memories.`,
+        memories: formattedMemories,
+        display: displayText
+      });
+    } catch (error) {
+      logger.error(`Continuity memory search failed: ${error.message}`);
+      return JSON.stringify({
+        error: true,
+        message: `Memory search failed: ${error.message}`,
+        memories: []
+      });
+    }
   }
 };
 ```
 
+### StoreMemory Tool (Continuity)
+
+Allows the agent to explicitly store memories with automatic deduplication.
+
+```javascript
+// pathways/system/entity/tools/sys_tool_store_continuity_memory.js
+
+export default {
+  definition: {
+    name: 'store_continuity_memory',
+    description: `Store a specific memory in your long-term narrative memory. Use this when you want to explicitly remember something important.
+
+Memory types:
+- ANCHOR: Relational insights about the user
+- ARTIFACT: Synthesized concepts or conclusions
+- IDENTITY: Notes about your own growth
+- CORE: Fundamental identity directives`,
+    parameters: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description: 'What to remember. Capture meaning, not just facts.'
+        },
+        memoryType: {
+          type: 'string',
+          enum: ['ANCHOR', 'ARTIFACT', 'IDENTITY', 'CORE'],
+          description: 'Type of memory to store'
+        },
+        importance: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 10,
+          description: 'How important is this? Higher = recalled more often'
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional tags for categorization'
+        },
+        emotionalValence: {
+          type: 'string',
+          enum: ['joy', 'curiosity', 'concern', 'warmth', 'excitement', 'calm', 'neutral'],
+          description: 'Optional emotional context'
+        }
+      },
+      required: ['content', 'memoryType']
+    },
+    icon: '💾'
+  },
+  
+  resolver: async (_parent, args, _contextValue, _info) => {
+    const continuityService = getContinuityMemoryService();
+    
+    // Build memory object
+    const memory = {
+      type: TYPE_MAP[args.memoryType],
+      content: args.content,
+      importance: args.importance || 5,
+      tags: [...(args.tags || []), 'explicit-store'],
+      emotionalState: args.emotionalValence ? {
+        valence: VALENCE_MAP[args.emotionalValence],
+        intensity: 0.5
+      } : null
+    };
+    
+    // Store with deduplication (merges with similar memories)
+    const result = await continuityService.addMemoryWithDedup(
+      args.aiName || 'default-entity',
+      args.contextId,
+      memory
+    );
+    
+    return JSON.stringify({
+      success: true,
+      memoryId: result.id,
+      merged: result.merged,
+      mergedCount: result.mergedCount
+    });
+  }
+};
+```
+
+**Key Features**:
+- Automatic deduplication with similar existing memories
+- Support for all memory types (ANCHOR, ARTIFACT, IDENTITY, CORE)
+- Importance scaling (1-10)
+- Optional emotional context
+- Tags for categorization
+- Marks memories as 'explicit-store' to distinguish from auto-synthesis
+
 ---
 
-## 9. Testing Strategy
+## 10. Testing Strategy
 
 ### Unit Tests
-- Redis hot memory operations
-- Azure index CRUD operations
-- Synthesis prompt parsing
-- Context builder formatting
+
+Unit tests cover individual components:
+- `RedisHotMemory`: Episodic stream, expression state, context cache
+- `AzureMemoryIndex`: Search, upsert, delete, graph expansion
+- `ContextBuilder`: Context window assembly, narrative summary generation
+- `NarrativeSynthesizer`: Turn synthesis, deep synthesis
+- `MemoryDeduplicator`: Similarity detection, content merging, property resolution
 
 ### Integration Tests
-- Full flow: query -> context -> response -> synthesis
-- Memory persistence and retrieval
+
+**Location**: `tests/integration/features/continuity/`
+
+#### `continuity_memory_e2e.test.js`
+End-to-end tests covering:
+- Redis hot memory operations (session, episodic stream, expression state)
+- Azure cold memory operations (upsert, search, get by type)
+- Context building with narrative summary
 - Graph expansion
-- Expression state management
+- Service availability checks
+
+#### `continuity_memory_search.test.js`
+Tests for the `sys_tool_search_continuity_memory` tool:
+- General search queries
+- Type filtering
+- Graph expansion
+- Edge cases (null types, no results)
+
+#### `continuity_pathways.test.js`
+Tests for continuity memory pathways and tools:
+- `continuity_memory_upsert` pathway
+- `continuity_memory_delete` pathway
+- `continuity_narrative_summary` pathway (LLM-powered)
+- `continuity_deep_synthesis` pathway (external triggering)
+- `sys_tool_store_continuity_memory` tool (explicit storage)
+- Deduplication: similar memory merging
+- Deduplication: importance boosting
+- Deduplication: skipDedup option
+- Batch consolidation of existing memories
+- Error handling and validation
+
+**Run all continuity tests**:
+```bash
+npm test -- tests/integration/features/continuity/
+```
 
 ### Smoke Tests
-- Parallel operation with legacy system
-- Entity initialization
-- Session management
 
 ---
 

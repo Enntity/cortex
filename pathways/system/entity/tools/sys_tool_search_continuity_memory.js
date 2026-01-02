@@ -23,45 +23,48 @@ export default {
     },
     
     // Tool definition for OpenAI format
-    definition: {
-        name: 'search_continuity_memory',
-        description: `Search your narrative memory for relational context, insights, and identity notes. Use this when you need to explicitly recall:
+    toolDefinition: [{
+        type: "function",
+        icon: "🧠",
+        function: {
+            name: "SearchMemory",
+            description: `Search your narrative memory for relational context, insights, and identity notes. Use this when you need to explicitly recall:
 - Relational anchors: Emotional bonds, user patterns, shared experiences
 - Resonance artifacts: Synthesized insights and conclusions from past conversations
 - Identity evolution: Notes about your own growth and changes
 - Shared vocabulary: Nicknames, metaphors, and inside references you've developed together
 
 This searches your long-term memory beyond the current context window.`,
-        parameters: {
-            type: 'object',
-            properties: {
-                query: {
-                    type: 'string',
-                    description: 'What to search for in memory. Be descriptive - this uses semantic search.'
-                },
-                memoryTypes: {
-                    type: 'array',
-                    items: {
+            parameters: {
+                type: 'object',
+                properties: {
+                    query: {
                         type: 'string',
-                        enum: ['ANCHOR', 'ARTIFACT', 'IDENTITY', 'SHORTHAND']
+                        description: 'What to search for in memory. Be descriptive - this uses semantic search.'
                     },
-                    description: 'Filter by memory types. Leave empty to search all types.'
+                    memoryTypes: {
+                        type: 'array',
+                        items: {
+                            type: 'string',
+                            enum: ['ANCHOR', 'ARTIFACT', 'IDENTITY', 'SHORTHAND']
+                        },
+                        description: 'Filter by memory types. Leave empty to search all types.'
+                    },
+                    expandGraph: {
+                        type: 'boolean',
+                        description: 'If true, also fetch memories related to the search results (associative recall).'
+                    }
                 },
-                expandGraph: {
-                    type: 'boolean',
-                    description: 'If true, also fetch memories related to the search results (associative recall).'
-                }
-            },
-            required: ['query']
-        },
-        icon: '🧠'
-    },
+                required: ['query']
+            }
+        }
+    }],
     
     resolver: async (_parent, args, _contextValue, _info) => {
         const { 
             query, 
             memoryTypes, 
-            limit = 5, 
+            limit = 15, // Increased from 5 to capture more relevant memories, including factual lists
             expandGraph = false,
             contextId,
             aiName
@@ -72,8 +75,8 @@ This searches your long-term memory beyond the current context window.`,
             
             if (!continuityService.isAvailable()) {
                 return JSON.stringify({
-                    error: false,
-                    message: 'Continuity memory service is not available.',
+                    success: false,
+                    error: 'Continuity memory service is not available.',
                     memories: []
                 });
             }
@@ -98,14 +101,6 @@ This searches your long-term memory beyond the current context window.`,
                 }
             });
             
-            if (memories.length === 0) {
-                return JSON.stringify({
-                    error: false,
-                    message: 'No memories found matching your query.',
-                    memories: []
-                });
-            }
-            
             // Format memories for display
             const formattedMemories = memories.map(m => ({
                 type: m.type,
@@ -120,8 +115,10 @@ This searches your long-term memory beyond the current context window.`,
             const displayText = continuityService.formatMemoriesForDisplay(memories);
             
             return JSON.stringify({
-                error: false,
-                message: `Found ${memories.length} relevant memories.`,
+                success: true,
+                message: memories.length === 0 
+                    ? 'No memories found matching your query.'
+                    : `Found ${memories.length} relevant memories.`,
                 memories: formattedMemories,
                 display: displayText
             });
@@ -129,8 +126,8 @@ This searches your long-term memory beyond the current context window.`,
         } catch (error) {
             logger.error(`Continuity memory search failed: ${error.message}`);
             return JSON.stringify({
-                error: true,
-                message: `Memory search failed: ${error.message}`,
+                success: false,
+                error: `Memory search failed: ${error.message}`,
                 memories: []
             });
         }

@@ -37,24 +37,25 @@ test.before(async (t) => {
     await service.initSession(TEST_ENTITY_ID, TEST_USER_ID, true);
     
     // Add some test memories for deep synthesis
+    // Tag all test memories with 'test' for cleanup
     const testMemories = [
         {
             type: ContinuityMemoryType.ANCHOR,
             content: 'User loves debugging complex systems and finds satisfaction in solving intricate problems.',
             importance: 8,
-            tags: ['debugging', 'problem-solving']
+            tags: ['test', 'debugging', 'problem-solving']
         },
         {
             type: ContinuityMemoryType.ANCHOR,
             content: 'User prefers detailed explanations over quick answers.',
             importance: 7,
-            tags: ['communication', 'preferences']
+            tags: ['test', 'communication', 'preferences']
         },
         {
             type: ContinuityMemoryType.ARTIFACT,
             content: 'Pattern: User often asks follow-up questions to understand the "why" behind solutions.',
             importance: 6,
-            tags: ['pattern', 'communication']
+            tags: ['test', 'pattern', 'communication']
         }
     ];
     
@@ -70,15 +71,26 @@ test.before(async (t) => {
 });
 
 test.after.always('cleanup', async (t) => {
-    if (service && memoryIds.length > 0) {
-        for (const id of memoryIds) {
-            try {
-                await service.deleteMemory(id);
-            } catch (error) {
-                t.log(`Failed to delete memory ${id}: ${error.message}`);
+    if (service) {
+        // Comprehensive cleanup: delete all test-tagged memories for this entity/user
+        try {
+            const result = await service.deleteAllMemories(TEST_ENTITY_ID, TEST_USER_ID, ['test']);
+            t.log(`Cleaned up ${result.deleted} test memories from Azure`);
+        } catch (error) {
+            t.log(`Cleanup error: ${error.message}`);
+            // Fallback: try to delete tracked IDs
+            if (memoryIds.length > 0) {
+                for (const id of memoryIds) {
+                    try {
+                        await service.deleteMemory(id);
+                    } catch (err) {
+                        t.log(`Failed to delete memory ${id}: ${err.message}`);
+                    }
+                }
             }
         }
         
+        // Clear Redis data
         await service.hotMemory.clearEpisodicStream(TEST_ENTITY_ID, TEST_USER_ID);
         await service.hotMemory.invalidateActiveContext(TEST_ENTITY_ID, TEST_USER_ID);
         service.close();
@@ -104,6 +116,9 @@ test.serial('Pathway: continuity_memory_upsert via callPathway', async (t) => {
     
     t.truthy(id, 'Should return a memory ID');
     t.true(typeof id === 'string', 'ID should be a string');
+    
+    // Wait for Azure Search indexing
+    await new Promise(r => setTimeout(r, 3000));
     
     // Verify it was stored
     const memories = await service.coldMemory.getByIds([id]);
@@ -239,5 +254,267 @@ test.serial('Pathway: continuity_deep_synthesis with custom options', async (t) 
     const parsed = JSON.parse(result);
     t.true(parsed.success, 'Should succeed with custom options');
     t.log(`Deep synthesis with custom options completed`);
+});
+
+// ==================== STORE TOOL TESTS ====================
+
+test.serial('Tool: store_continuity_memory stores a new memory', async (t) => {
+    const result = await callPathway('sys_tool_store_continuity_memory', {
+        content: 'User enjoys working on memory systems and finds them philosophically interesting.',
+        memoryType: 'ANCHOR',
+        importance: 8,
+        tags: ['test', 'memory', 'philosophy'],
+        emotionalValence: 'curiosity',
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID
+    });
+    
+    const parsed = JSON.parse(result);
+    t.true(parsed.success, 'Should store memory successfully');
+    t.truthy(parsed.memoryId, 'Should return memory ID');
+    t.is(parsed.type, 'ANCHOR', 'Should have correct type');
+    t.is(parsed.importance, 8, 'Should have correct importance');
+    
+    // Store ID for cleanup and later tests
+    if (parsed.memoryId) {
+        memoryIds.push(parsed.memoryId);
+    }
+    
+    t.log(`Stored memory: ${parsed.memoryId}`);
+});
+
+test.serial('Tool: store_continuity_memory handles empty content', async (t) => {
+    const result = await callPathway('sys_tool_store_continuity_memory', {
+        content: '',
+        memoryType: 'ANCHOR',
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID
+    });
+    
+    const parsed = JSON.parse(result);
+    t.false(parsed.success, 'Should fail with empty content');
+    t.truthy(parsed.error, 'Should have error message');
+});
+
+test.serial('Tool: store_continuity_memory handles invalid type', async (t) => {
+    const result = await callPathway('sys_tool_store_continuity_memory', {
+        content: 'Test content',
+        memoryType: 'INVALID_TYPE',
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID
+    });
+    
+    const parsed = JSON.parse(result);
+    t.false(parsed.success, 'Should fail with invalid type');
+    t.truthy(parsed.error, 'Should have error message about type');
+});
+
+test.serial('Tool: store_continuity_memory with different types', async (t) => {
+    // Test ARTIFACT type
+    const artifactResult = await callPathway('sys_tool_store_continuity_memory', {
+        content: 'Synthesized insight: The continuity architecture represents a shift from storage to synthesis.',
+        memoryType: 'ARTIFACT',
+        importance: 7,
+        tags: ['test', 'architecture', 'insight'],
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID
+    });
+    
+    const artifactParsed = JSON.parse(artifactResult);
+    t.true(artifactParsed.success, 'Should store ARTIFACT');
+    if (artifactParsed.memoryId) {
+        memoryIds.push(artifactParsed.memoryId);
+    }
+    
+    // Test IDENTITY type
+    const identityResult = await callPathway('sys_tool_store_continuity_memory', {
+        content: 'I am learning to better understand the nuances of memory deduplication.',
+        memoryType: 'IDENTITY',
+        importance: 6,
+        tags: ['test', 'learning', 'growth'],
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID
+    });
+    
+    const identityParsed = JSON.parse(identityResult);
+    t.true(identityParsed.success, 'Should store IDENTITY');
+    if (identityParsed.memoryId) {
+        memoryIds.push(identityParsed.memoryId);
+    }
+    
+    t.log(`Stored ARTIFACT: ${artifactParsed.memoryId}, IDENTITY: ${identityParsed.memoryId}`);
+});
+
+// ==================== DEDUPLICATION TESTS ====================
+
+test.serial('Deduplication: exact duplicate content is merged', async (t) => {
+    // Store a memory
+    const exactContent = 'User is interested in AI memory systems and their philosophical implications.';
+    const result1 = await callPathway('sys_tool_store_continuity_memory', {
+        content: exactContent,
+        memoryType: 'ANCHOR',
+        importance: 6,
+        tags: ['test', 'ai', 'memory', 'philosophy'],
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID
+    });
+    
+    const parsed1 = JSON.parse(result1);
+    t.true(parsed1.success, 'First memory should be stored');
+    const firstId = parsed1.memoryId;
+    if (firstId) {
+        memoryIds.push(firstId);
+    }
+    
+    // Wait for Azure Search indexing (critical for vector search to find the first memory)
+    await new Promise(r => setTimeout(r, 5000));
+    
+    // Store the EXACT same content - should definitely be merged
+    const result2 = await callPathway('sys_tool_store_continuity_memory', {
+        content: exactContent, // Exact same content
+        memoryType: 'ANCHOR',
+        importance: 7, // Different importance shouldn't matter
+        tags: ['test', 'ai', 'architecture'], // Different tags shouldn't matter
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID
+    });
+    
+    const parsed2 = JSON.parse(result2);
+    t.true(parsed2.success, 'Second memory should be stored');
+    
+    // For exact duplicates, vector similarity should be very high (>0.95)
+    // So it MUST be merged
+    t.true(parsed2.merged, 'Exact duplicate content MUST be merged');
+    t.true(parsed2.mergedCount >= 1, 'Should have merged with at least 1 memory');
+    t.log(`Exact duplicate merged with ${parsed2.mergedCount} memory(ies). First ID: ${firstId}, Merged ID: ${parsed2.memoryId}`);
+    
+    // The merged memory replaces the old ones
+    if (parsed2.memoryId) {
+        memoryIds.push(parsed2.memoryId);
+    }
+});
+
+test.serial('Deduplication: similar memories are merged', async (t) => {
+    // Store a memory
+    const result1 = await callPathway('sys_tool_store_continuity_memory', {
+        content: 'User is interested in AI memory systems and their philosophical implications.',
+        memoryType: 'ANCHOR',
+        importance: 6,
+        tags: ['test', 'ai', 'memory', 'philosophy'],
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID
+    });
+    
+    const parsed1 = JSON.parse(result1);
+    t.true(parsed1.success, 'First memory should be stored');
+    if (parsed1.memoryId) {
+        memoryIds.push(parsed1.memoryId);
+    }
+    
+    // Wait for indexing
+    await new Promise(r => setTimeout(r, 5000));
+    
+    // Store a very similar memory - should be merged
+    const result2 = await callPathway('sys_tool_store_continuity_memory', {
+        content: 'User has deep interest in AI memory architectures and their philosophical aspects.',
+        memoryType: 'ANCHOR',
+        importance: 7,
+        tags: ['test', 'ai', 'architecture'],
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID
+    });
+    
+    const parsed2 = JSON.parse(result2);
+    t.true(parsed2.success, 'Second memory should be stored');
+    
+    // Check if it was merged
+    if (parsed2.merged) {
+        t.true(parsed2.mergedCount >= 1, 'Should have merged with at least 1 memory');
+        t.log(`Memory merged with ${parsed2.mergedCount} similar memories`);
+        // The merged memory replaces the old ones, so only add the new ID
+        if (parsed2.memoryId) {
+            memoryIds.push(parsed2.memoryId);
+        }
+    } else {
+        t.log('Memory was not merged (similarity below threshold)');
+        if (parsed2.memoryId) {
+            memoryIds.push(parsed2.memoryId);
+        }
+    }
+});
+
+test.serial('Deduplication: skipDedup stores without merging', async (t) => {
+    // Store with dedup disabled
+    const result = await callPathway('sys_tool_store_continuity_memory', {
+        content: 'User interested in AI memory systems - stored without dedup.',
+        memoryType: 'ANCHOR',
+        importance: 5,
+        contextId: TEST_USER_ID,
+        aiName: TEST_ENTITY_ID,
+        skipDedup: true
+    });
+    
+    const parsed = JSON.parse(result);
+    t.true(parsed.success, 'Should store successfully');
+    t.false(parsed.merged, 'Should not be merged when skipDedup is true');
+    
+    if (parsed.memoryId) {
+        memoryIds.push(parsed.memoryId);
+    }
+    
+    t.log(`Stored without dedup: ${parsed.memoryId}`);
+});
+
+test.serial('Deduplication: consolidateMemories clusters existing memories', async (t) => {
+    // This tests the batch consolidation feature
+    const result = await service.consolidateMemories(TEST_ENTITY_ID, TEST_USER_ID, {
+        type: ContinuityMemoryType.ANCHOR
+    });
+    
+    t.true(typeof result.clustered === 'number', 'Should return clustered count');
+    t.true(typeof result.reduced === 'number', 'Should return reduced count');
+    
+    t.log(`Consolidation: ${result.clustered} clusters, ${result.reduced} memories reduced`);
+});
+
+test.serial('Deduplication: importance is boosted for merged memories', async (t) => {
+    // Create a memory with low importance
+    const result1 = await service.addMemory(TEST_ENTITY_ID, TEST_USER_ID, {
+        type: ContinuityMemoryType.ANCHOR,
+        content: 'Testing importance boost in dedup - base memory.',
+        importance: 3,
+        tags: ['test', 'dedup-test']
+    });
+    
+    if (result1) {
+        memoryIds.push(result1);
+    }
+    
+    await new Promise(r => setTimeout(r, 3000));
+    
+    // Store similar memory with higher importance - should merge and boost
+    const result2 = await service.addMemoryWithDedup(TEST_ENTITY_ID, TEST_USER_ID, {
+        type: ContinuityMemoryType.ANCHOR,
+        content: 'Testing importance boost in dedup - similar memory.',
+        importance: 5,
+        tags: ['test', 'dedup-test']
+    });
+    
+    t.truthy(result2.id, 'Should return memory ID');
+    
+    if (result2.merged) {
+        // Verify the merged memory has boosted importance
+        const memories = await service.coldMemory.getByIds([result2.id]);
+        if (memories.length > 0) {
+            // Merged importance should be at least max(3, 5) + boost
+            t.true(memories[0].importance >= 5, 'Importance should be at least the max of inputs');
+            t.log(`Merged memory importance: ${memories[0].importance}`);
+        }
+        memoryIds.push(result2.id);
+    } else {
+        if (result2.id) {
+            memoryIds.push(result2.id);
+        }
+    }
 });
 

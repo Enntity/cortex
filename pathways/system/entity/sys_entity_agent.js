@@ -538,6 +538,8 @@ export default {
 
         const promptPrefix = '';
 
+        args.useMemory = false;
+
         const memoryTemplates = args.useMemory ? 
             `{{renderTemplate AI_MEMORY_INSTRUCTIONS}}\n\n{{renderTemplate AI_MEMORY}}\n\n{{renderTemplate AI_MEMORY_CONTEXT}}\n\n` : '';
 

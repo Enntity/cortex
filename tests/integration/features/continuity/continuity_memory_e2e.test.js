@@ -12,33 +12,33 @@ import {
 const TEST_ENTITY_ID = 'test-entity-continuity-e2e';
 const TEST_USER_ID = `test-user-${Date.now()}`;
 
-// Mock content
+// Mock content - all tagged with 'test' for cleanup
 const MOCK_MEMORIES = [
     {
         type: ContinuityMemoryType.ANCHOR,
         content: 'User prefers direct communication and appreciates technical depth.',
         importance: 7,
         emotionalState: { valence: EmotionalValence.WARMTH, intensity: 0.6 },
-        tags: ['communication', 'preferences']
+        tags: ['test', 'communication', 'preferences']
     },
     {
         type: ContinuityMemoryType.ANCHOR,
         content: 'Shared vocabulary: "The Box" refers to the main development server.',
         importance: 8,
-        tags: ['shorthand', 'vocabulary'],
+        tags: ['test', 'shorthand', 'vocabulary'],
         relationalContext: { sharedVocabulary: { 'The Box': 'main dev server' } }
     },
     {
         type: ContinuityMemoryType.ARTIFACT,
         content: 'Insight: Complex problems benefit from walking through them step by step rather than jumping to solutions.',
         importance: 6,
-        tags: ['insight', 'problem-solving']
+        tags: ['test', 'insight', 'problem-solving']
     },
     {
         type: ContinuityMemoryType.IDENTITY,
         content: 'I am becoming more comfortable with expressing uncertainty when I don\'t have complete information.',
         importance: 5,
-        tags: ['growth', 'self-awareness']
+        tags: ['test', 'growth', 'self-awareness']
     }
 ];
 
@@ -87,13 +87,24 @@ test.before(async (t) => {
 });
 
 test.after.always('cleanup', async (t) => {
-    if (service && memoryIds.length > 0) {
-        // Delete memories from Azure
-        for (const id of memoryIds) {
-            try {
-                await service.deleteMemory(id);
-            } catch (error) {
-                t.log(`Failed to delete memory ${id}: ${error.message}`);
+    if (service) {
+        // Comprehensive cleanup: delete all test-tagged memories for this entity/user
+        try {
+            const result = await service.deleteAllMemories(TEST_ENTITY_ID, TEST_USER_ID, {
+                tags: ['test']
+            });
+            t.log(`Cleaned up ${result.deleted} test memories from Azure`);
+        } catch (error) {
+            t.log(`Cleanup error: ${error.message}`);
+            // Fallback: try to delete tracked IDs
+            if (memoryIds.length > 0) {
+                for (const id of memoryIds) {
+                    try {
+                        await service.deleteMemory(id);
+                    } catch (err) {
+                        t.log(`Failed to delete memory ${id}: ${err.message}`);
+                    }
+                }
             }
         }
         
