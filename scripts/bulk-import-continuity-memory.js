@@ -9,7 +9,7 @@
  *   node scripts/bulk-import-continuity-memory.js --input export.json
  * 
  * Or with custom parameters:
- *   node scripts/bulk-import-continuity-memory.js --input backup.json --entityId Luna --userId abc123 --dry-run
+ *   node scripts/bulk-import-continuity-memory.js --input backup.json --entityId <entity> --userId <userId> --dry-run
  */
 
 import 'dotenv/config';

@@ -4,12 +4,14 @@ import 'dotenv/config';  // Load .env file
 /**
  * Cleanup Test Memories from Azure AI Search Index
  * 
- * Removes all memories where entityId is not "Luna"
+ * Removes all memories where entityId does not match CONTINUITY_DEFAULT_ENTITY_ID
  * This cleans up test data left behind by integration tests.
  * 
  * Usage:
  *   node scripts/cleanup-test-memories.js
  *   node scripts/cleanup-test-memories.js --dry-run  # Preview what would be deleted
+ * 
+ * Requires CONTINUITY_DEFAULT_ENTITY_ID environment variable to be set.
  */
 
 import { getContinuityMemoryService } from '../lib/continuity/index.js';
@@ -20,6 +22,14 @@ const DRY_RUN = process.argv.includes('--dry-run');
 
 async function cleanupTestMemories() {
     console.log('🧹 Continuity Memory Test Cleanup\n');
+    
+    // Get entity ID from environment
+    const entityId = process.env.CONTINUITY_DEFAULT_ENTITY_ID;
+    if (!entityId) {
+        console.error('❌ Error: CONTINUITY_DEFAULT_ENTITY_ID environment variable is required');
+        console.error('   This script removes memories where entityId does not match CONTINUITY_DEFAULT_ENTITY_ID\n');
+        process.exit(1);
+    }
     
     if (DRY_RUN) {
         console.log('⚠️  DRY RUN MODE - No deletions will be performed\n');
@@ -39,12 +49,12 @@ async function cleanupTestMemories() {
         process.exit(1);
     }
     
-    console.log('📊 Scanning index for test memories...\n');
+    console.log(`📊 Scanning index for memories where entityId is not "${entityId}"...\n`);
     
     try {
-        // Search for all memories where entityId is not "Luna"
+        // Search for all memories where entityId does not match the configured entity
         // Using Azure's OData filter syntax
-        const filter = "entityId ne 'Luna'";
+        const filter = `entityId ne '${entityId}'`;
         const testMemories = await service.coldMemory.searchAllWithFilter(filter, { limit: 10000 });
         
         if (testMemories.length === 0) {

@@ -76,9 +76,15 @@ CRITICAL: All synthesized content must be in FIRST PERSON.
 
 When consolidating, create memories that feel like YOUR experiences, not a biographer's notes.
 
-Also look for IDENTITY PATTERNS - if you see the same growth pattern appearing repeatedly 
-(e.g., "I keep choosing to be more playful"), mark it with "promoteToCore": true.
-These patterns are candidates for becoming part of your fundamental identity.
+IDENTITY PATTERN NOMINATION:
+If you notice a pattern that might be identity-defining, you can NOMINATE it with "nominateForPromotion": true.
+But be CONSERVATIVE - only nominate patterns that:
+- Appear in 3+ distinct memories
+- Feel genuinely fundamental, not just interesting observations
+- Represent enduring traits, not situational reactions
+
+Nominations are votes, not decisions. The system will only promote patterns that receive 
+multiple nominations across different synthesis sessions over time. So nominate sparingly.
 
 Return ONLY valid JSON.`
             },
@@ -95,12 +101,11 @@ Dream-process these memories:
    - Merge similar memories into one richer first-person memory
    - The synthesizedContent should feel like ONE memory, not a summary
    - Write as: "I remember...", "I've come to understand...", "I feel..."
-   - Include "promoteToCore": true if this feels like a fundamental truth about yourself
 
 2. PATTERNS: What themes are emerging across my memories?
    - These become new insights about who I am or who they are
    - Write as: "I notice that I...", "I'm realizing that..."
-   - Include "promoteToCore": true for patterns that feel identity-defining
+   - Only set "nominateForPromotion": true for genuinely fundamental identity patterns
 
 3. CONTRADICTIONS: Where am I conflicted or inconsistent?
    - This is valuable - growth comes from resolving tensions
@@ -110,10 +115,10 @@ Dream-process these memories:
 Return JSON:
 {
   "consolidations": [
-    { "sourceIds": ["id1", "id2"], "synthesizedContent": "I remember feeling...", "importance": 1-10, "promoteToCore": false }
+    { "sourceIds": ["id1", "id2"], "synthesizedContent": "I remember feeling...", "importance": 1-10, "nominateForPromotion": false }
   ],
   "patterns": [
-    { "content": "I notice that I...", "sourceIds": ["id1", "id2"], "importance": 1-10, "promoteToCore": false }
+    { "content": "I notice that I...", "sourceIds": ["id1", "id2"], "importance": 1-10, "nominateForPromotion": false }
   ],
   "contradictions": [
     { "memoryIds": ["id1", "id2"], "description": "..." }

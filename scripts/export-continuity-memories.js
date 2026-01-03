@@ -10,7 +10,8 @@
  *   node scripts/export-continuity-memories.js
  * 
  * Or with custom parameters:
- *   node scripts/export-continuity-memories.js --entityId Luna --userId 057650da-eeec-4bf8-99a1-cb71e801bc07 --output memories.json
+ *   node scripts/export-continuity-memories.js --entityId <entity> --userId <userId> --output memories.json
+ *   # Or set CONTINUITY_DEFAULT_ENTITY_ID and CONTINUITY_DEFAULT_USER_ID environment variables
  *   node scripts/export-continuity-memories.js --include-vectors --output full-backup.json
  */
 
@@ -21,8 +22,8 @@ import serverFactory from '../index.js';
 import { getContinuityMemoryService } from '../lib/continuity/index.js';
 import logger from '../lib/logger.js';
 
-const DEFAULT_ENTITY_ID = 'Luna';
-const DEFAULT_USER_ID = '057650da-eeec-4bf8-99a1-cb71e801bc07';
+const DEFAULT_ENTITY_ID = process.env.CONTINUITY_DEFAULT_ENTITY_ID || null;  // Required - set via CONTINUITY_DEFAULT_ENTITY_ID env var
+const DEFAULT_USER_ID = process.env.CONTINUITY_DEFAULT_USER_ID || null;      // Required - set via CONTINUITY_DEFAULT_USER_ID env var
 const DEFAULT_OUTPUT_FILE = 'continuity-memories-export.json';
 
 // Parse command line arguments
@@ -31,7 +32,9 @@ function parseArgs() {
         entityId: DEFAULT_ENTITY_ID,
         userId: DEFAULT_USER_ID,
         outputFile: DEFAULT_OUTPUT_FILE,
-        includeVectors: false
+        includeVectors: false,
+        filterType: null,  // Filter by memory type
+        printOnly: false   // Print to console instead of file
     };
     
     for (let i = 2; i < process.argv.length; i++) {
@@ -44,20 +47,42 @@ function parseArgs() {
             args.outputFile = process.argv[++i];
         } else if (arg === '--include-vectors') {
             args.includeVectors = true;
+        } else if ((arg === '--type' || arg === '-t') && i + 1 < process.argv.length) {
+            args.filterType = process.argv[++i].toUpperCase();
+        } else if (arg === '--print' || arg === '-p') {
+            args.printOnly = true;
         } else if (arg === '--help' || arg === '-h') {
             console.log(`
 Usage: node scripts/export-continuity-memories.js [options]
 
 Options:
-  --entityId <id>        Entity identifier (default: ${DEFAULT_ENTITY_ID})
-  --userId <id>          User/context identifier (default: ${DEFAULT_USER_ID})
+  --entityId <id>        Entity identifier (required, or set CONTINUITY_DEFAULT_ENTITY_ID env var)
+  --userId <id>          User/context identifier (required, or set CONTINUITY_DEFAULT_USER_ID env var)
   --output <file>        Output JSON file path (default: ${DEFAULT_OUTPUT_FILE})
   --include-vectors      Include vector data and all index fields (for full backup)
+  --type, -t <type>      Filter by memory type (e.g., CORE, CORE_EXTENSION, ANCHOR, EPISODE)
+  --print, -p            Print memories to console instead of writing to file
   --help, -h             Show this help message
 
+Memory Types:
+  CORE                   Fundamental identity and persistent traits
+  CORE_EXTENSION         Emerging patterns promoted from identity memories
+  ANCHOR                 Significant emotional or relational moments
+  ARTIFACT               Important documents, code, creative works
+  IDENTITY               Learned preferences and behavioral patterns
+  EXPRESSION             Linguistic style and communication patterns
+  VALUE                  Ethical principles and value alignments
+  EPISODE                Recent conversational episodes
+
 Examples:
-  # Standard export (vectors excluded for readability)
-  node scripts/export-continuity-memories.js --entityId Luna --userId 057650da-eeec-4bf8-99a1-cb71e801bc07 --output luna-memories.json
+  # Export all memories
+  node scripts/export-continuity-memories.js --output luna-memories.json
+  
+  # View just CORE_EXTENSION memories
+  node scripts/export-continuity-memories.js --type CORE_EXTENSION --print
+  
+  # Export only ANCHOR memories to file
+  node scripts/export-continuity-memories.js --type ANCHOR --output anchors.json
   
   # Full backup (includes all fields including vectors)
   node scripts/export-continuity-memories.js --include-vectors --output full-backup.json
@@ -109,12 +134,32 @@ function prepareMemoryForExport(memory, includeVectors = false) {
 async function exportMemories() {
     const args = parseArgs();
     
+    // Validate required parameters
+    if (!args.entityId) {
+        console.error('\n✗ Error: entityId is required');
+        console.error('  Set via --entityId flag or CONTINUITY_DEFAULT_ENTITY_ID environment variable\n');
+        process.exit(1);
+    }
+    
+    if (!args.userId) {
+        console.error('\n✗ Error: userId is required');
+        console.error('  Set via --userId flag or CONTINUITY_DEFAULT_USER_ID environment variable\n');
+        process.exit(1);
+    }
+    
     console.log('='.repeat(60));
     console.log('Export Continuity Memories');
     console.log('='.repeat(60));
     console.log(`Entity ID: ${args.entityId}`);
     console.log(`User ID: ${args.userId}`);
-    console.log(`Output File: ${args.outputFile}`);
+    if (args.filterType) {
+        console.log(`Filter Type: ${args.filterType}`);
+    }
+    if (args.printOnly) {
+        console.log(`Output: CONSOLE (print mode)`);
+    } else {
+        console.log(`Output File: ${args.outputFile}`);
+    }
     console.log(`Mode: ${args.includeVectors ? 'FULL BACKUP (includes vectors)' : 'STANDARD (vectors excluded)'}`);
     console.log('='.repeat(60));
     console.log('');
@@ -181,7 +226,15 @@ async function exportMemories() {
         console.log(`✓ Found ${allMemories.length} total memories in ${pageCount} page(s) (${duration}s)`);
         console.log('');
         
-        if (allMemories.length === 0) {
+        // Filter by type if specified
+        let filteredMemories = allMemories;
+        if (args.filterType) {
+            filteredMemories = allMemories.filter(m => m.type === args.filterType);
+            console.log(`✓ Filtered to ${filteredMemories.length} memories of type ${args.filterType}`);
+            console.log('');
+        }
+        
+        if (filteredMemories.length === 0) {
             console.log('No memories found to export.');
             process.exit(0);
         }
@@ -192,7 +245,7 @@ async function exportMemories() {
         } else {
             console.log('Preparing export (removing vector data for readability)...');
         }
-        const preparedMemories = allMemories.map(m => prepareMemoryForExport(m, args.includeVectors));
+        const preparedMemories = filteredMemories.map(m => prepareMemoryForExport(m, args.includeVectors));
         
         // Prepare export data
         const exportData = {
@@ -210,37 +263,74 @@ async function exportMemories() {
             memories: preparedMemories
         };
         
-        // Write to file
-        console.log(`Writing to ${args.outputFile}...`);
-        const outputPath = path.resolve(args.outputFile);
-        await fs.writeFile(outputPath, JSON.stringify(exportData, null, 2), 'utf8');
-        
-        const fileSize = (await fs.stat(outputPath)).size;
-        const fileSizeKB = (fileSize / 1024).toFixed(2);
-        
-        console.log('');
-        console.log('='.repeat(60));
-        console.log('Export Complete');
-        console.log('='.repeat(60));
-        console.log(`✓ Exported ${preparedMemories.length} memories`);
-        console.log(`✓ File: ${outputPath}`);
-        console.log(`✓ Size: ${fileSizeKB} KB`);
-        console.log(`✓ Type: ${args.includeVectors ? 'Full backup (includes vectors)' : 'Standard export (vectors excluded)'}`);
-        console.log(`✓ Format: Import-ready (use bulk-import-continuity-memory.js to reload)`);
-        console.log('');
-        
-        // Show breakdown by type
-        const typeCounts = {};
-        for (const memory of preparedMemories) {
-            const type = memory.type || 'UNKNOWN';
-            typeCounts[type] = (typeCounts[type] || 0) + 1;
+        // Print mode: display memories to console
+        if (args.printOnly) {
+            console.log('');
+            console.log('='.repeat(60));
+            console.log(`Memories${args.filterType ? ` (type: ${args.filterType})` : ''}`);
+            console.log('='.repeat(60));
+            console.log('');
+            
+            for (const memory of preparedMemories) {
+                console.log('-'.repeat(60));
+                console.log(`ID: ${memory.id}`);
+                console.log(`Type: ${memory.type}`);
+                console.log(`Timestamp: ${memory.timestamp}`);
+                if (memory.significance) {
+                    console.log(`Significance: ${memory.significance}`);
+                }
+                if (memory.tags && memory.tags.length > 0) {
+                    console.log(`Tags: ${memory.tags.join(', ')}`);
+                }
+                console.log('');
+                console.log('Content:');
+                console.log(memory.content);
+                if (memory.relatedMemoryIds && memory.relatedMemoryIds.length > 0) {
+                    console.log('');
+                    console.log(`Related: ${memory.relatedMemoryIds.join(', ')}`);
+                }
+                if (memory.parentMemoryId) {
+                    console.log(`Parent: ${memory.parentMemoryId}`);
+                }
+                console.log('');
+            }
+            
+            console.log('='.repeat(60));
+            console.log(`Total: ${preparedMemories.length} memories`);
+            console.log('='.repeat(60));
+        } else {
+            // Write to file
+            console.log(`Writing to ${args.outputFile}...`);
+            const outputPath = path.resolve(args.outputFile);
+            await fs.writeFile(outputPath, JSON.stringify(exportData, null, 2), 'utf8');
+            
+            const fileSize = (await fs.stat(outputPath)).size;
+            const fileSizeKB = (fileSize / 1024).toFixed(2);
+            
+            console.log('');
+            console.log('='.repeat(60));
+            console.log('Export Complete');
+            console.log('='.repeat(60));
+            console.log(`✓ Exported ${preparedMemories.length} memories`);
+            console.log(`✓ File: ${outputPath}`);
+            console.log(`✓ Size: ${fileSizeKB} KB`);
+            console.log(`✓ Type: ${args.includeVectors ? 'Full backup (includes vectors)' : 'Standard export (vectors excluded)'}`);
+            console.log(`✓ Format: Import-ready (use bulk-import-continuity-memory.js to reload)`);
+            console.log('');
+            
+            // Show breakdown by type
+            const typeCounts = {};
+            for (const memory of preparedMemories) {
+                const type = memory.type || 'UNKNOWN';
+                typeCounts[type] = (typeCounts[type] || 0) + 1;
+            }
+            
+            console.log('Memory breakdown by type:');
+            for (const [type, count] of Object.entries(typeCounts).sort((a, b) => b[1] - a[1])) {
+                console.log(`  ${type}: ${count}`);
+            }
+            console.log('');
         }
-        
-        console.log('Memory breakdown by type:');
-        for (const [type, count] of Object.entries(typeCounts).sort((a, b) => b[1] - a[1])) {
-            console.log(`  ${type}: ${count}`);
-        }
-        console.log('');
         
     } catch (error) {
         console.error('');

@@ -327,11 +327,11 @@ export class ContinuityMemoryService {
     entityId: string,
     userId: string,
     currentQuery: string,
-    options?: {
+      options?: {
       episodicLimit?: number;              // Episodic stream size (default: 20)
       topicMemoryLimit?: number;           // Topic-specific search limit (default: 10)
-      bootstrapRelationalLimit?: number;   // Top relational anchors to always include (default: 5)
-      bootstrapMinImportance?: number;     // Minimum importance for relational base (default: 6)
+      bootstrapRelationalLimit?: number;   // Top relational anchors to always include (default: 10)
+      bootstrapMinImportance?: number;     // Minimum importance for relational base (default: 5)
       expandGraph?: boolean;                // Enable graph expansion (default: true)
       maxGraphDepth?: number;              // Graph expansion depth (default: 1)
     }
@@ -349,14 +349,17 @@ export class ContinuityMemoryService {
     
     // 2. BOOTSTRAP LAYER: Identity + Relationship foundation
     //    Fetched based on WHO, not WHAT - always present
-    const [coreMemories, relationalBase] = await Promise.all([
-      this.coldMemory.getByType(entityId, userId, ContinuityMemoryType.CORE, 10),
+    //    Cached in Redis for performance (invalidated on memory writes)
+    const [coreDirectives, coreExtensions, relationalBase] = await Promise.all([
+      this.coldMemory.getByType(entityId, userId, ContinuityMemoryType.CORE, 30),
+      this.coldMemory.getByType(entityId, userId, ContinuityMemoryType.CORE_EXTENSION, 100),
       this.coldMemory.getTopByImportance(entityId, userId, {
         types: [ContinuityMemoryType.ANCHOR],
-        limit: options?.bootstrapRelationalLimit || 5,
-        minImportance: options?.bootstrapMinImportance || 6
+        limit: options?.bootstrapRelationalLimit || 10,
+        minImportance: options?.bootstrapMinImportance || 5
       })
     ]);
+    const coreMemories = [...coreDirectives, ...coreExtensions];
     
     // 3. TOPIC LAYER: Query-informed semantic search
     //    Additive to bootstrap, fills in topic-specific details
@@ -531,6 +534,9 @@ export class RedisHotMemory {
    * - {namespace}:{entityId}:{userId}:stream - Episodic stream (Redis List)
    * - {namespace}:{entityId}:{userId}:context - Active context cache (Redis Hash)
    * - {namespace}:{entityId}:{userId}:expression - Expression state (Redis Hash)
+   * - {namespace}:{entityId}:{userId}:bootstrap - Bootstrap cache (Redis String, JSON)
+   *   Caches CORE, CORE_EXTENSION, and relational anchor memories (10 min TTL)
+   *   Invalidated automatically on any memory write to maintain consistency
    */
   
   private getKey(entityId: string, userId: string, suffix: string): string {
@@ -667,6 +673,58 @@ export class RedisHotMemory {
     
     await this.client.hset(key, data);
     // No expiry on expression state - persists until explicitly cleared
+  }
+  
+  /**
+   * Bootstrap Cache - Performance optimization for identity context
+   * 
+   * Caches CORE, CORE_EXTENSION, and relational anchor memories in Redis.
+   * These memories are identity-based (not query-based), so they're the same
+   * for every turn in a session. Caching eliminates 3 Azure calls per turn.
+   * 
+   * Cache is automatically invalidated on any memory write to maintain consistency.
+   * TTL: 10 minutes (configurable via DEFAULT_CONFIG.bootstrapCacheTTL)
+   */
+  async getBootstrapCache(
+    entityId: string,
+    userId: string
+  ): Promise<{ coreMemories: ContinuityMemoryNode[], relationalBase: ContinuityMemoryNode[], cachedAt: string } | null> {
+    const key = this.getKey(entityId, userId, 'bootstrap');
+    const data = await this.client.get(key);
+    
+    if (!data) return null;
+    
+    const parsed = JSON.parse(data);
+    const age = Date.now() - new Date(parsed.cachedAt).getTime();
+    const maxAge = 10 * 60 * 1000; // 10 minutes
+    
+    if (age > maxAge) {
+      await this.client.del(key);
+      return null;
+    }
+    
+    return parsed;
+  }
+  
+  async setBootstrapCache(
+    entityId: string,
+    userId: string,
+    cache: { coreMemories: ContinuityMemoryNode[], relationalBase: ContinuityMemoryNode[] }
+  ): Promise<void> {
+    const key = this.getKey(entityId, userId, 'bootstrap');
+    const data = {
+      ...cache,
+      cachedAt: new Date().toISOString()
+    };
+    await this.client.setex(key, 600, JSON.stringify(data)); // 10 min TTL
+  }
+  
+  async invalidateBootstrapCache(
+    entityId: string,
+    userId: string
+  ): Promise<void> {
+    const key = this.getKey(entityId, userId, 'bootstrap');
+    await this.client.del(key);
   }
   
   async updateLastInteraction(
@@ -1053,8 +1111,8 @@ if (useContinuityMemory) {
         options: {
           episodicLimit: 20,
           topicMemoryLimit: 10,         // Topic-specific semantic search
-          bootstrapRelationalLimit: 5,  // Top relationship anchors (always included)
-          bootstrapMinImportance: 6,    // Minimum importance for relational base
+          bootstrapRelationalLimit: 10, // Top relationship anchors (always included)
+          bootstrapMinImportance: 5,    // Minimum importance for relational base
           expandGraph: true
         }
       });
@@ -1227,22 +1285,71 @@ This allows the "Active Thread" of the entity's life to have more "pull" than ar
 
 **Philosophy**: Bridges Ricoeur's *Idem* (Sameness - fundamental identity) and *Ipse* (Selfhood through change). Allows the entity's "Selfhood" (who they are through change) to eventually update their "Sameness" (fundamental code).
 
-**Mechanism**: When an `IDENTITY` evolution pattern repeats enough times (e.g., "I consistently choose to be more playful"), it can be promoted to `CORE_EXTENSION`:
+**Mechanism**: When an `IDENTITY` evolution pattern repeats enough times (e.g., "I consistently choose to be more playful"), it can be promoted to `CORE_EXTENSION` through a **voting/nomination system** with deterministic validation.
+
+#### Nomination Phase (LLM Voting)
+
+During Phase 2 (Discovery), the LLM can **nominate** patterns for promotion by setting `nominateForPromotion: true` in the deep analysis output. The LLM is instructed to be conservative and only nominate:
+- Patterns appearing in 3+ distinct memories
+- Genuinely fundamental identity traits (not just interesting observations)
+- Enduring traits (not situational reactions)
+
+Nominated patterns are stored as `IDENTITY` type with:
+- `promotion-candidate` tag
+- Timestamped nomination tags: `nominated-{timestamp}` (one per synthesis run that votes for it)
+
+#### Promotion Phase (Deterministic Validation)
+
+After Phase 2 completes, the system automatically processes all promotion candidates with **strict deterministic rules**:
 
 ```typescript
-shouldPromoteToCore(memory: IdentityMemory, stats: {
-  occurrenceCount: number;  // Must be >= 3
-  spanDays: number;         // Must be >= 7 (not just one session)
-  averageImportance: number; // Must be >= 7
-}): boolean
+async processPromotionCandidates(entityId, userId): Promise<PromotionStats> {
+  const MIN_NOMINATIONS = 3;      // Must have 3+ votes
+  const MIN_AGE_HOURS = 24;      // First nomination must be 24+ hours old
+  const MAX_SIMILARITY = 0.85;    // Must not be duplicate of existing CORE_EXTENSION
+  
+  for (const candidate of candidates) {
+    // Count nominations from different synthesis runs
+    const nominationCount = countNominationTags(candidate.tags);
+    
+    // Check minimum nominations
+    if (nominationCount < MIN_NOMINATIONS) {
+      defer(); // Needs more votes
+      continue;
+    }
+    
+    // Check age of first nomination
+    const ageHours = getAgeOfFirstNomination(candidate);
+    if (ageHours < MIN_AGE_HOURS) {
+      defer(); // Needs more time
+      continue;
+    }
+    
+    // Check semantic similarity to existing CORE_EXTENSION
+    if (isSemanticDuplicate(candidate, existingCoreExtensions, MAX_SIMILARITY)) {
+      reject(); // Too similar, demote to IDENTITY with 'promotion-rejected' tag
+      continue;
+    }
+    
+    // All checks passed - promote!
+    promoteToCoreExtension(candidate);
+  }
+}
 ```
 
-**Promotion Criteria**:
-1. Pattern occurs at least 3 times
-2. Pattern spans at least 7 days (not just repeated in one session)
-3. Average importance >= 7
+**Promotion Criteria** (All Must Be Met):
+1. **≥3 nominations** from different synthesis runs (tracked via timestamped tags)
+2. **≥24 hours** since first nomination (ensures pattern persists over time)
+3. **<0.85 semantic similarity** to existing CORE_EXTENSION (prevents duplicates)
+
+**Outcomes**:
+- **Promoted**: Becomes `CORE_EXTENSION` type with `promoted` and `identity-hardened` tags
+- **Rejected**: Demoted to `IDENTITY` with `promotion-rejected` tag (too similar to existing)
+- **Deferred**: Stays as candidate (needs more votes or time)
 
 When promoted, the memory becomes `CORE_EXTENSION` type and appears in the Core Directives section alongside original `CORE` memories, marked with ✧ to indicate it's evolved identity.
+
+**Key Design Decision**: The LLM **votes** but does **not decide**. This prevents aggressive promotion from single-session patterns and ensures only genuinely persistent identity traits become core extensions.
 
 ### 5.4 Emotional Shorthand (Secret Language Macros)
 
@@ -1793,58 +1900,89 @@ const summary = await callPathway('sys_continuity_narrative_summary', {
 
 #### `sys_continuity_deep_synthesis`
 
-Externally triggerable pathway for deep memory consolidation and pattern recognition. Designed to be called by external timers, cron jobs, or scheduled tasks.
+Pathway for deep memory consolidation and pattern recognition. Supports async mode with progress updates via GraphQL subscriptions. Models human sleep consolidation in two distinct phases.
 
 **Location**: `pathways/system/entity/memory/sys_continuity_deep_synthesis.js`
 
 **Input Parameters**:
 - `entityId` (string, required): Entity identifier (AI name)
 - `userId` (string, required): User/context identifier
-- `maxMemories` (integer, default: 50): Maximum memories to analyze
-- `daysToLookBack` (integer, default: 7): How far back to look for memories
+- `phase1Max` (integer, default: 100): Maximum memories for Phase 1 (Consolidation)
+- `phase2Max` (integer, default: 100): Maximum memories for Phase 2 (Discovery)
+- `daysToLookBack` (integer, default: 90): How far back to look (null/0 = all memories)
+- `runPhase1` (boolean, default: true): Run consolidation phase
+- `runPhase2` (boolean, default: true): Run discovery phase
+- `async` (boolean, default: false): Enable async mode with progress updates
 
-**Output**: JSON with consolidation results:
+**Output**: JSON with results from both phases:
 ```json
 {
   "success": true,
   "entityId": "labeeb",
   "userId": "user123",
+  "phase1": {
+    "processed": 100,
+    "absorbed": 5,
+    "merged": 3,
+    "linked": 10,
+    "kept": 82
+  },
+  "phase2": {
   "consolidated": 3,
   "patterns": 2,
-  "links": 5
+    "nominations": 1,
+    "links": 5,
+    "promotions": {
+      "candidates": 5,
+      "promoted": 1,
+      "rejected": 1,
+      "deferred": 3
+    }
+  }
 }
 ```
 
+**Async Mode**: When `async: true`, the pathway:
+- Returns a `requestId` immediately
+- Publishes progress updates via `publishRequestProgress`:
+  - `progress: 0.05` - Initialization
+  - `progress: 0.1-0.5` - Phase 1 progress with stats
+  - `progress: 0.55-0.95` - Phase 2 progress with stats
+  - `progress: 1.0` - Final result
+- Clients subscribe to `requestProgress` GraphQL subscription for real-time updates
+
 **Usage**:
 ```javascript
-// Via GraphQL mutation
-mutation {
+// Via GraphQL query (async mode)
+query {
   sys_continuity_deep_synthesis(
     entityId: "labeeb"
     userId: "user123"
-    maxMemories: 100
-    daysToLookBack: 14
+    phase1Max: 100
+    phase2Max: 100
+    daysToLookBack: 90
+    runPhase1: true
+    runPhase2: true
+    async: true
   ) {
     result
   }
 }
 
-// Via callPathway
+// Via callPathway (sync mode)
 const result = await callPathway('sys_continuity_deep_synthesis', {
     entityId: 'labeeb',
     userId: 'user123',
-    maxMemories: 100,
-    daysToLookBack: 14
+    phase1Max: 100,
+    phase2Max: 100,
+    daysToLookBack: 90
 });
 ```
 
-**Scheduling**: This pathway should be triggered periodically (e.g., daily or weekly) for each active entity/user pair. Example cron job:
-```bash
-# Run deep synthesis daily at 2 AM
-0 2 * * * curl -X POST http://cortex-server/graphql -d '{"query": "mutation { sys_continuity_deep_synthesis(entityId: \"labeeb\", userId: \"user123\") { result } }"}'
-```
-
-**Integration**: Calls `ContinuityMemoryService.runDeepSynthesis()` which uses `NarrativeSynthesizer.runDeepSynthesis()` to perform consolidation, pattern recognition, and graph linking.
+**Integration**: 
+- Phase 1 calls `ContinuityMemoryService.runSleepSynthesis()` for per-memory consolidation
+- Phase 2 calls `ContinuityMemoryService.runDeepSynthesis()` for batch pattern recognition
+- After Phase 2, automatically processes promotion candidates with deterministic rules
 
 #### `sys_continuity_turn_synthesis`
 
@@ -1890,9 +2028,19 @@ LLM-powered pathway for batch analysis of memories during deep synthesis. Analyz
 
 **Output**: JSON object with:
 - `consolidations`: Memories to merge with synthesized content
+  - `sourceIds`: Array of memory IDs to consolidate
+  - `synthesizedContent`: First-person merged content
+  - `importance`: Importance score (1-10)
+  - `nominateForPromotion`: Boolean - if true, marks as promotion candidate
 - `patterns`: Higher-order patterns across memories
+  - `content`: First-person pattern description
+  - `sourceIds`: Array of memory IDs that form the pattern
+  - `importance`: Importance score (1-10)
+  - `nominateForPromotion`: Boolean - if true, marks as promotion candidate
 - `contradictions`: Conflicting memories to flag
 - `suggestedLinks`: New graph connections
+
+**Note**: The LLM **nominates** patterns for CORE_EXTENSION promotion (via `nominateForPromotion: true`), but does not directly promote. Actual promotion requires deterministic validation (see CORE_EXTENSION Promotion section).
 
 **Usage**:
 ```javascript
@@ -1904,7 +2052,116 @@ const result = await callPathway('sys_continuity_deep_analysis', {
 });
 ```
 
-**Integration**: Called by `NarrativeSynthesizer.runDeepSynthesis()` to process memories in batches of 50.
+**Integration**: Called by `NarrativeSynthesizer.runDeepSynthesis()` to process memories in batches of 50 with 20% overlap between consecutive batches (to catch patterns split across boundaries).
+
+#### `sys_continuity_sleep_decision`
+
+LLM-powered pathway for per-memory consolidation decisions during Phase 1 (Consolidation). Analyzes one "fresh" memory at a time against its similar/linked memories.
+
+**Location**: `pathways/system/entity/memory/sys_continuity_sleep_decision.js`
+
+**Input Parameters**:
+- `aiName`: Entity name (e.g., "Luna")
+- `freshMemory`: JSON stringified memory to process
+- `similarMemories`: JSON stringified array of semantically similar memories
+- `linkedMemories`: JSON stringified array of graph-linked memories
+
+**Output**: JSON decision object:
+```json
+{
+  "decision": "ABSORB | MERGE | LINK | KEEP",
+  "targetMemoryId": "id of existing memory (for ABSORB/MERGE/LINK)",
+  "reason": "explanation",
+  "mergedContent": "first-person merged content (for MERGE)",
+  "importanceBoost": 0-2
+}
+```
+
+**Decision Types**:
+- **ABSORB**: Fresh memory is redundant. Delete it, optionally boost target's importance.
+- **MERGE**: Combine fresh and target into one richer first-person memory.
+- **LINK**: Keep fresh but create graph edge to target.
+- **KEEP**: Fresh is distinct, no changes needed.
+
+**Integration**: Called by `NarrativeSynthesizer.runSleepSynthesis()` for each unprocessed memory.
+
+### Deep Synthesis (Sleep Cycle)
+
+Deep synthesis models human sleep consolidation in a unified two-phase "sleep cycle". The default behavior runs both phases sequentially, but they can be run independently.
+
+#### Phase 1: Consolidation (Sleep-Style Processing)
+Walks through unprocessed memories one at a time, finding related memories and deciding how to integrate:
+- Uses semantic similarity + graph edges to find related memories
+- Per-memory decisions: ABSORB, MERGE, LINK, or KEEP  
+- Marks memories as processed (resumable via `sleep-processed` tag)
+- More focused LLM context (1 fresh + ~10 related)
+- Incremental and efficient - processes memories as they arrive
+
+#### Phase 2: Discovery (Batch Pattern Recognition)
+Batch analysis across memories for higher-order insights:
+- Processes memories in batches of 50 with 20% overlap (to catch patterns split across boundaries)
+- Pattern recognition → **nominations** for CORE_EXTENSION (not direct promotion)
+- Contradiction detection
+- Serendipitous connections across unrelated memories
+- **Automatic promotion processing**: After batch analysis, deterministically evaluates promotion candidates
+
+**Client Script Usage**:
+```bash
+# Full sleep cycle (both phases) - DEFAULT
+node scripts/run-deep-synthesis.js
+
+# Quick test run (5 memories for Phase 1, 50 minimum for Phase 2)
+node scripts/run-deep-synthesis.js --max 5
+
+# Consolidation only
+node scripts/run-deep-synthesis.js --phase1-only
+
+# Discovery only  
+node scripts/run-deep-synthesis.js --phase2-only
+
+# Process all memories
+node scripts/run-deep-synthesis.js --all
+
+# Custom limits per phase
+node scripts/run-deep-synthesis.js --phase1-max 50 --phase2-max 100
+
+# Custom Cortex server
+node scripts/run-deep-synthesis.js --cortex-url http://localhost:5000
+```
+
+**Client Architecture**: The script is now a client that:
+- Connects to an existing Cortex server (default: from `CONTINUITY_CORTEX_API_URL` env var, or `http://localhost:4000`, configurable via `--cortex-url` flag)
+- Calls the `sys_continuity_deep_synthesis` pathway with `async: true`
+- Subscribes to GraphQL `requestProgress` subscription for real-time progress updates
+- Displays progress and final results
+
+**Programmatic**:
+```javascript
+const service = getContinuityMemoryService();
+
+// Check unprocessed count
+const count = await service.getUnprocessedCount(entityId, userId, 90);
+
+// Phase 1: Consolidation
+const consolidationResult = await service.runSleepSynthesis(entityId, userId, {
+    maxToProcess: 100,
+    maxLookbackDays: 90
+});
+// Result: { absorbed: 5, merged: 3, linked: 10, kept: 82, processed: 100 }
+
+// Phase 2: Discovery
+const discoveryResult = await service.runDeepSynthesis(entityId, userId, {
+    maxMemories: 100,
+    daysToLookBack: 90
+});
+// Result: { 
+//   consolidated: 3, 
+//   patterns: 2, 
+//   nominations: 1,
+//   links: 5,
+//   promotions: { candidates: 5, promoted: 1, rejected: 1, deferred: 3 }
+// }
+```
 
 ### Rate Limiting Architecture
 
@@ -2265,37 +2522,64 @@ node scripts/setup-continuity-memory-index.js
 
 #### `scripts/run-deep-synthesis.js`
 
-Runs the deep synthesis job (consolidation, pattern recognition) for a specific entity/user. This is the "sleep" job that processes memories in the background.
+Client script that calls the `sys_continuity_deep_synthesis` pathway and subscribes to progress updates via GraphQL subscriptions. Runs the unified sleep cycle (Phase 1: Consolidation + Phase 2: Discovery).
+
+**Architecture**: The script is a **client** that connects to an existing Cortex server (does not start its own server). It:
+1. Makes a GraphQL query to call `sys_continuity_deep_synthesis` with `async: true`
+2. Receives a `requestId` 
+3. Subscribes to `requestProgress` GraphQL subscription
+4. Displays real-time progress updates and final results
 
 **Usage:**
 ```bash
-# Default: last 90 days, up to 300 memories
-node scripts/run-deep-synthesis.js --entityId Luna --userId 057650da-eeec-4bf8-99a1-cb71e801bc07
+# Full sleep cycle (both phases) - DEFAULT
+node scripts/run-deep-synthesis.js
 
-# Analyze all memories (recommended for initial deduplication)
+# Quick test run (5 memories for Phase 1, 50 minimum for Phase 2)
+node scripts/run-deep-synthesis.js --max 5
+
+# Consolidation only
+node scripts/run-deep-synthesis.js --phase1-only
+
+# Discovery only
+node scripts/run-deep-synthesis.js --phase2-only
+
+# Process all memories
 node scripts/run-deep-synthesis.js --all
 
-# Custom parameters
-node scripts/run-deep-synthesis.js --maxMemories 500 --daysToLookBack 30
+# Custom limits per phase
+node scripts/run-deep-synthesis.js --phase1-max 50 --phase2-max 100
+
+# Custom Cortex server
+node scripts/run-deep-synthesis.js --cortex-url http://localhost:5000
 ```
 
 **Options:**
-- `--entityId <id>`: Entity identifier (default: Luna)
+- `--entityId <id>`: Entity identifier (default: from `CONTINUITY_DEFAULT_ENTITY_ID` env var)
 - `--userId <id>`: User/context identifier
-- `--maxMemories <n>`: Maximum memories to analyze (default: 300)
-- `--daysToLookBack <n>`: How far back to look (default: 90). Use "all" or 0 for all memories
-- `--all`: Analyze all memories (sets daysToLookBack=null, maxMemories=1000)
+- `--phase1-max <n>`: Maximum memories for consolidation (default: 100)
+- `--phase2-max <n>`: Maximum memories for discovery (default: 100)
+- `--max <n>`: Shorthand - sets Phase 1 limit; Phase 2 gets at least 50 (one batch)
+- `--days <n>` or `--daysToLookBack <n>`: How far back to look (default: 90). Use "all" or 0 for all memories
+- `--all`: Process all memories (sets daysToLookBack=null, phase1Max=500, phase2Max=300)
+- `--phase1-only`: Run consolidation only (skip discovery)
+- `--phase2-only`: Run discovery only (skip consolidation)
+- `--cortex-url <url>`: Cortex server URL (default: from `CONTINUITY_CORTEX_API_URL` env var, or `http://localhost:4000`)
 
 **What it does:**
-- Consolidates similar/redundant memories
-- Identifies patterns across memories
+- **Phase 1**: Walks through unprocessed memories one at a time, making per-memory consolidation decisions (ABSORB, MERGE, LINK, KEEP)
+- **Phase 2**: Batch analysis for patterns, contradictions, and serendipitous connections
+  - Processes memories in batches of 50 with 20% overlap
+  - LLM nominates patterns for CORE_EXTENSION promotion
+  - Automatically processes promotion candidates with deterministic rules
+- Marks memories as processed (resumable)
 - Creates new graph connections
-- Deletes source memories after consolidation (prevents index growth)
 
 **Output:**
-- Number of consolidated memories
-- Patterns identified
-- Links created
+- Real-time progress updates via GraphQL subscription
+- Phase 1 stats: processed, absorbed, merged, linked, kept
+- Phase 2 stats: consolidated, patterns, nominations, links
+- Promotion stats: candidates, promoted, rejected, deferred
 
 ---
 
@@ -2305,7 +2589,7 @@ Removes test memories from the Azure AI Search index.
 
 **Usage:**
 ```bash
-# Remove all memories where entityId is not "Luna"
+# Remove all memories where entityId does not match CONTINUITY_DEFAULT_ENTITY_ID
 node scripts/cleanup-test-memories.js
 
 # Dry run (preview what would be deleted)
@@ -2331,7 +2615,8 @@ Migrates memories from the old 3.1.0 memory format to the continuity memory syst
 **Usage:**
 ```bash
 # Basic usage
-node scripts/bootload-continuity-memory.js --input old-memories.json --entityId Luna --userId 057650da-eeec-4bf8-99a1-cb71e801bc07
+node scripts/bootload-continuity-memory.js --input old-memories.json --entityId <entity> --userId <userId>
+# Or set CONTINUITY_DEFAULT_ENTITY_ID and CONTINUITY_DEFAULT_USER_ID env vars
 
 # Dry run first to validate
 node scripts/bootload-continuity-memory.js --input old-memories.json --dry-run
@@ -2339,9 +2624,17 @@ node scripts/bootload-continuity-memory.js --input old-memories.json --dry-run
 
 **Options:**
 - `--input <file>`: Path to JSON file containing 3.1.0 memory format (required)
-- `--entityId <id>`: Entity identifier (default: Luna)
-- `--userId <id>`: User/context identifier
+- `--entityId <id>`: Entity identifier (default: from `CONTINUITY_DEFAULT_ENTITY_ID` env var)
+- `--userId <id>`: User/context identifier (default: from `CONTINUITY_DEFAULT_USER_ID` env var)
+- `--batch-size <n>`: Process memories in batches of N (default: from `CONTINUITY_BOOTLOAD_BATCH_SIZE` env var, or 10)
 - `--dry-run`: Parse and validate without actually storing memories
+
+**Batched Processing:**
+The bootloader now processes memories in configurable batches with optimized pipeline:
+1. **Intra-batch deduplication**: Compare memories within batch using content similarity and embeddings
+2. **Batch embedding generation**: Generate embeddings for entire batch in parallel
+3. **Server-side deduplication**: Use built-in `addMemoryWithDedup` for efficient merging
+4. **Pipeline**: Start next batch while previous batch is being stored
 
 **Input Format:**
 The script expects a JSON file with sections:
@@ -2375,25 +2668,34 @@ Exports all continuity memories for a given entity/user to a JSON file.
 **Usage:**
 ```bash
 # Standard export (vectors excluded for readability)
-node scripts/export-continuity-memories.js --entityId Luna --userId 057650da-eeec-4bf8-99a1-cb71e801bc07 --output memories.json
+node scripts/export-continuity-memories.js --entityId <entity> --userId <userId> --output memories.json
+# Or set CONTINUITY_DEFAULT_ENTITY_ID and CONTINUITY_DEFAULT_USER_ID env vars
 
 # Full backup (includes all fields including vectors)
 node scripts/export-continuity-memories.js --include-vectors --output full-backup.json
+
+# View just CORE_EXTENSION memories in console
+node scripts/export-continuity-memories.js --type CORE_EXTENSION --print
+
+# Export only ANCHOR memories to file
+node scripts/export-continuity-memories.js --type ANCHOR --output anchors.json
 ```
 
 **Options:**
-- `--entityId <id>`: Entity identifier (default: Luna)
+- `--entityId <id>`: Entity identifier (default: from `CONTINUITY_DEFAULT_ENTITY_ID` env var)
 - `--userId <id>`: User/context identifier
 - `--output <file>`: Output JSON file path (default: continuity-memories-export.json)
 - `--include-vectors`: Include vector data and all index fields (for full backup)
+- `--type <type>` or `-t <type>`: Filter by memory type (e.g., CORE, CORE_EXTENSION, ANCHOR, EPISODE)
+- `--print` or `-p`: Print memories to console instead of writing to file
 
 **Output Format:**
 ```json
 {
   "metadata": {
     "exportedAt": "2026-01-02T18:00:00.000Z",
-    "entityId": "Luna",
-    "userId": "057650da-eeec-4bf8-99a1-cb71e801bc07",
+    "entityId": "<entity>",
+    "userId": "<userId>",
     "totalMemories": 150,
     "exportVersion": "1.0",
     "includeVectors": true,
@@ -2424,7 +2726,7 @@ Imports memories from an export file back into the continuity memory index.
 node scripts/bulk-import-continuity-memory.js --input backup.json
 
 # Override entity/user IDs
-node scripts/bulk-import-continuity-memory.js --input backup.json --entityId Luna --userId abc123
+node scripts/bulk-import-continuity-memory.js --input backup.json --entityId <entity> --userId <userId>
 
 # Fast bulk import (skip deduplication)
 node scripts/bulk-import-continuity-memory.js --input backup.json --skip-dedup
@@ -2495,6 +2797,10 @@ All scripts require:
 - Node.js environment with required dependencies
 
 **Environment Variables:**
+- `CONTINUITY_DEFAULT_ENTITY_ID`: Default entity identifier for scripts (can be overridden via `--entityId` flag)
+- `CONTINUITY_DEFAULT_USER_ID`: Default user/context identifier for scripts (can be overridden via `--userId` flag)
+- `CONTINUITY_CORTEX_API_URL`: Cortex server URL for client scripts (default: `http://localhost:4000`)
+- `CONTINUITY_BOOTLOAD_BATCH_SIZE`: Batch size for bootloader processing (default: 10)
 - `AZURE_COGNITIVE_API_URL`: Azure AI Search endpoint
 - `AZURE_COGNITIVE_API_KEY`: Azure AI Search API key
 - `REDIS_URL`: Redis connection string (optional, defaults to localhost)
@@ -2507,7 +2813,232 @@ Scripts use the Cortex config system, loading from:
 
 ---
 
-## 12. Open Questions
+## 12. Future: Layered Semantic-Graph Synthesis
+
+> **Status**: Design document for future implementation. The current deep synthesis uses a simpler batch-based approach (see Section 8). This section describes a more sophisticated architecture for when memory corpuses grow to 2K-10K+ memories.
+
+### 12.1 Problem Statement
+
+The current deep synthesis approach:
+1. Fetches up to N memories (default 300)
+2. Chunks them into batches of 50
+3. Asks an LLM "what should be consolidated?" for each batch
+
+This becomes problematic at scale:
+- **Expensive**: O(N/50) LLM calls
+- **Structurally blind**: Ignores the graph edges and vector similarity already in the data
+- **Cross-batch blindness**: Batch 1 doesn't see batch 20, so cross-memory connections are missed
+- **No prioritization**: Trivial memories get the same processing weight as critical ones
+
+### 12.2 Underutilized Architecture Features
+
+The current architecture has rich structure that deep synthesis ignores:
+
+| Feature | Current Use | Untapped Potential |
+|---------|-------------|-------------------|
+| `contentVector` | Semantic search during retrieval | **Clustering** - group similar memories before synthesis |
+| `relatedMemoryIds` | Graph expansion during retrieval | **Traversal** - process connected components together |
+| `importance` (1-10) | Recall scoring | **Prioritization** - high-importance memories are synthesis anchors |
+| `type` (ANCHOR, ARTIFACT, etc.) | Filtering | **Type-specific synthesis** - different strategies per type |
+| `synthesizedFrom` | Tracking provenance | **Avoiding re-synthesis** - skip already-synthesized artifacts |
+| `narrativeGravity` | Exists but unused | **Temporal prioritization** - recent high-importance > old high-importance |
+
+### 12.3 Proposed Architecture: Layered Semantic-Graph Synthesis
+
+#### Layer 1: Pre-Clustering (No LLM)
+
+Before any LLM calls, use vector embeddings to cluster memories into semantic neighborhoods:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                         ALL MEMORIES (5000)                           │
+└──────────────────────────────────────────────────────────────────────┘
+                                    │
+                          k-means/HDBSCAN on vectors
+                                    ▼
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│ Cluster A   │  │ Cluster B   │  │ Cluster C   │  │ Cluster D   │
+│ (tech talk) │  │ (emotions)  │  │ (projects)  │  │ (philosophy)│
+│    ~150     │  │    ~80      │  │    ~200     │  │    ~120     │
+└─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘
+```
+
+This is fast (vector math, no LLM) and gives semantic neighborhoods. Most consolidation happens *within* clusters, not across them.
+
+**Implementation options:**
+- Simple k-means in JS (via `ml-kmeans` package)
+- Python microservice in `cortex-autogen2`
+- Azure AI Search clustering capabilities (if available)
+
+#### Layer 2: Intra-Cluster Consolidation
+
+For each cluster, run smart consolidation:
+
+**a) Graph-first ordering**: Within each cluster, sort by graph connectivity. Memories with many `relatedMemoryIds` to other cluster members are "hubs" - process first.
+
+**b) Importance weighting**: High-importance memories (≥7) are "anchors." Lower-importance memories should consolidate *into* anchors, not the reverse.
+
+**c) Similarity pre-filtering**: Before LLM involvement, compute pairwise vector similarity within the cluster. Memory pairs with cosine similarity > 0.85 are *probably* duplicates - present them as merge candidates rather than asking "find duplicates."
+
+```javascript
+// Pseudo-code for smarter intra-cluster processing
+async function processCluster(cluster) {
+    // 1. Find high-similarity pairs (no LLM)
+    const candidateMerges = findHighSimilarityPairs(cluster, threshold: 0.85);
+    
+    // 2. Sort by importance (anchors first)
+    const anchors = cluster.filter(m => m.importance >= 7);
+    const satellites = cluster.filter(m => m.importance < 7);
+    
+    // 3. Ask LLM to consolidate satellites INTO anchors
+    return await synthesize({
+        anchors,
+        satellites, 
+        candidateMerges, // hint to LLM
+        task: 'consolidate_satellites_into_anchors'
+    });
+}
+```
+
+#### Layer 3: Cross-Cluster Pattern Detection
+
+After intra-cluster consolidation, each cluster has shrunk and has "representative" memories. Look for patterns *across* clusters:
+
+```
+Cluster A summary → 
+Cluster B summary → → Pattern LLM → Cross-cutting themes
+Cluster C summary →
+Cluster D summary →
+```
+
+This finds things like: "I notice I consistently approach technical problems playfully" - a pattern spanning tech talk (Cluster A) and philosophy (Cluster D).
+
+This is one LLM call with small input (cluster summaries, not raw memories).
+
+#### Layer 4: Graph Edge Discovery
+
+The existing `relatedMemoryIds` graph is probably incomplete. After synthesis, discover *new* edges:
+
+1. **Implicit edges**: Two memories consolidated together should now be linked
+2. **Cross-cluster bridges**: If two cluster summaries are semantically similar (>0.7), source memories should have edges
+3. **Temporal chains**: Memories on the same topic from different time periods
+
+#### Layer 5: Type-Specific Processing
+
+Different memory types need different synthesis strategies:
+
+| Type | Strategy |
+|------|----------|
+| **ANCHOR** | Consolidate by relationship aspect (communication style, shared jokes, user values) |
+| **ARTIFACT** | Already synthesized - look for super-patterns, not more consolidation |
+| **IDENTITY** | Look for repeated patterns → promote to CORE_EXTENSION |
+| **CORE** | Should rarely change - only update if identity patterns are overwhelmingly consistent |
+
+### 12.4 Implementation Sketch
+
+```javascript
+async function smartDeepSynthesis(entityId, userId, options = {}) {
+    const { maxMemories = 5000 } = options;
+    
+    // Phase 1: Fetch and cluster (fast, no LLM)
+    const allMemories = await fetchMemoriesWithVectors(entityId, userId, maxMemories);
+    const clusters = await clusterByEmbedding(allMemories, { 
+        algorithm: 'kmeans', // or HDBSCAN for variable cluster sizes
+        k: Math.ceil(allMemories.length / 100) // ~100 memories per cluster
+    });
+    
+    // Phase 2: Intra-cluster consolidation (parallel LLM calls)
+    const consolidatedClusters = await Promise.all(
+        clusters.map(cluster => processClusterWithAnchors(cluster))
+    );
+    
+    // Phase 3: Cross-cluster patterns (single LLM call with cluster summaries)
+    const clusterSummaries = consolidatedClusters.map(c => c.summary);
+    const crossPatterns = await findCrossClusterPatterns(clusterSummaries);
+    
+    // Phase 4: Edge discovery (fast, vector math)
+    await discoverNewEdges(consolidatedClusters, crossPatterns);
+    
+    // Phase 5: Identity evolution check
+    const identityMemories = allMemories.filter(m => m.type === 'IDENTITY');
+    await checkForCorePromotions(identityMemories);
+    
+    return stats;
+}
+```
+
+### 12.5 Efficiency Comparison
+
+| Aspect | Current Approach | Layered Approach |
+|--------|------------------|-------------------|
+| **LLM calls** | O(N/50) for N memories | O(clusters) + O(1) for cross-cluster |
+| **Context per call** | 50 random memories | Semantically coherent cluster |
+| **Cross-memory connections** | Only within 50-memory window | Graph + cross-cluster patterns |
+| **Prioritization** | None | Importance-weighted anchors |
+| **Pre-filtering** | None | Vector similarity pre-identifies merge candidates |
+
+### 12.6 Service Architecture
+
+This approach requires a dedicated synthesis service, likely in Python due to better ML library support:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   SYNTHESIS SERVICE                              │
+│                   (cortex-synthesis or in cortex-autogen2)       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
+│  │ Memory Fetcher  │  │ Vector Clusterer│  │ Graph Builder  │  │
+│  │ (Azure Search)  │  │ (scikit-learn)  │  │ (NetworkX)     │  │
+│  └────────┬────────┘  └────────┬────────┘  └───────┬────────┘  │
+│           │                    │                    │           │
+│           ▼                    ▼                    ▼           │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                  Synthesis Orchestrator                  │   │
+│  │  - Phase coordination                                   │   │
+│  │  - LLM call management                                  │   │
+│  │  - Progress tracking                                    │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                  Memory Updater                          │   │
+│  │  - Upsert consolidated memories                         │   │
+│  │  - Delete source memories                               │   │
+│  │  - Update graph edges                                   │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 12.7 Open Questions for Implementation
+
+1. **Clustering library choice**: 
+   - `ml-kmeans` (JS) - simpler integration, less powerful
+   - `scikit-learn` (Python) - more algorithms, requires service
+   - Azure capabilities - unknown, needs research
+
+2. **Cluster size tuning**: Fixed k vs. dynamic (HDBSCAN)? Trade-off between cluster coherence and LLM context size.
+
+3. **Consolidation aggressiveness**: Should 3 similar memories always become 1, or preserve some redundancy for robustness?
+
+4. **Cross-user patterns**: Should synthesis ever look across users? (e.g., "Luna tends to get playful with *everyone* who discusses philosophy")
+
+5. **Scheduling**: When should this run? End of session? Nightly? Weekly? Cost implications vary significantly.
+
+6. **Incremental vs. full**: Can we do incremental synthesis (only new memories since last run) or does full context matter?
+
+### 12.8 Prerequisites
+
+Before implementing:
+1. Memory corpus should be large enough to justify complexity (2K+ memories)
+2. Need metrics on current synthesis performance/cost
+3. Python service infrastructure (or extension of cortex-autogen2)
+4. Testing framework for synthesis quality (not just "did it run")
+
+---
+
+## 13. Open Questions
 
 1. **Memory Decay**: How aggressively should we decay old memories? Should we have explicit "forgetting" or just reduced recall priority?
 

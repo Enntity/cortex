@@ -513,8 +513,8 @@ class PathwayResolver {
                                 options: {
                                     episodicLimit: 20,
                                     topicMemoryLimit: 10,         // Topic-specific semantic search
-                                    bootstrapRelationalLimit: 5,  // Top relationship anchors (always included)
-                                    bootstrapMinImportance: 6,    // Minimum importance for relational base
+                                    bootstrapRelationalLimit: 10, // Top relationship anchors (always included)
+                                    bootstrapMinImportance: 5,    // Minimum importance for relational base
                                     expandGraph: true
                                 }
                             });
