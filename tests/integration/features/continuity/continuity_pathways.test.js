@@ -103,7 +103,7 @@ test.after.always('cleanup', async (t) => {
 
 // ==================== PATHWAY TESTS ====================
 
-test.serial('Pathway: continuity_memory_upsert via callPathway', async (t) => {
+test.serial('Pathway: sys_continuity_memory_upsert via callPathway', async (t) => {
     const testMemory = {
         type: ContinuityMemoryType.ANCHOR,
         content: 'Test memory for pathway upsert',
@@ -129,7 +129,7 @@ test.serial('Pathway: continuity_memory_upsert via callPathway', async (t) => {
     await service.deleteMemory(id);
 });
 
-test.serial('Pathway: continuity_memory_delete via callPathway', async (t) => {
+test.serial('Pathway: sys_continuity_memory_delete via callPathway', async (t) => {
     // Create a memory to delete
     const testMemory = {
         type: ContinuityMemoryType.ARTIFACT,
@@ -162,7 +162,7 @@ test.serial('Pathway: continuity_memory_delete via callPathway', async (t) => {
     t.pass('Delete operation completed');
 });
 
-test.serial('Pathway: continuity_narrative_summary generates LLM summary', async (t) => {
+test.serial('Pathway: sys_continuity_narrative_summary generates LLM summary', async (t) => {
     // Get some memories
     const memories = await service.searchMemory({
         entityId: TEST_ENTITY_ID,
@@ -197,9 +197,9 @@ test.serial('Pathway: continuity_narrative_summary generates LLM summary', async
     }
 });
 
-test.serial('Pathway: continuity_deep_synthesis runs consolidation', async (t) => {
+test.serial('Pathway: sys_continuity_deep_synthesis runs consolidation', async (t) => {
     // Call the deep synthesis pathway
-    const result = await callPathway('continuity_deep_synthesis', {
+    const result = await callPathway('sys_continuity_deep_synthesis', {
         entityId: TEST_ENTITY_ID,
         userId: TEST_USER_ID,
         maxMemories: 10,
@@ -221,8 +221,8 @@ test.serial('Pathway: continuity_deep_synthesis runs consolidation', async (t) =
     t.log(`Deep synthesis results: ${parsed.consolidated} consolidated, ${parsed.patterns} patterns, ${parsed.links} links`);
 });
 
-test.serial('Pathway: continuity_deep_synthesis handles missing entityId', async (t) => {
-    const result = await callPathway('continuity_deep_synthesis', {
+test.serial('Pathway: sys_continuity_deep_synthesis handles missing entityId', async (t) => {
+    const result = await callPathway('sys_continuity_deep_synthesis', {
         userId: TEST_USER_ID
         // Missing entityId
     });
@@ -232,8 +232,8 @@ test.serial('Pathway: continuity_deep_synthesis handles missing entityId', async
     t.truthy(parsed.error, 'Should have error message');
 });
 
-test.serial('Pathway: continuity_deep_synthesis handles missing userId', async (t) => {
-    const result = await callPathway('continuity_deep_synthesis', {
+test.serial('Pathway: sys_continuity_deep_synthesis handles missing userId', async (t) => {
+    const result = await callPathway('sys_continuity_deep_synthesis', {
         entityId: TEST_ENTITY_ID
         // Missing userId
     });
@@ -243,8 +243,8 @@ test.serial('Pathway: continuity_deep_synthesis handles missing userId', async (
     t.truthy(parsed.error, 'Should have error message');
 });
 
-test.serial('Pathway: continuity_deep_synthesis with custom options', async (t) => {
-    const result = await callPathway('continuity_deep_synthesis', {
+test.serial('Pathway: sys_continuity_deep_synthesis with custom options', async (t) => {
+    const result = await callPathway('sys_continuity_deep_synthesis', {
         entityId: TEST_ENTITY_ID,
         userId: TEST_USER_ID,
         maxMemories: 5,

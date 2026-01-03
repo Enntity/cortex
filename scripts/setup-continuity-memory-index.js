@@ -28,10 +28,11 @@ const API_VERSION = '2023-11-01';
 const INDEX_NAME = 'index-continuity-memory';
 
 // Vector dimensions for embeddings
-// Using oai-text-embedding-3-large at 1536 dimensions (best quality, same size as ada-002)
-// - oai-text-embedding-3-large: 3072 native, but can output 1536 with 'dimensions' param
-// - oai-text-embedding-3-small: 1536 dimensions
+// Using oai-text-embedding-3-small at 1536 dimensions (native size, cost-optimized)
+// - oai-text-embedding-3-small: 1536 dimensions native, $0.02/1M tokens, 62.3% MTEB score
+// - oai-text-embedding-3-large: 3072 native (can output 1536), $0.13/1M tokens, 64.6% MTEB score
 // - text-embedding-ada-002: 1536 dimensions (legacy)
+// Small is chosen for 6.5x cost savings with only 2.3% performance difference, and we use 1536 dims anyway.
 
 // Parse command line arguments
 const args = process.argv.slice(2);

@@ -8,7 +8,7 @@
  * Output: Narrative summary text
  */
 
-import { Prompt } from '../../server/prompt.js';
+import { Prompt } from '../../../../server/prompt.js';
 
 export default {
     prompt: [], // Empty - we build the prompt dynamically in executePathway

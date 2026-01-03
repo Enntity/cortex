@@ -106,7 +106,7 @@ async function runDeepSynthesis() {
         console.log('Starting deep synthesis...');
         const startTime = Date.now();
         
-        const result = await callPathway('continuity_deep_synthesis', {
+        const result = await callPathway('sys_continuity_deep_synthesis', {
             entityId: args.entityId,
             userId: args.userId,
             maxMemories: args.maxMemories,

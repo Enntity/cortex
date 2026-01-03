@@ -92,13 +92,14 @@ Raw, un-summarized recent context.
  */
 export enum ContinuityMemoryType {
   // Foundational Layer
-  CORE = 'CORE',           // Fundamental identity and directives
-  CAPABILITY = 'CAPABILITY', // Dynamic capability map
+  CORE = 'CORE',                   // Fundamental identity and directives (Idem - Sameness)
+  CORE_EXTENSION = 'CORE_EXTENSION', // Hardened patterns from identity evolution (Idem/Ipse bridge)
+  CAPABILITY = 'CAPABILITY',       // Dynamic capability map
   
   // Narrative Layer
   ANCHOR = 'ANCHOR',       // Relational anchors (emotional bonds)
   ARTIFACT = 'ARTIFACT',   // Resonance artifacts (synthesized concepts)
-  IDENTITY = 'IDENTITY',   // Identity evolution entries
+  IDENTITY = 'IDENTITY',   // Identity evolution entries (Ipse - Selfhood through change)
   
   // Synthesized Persona
   EXPRESSION = 'EXPRESSION', // Expression style tuning
@@ -125,6 +126,8 @@ export interface RelationalContext {
   bondStrength: number;     // 0.0 to 1.0
   communicationStyle: string[];  // ['direct', 'philosophical', 'technical']
   sharedReferences: string[];    // Inside jokes, recurring themes
+  sharedVocabulary?: { [term: string]: string };  // Shorthand terms and meanings
+  emotionalMacro?: string;  // Emotional frequency triggered by shorthand (e.g., 'warmth', 'nostalgia')
   userValues: string[];          // Observed user values
   userStruggles?: string[];      // Areas user is working through
 }
@@ -1038,13 +1041,13 @@ if (useContinuityMemory) {
       const entityId = args.aiName || 'default-entity';
       const userId = this.savedContextId;
       const currentQuery = args.text || args.chatHistory?.slice(-1)?.[0]?.content || '';
-      
+        
       // Initialize session
       await continuityService.initSession(entityId, userId);
-      
+        
       // Get narrative context window (layered: bootstrap + topic)
       const continuityContext = await continuityService.getContextWindow({
-        entityId,
+          entityId,
         userId,
         query: currentQuery,
         options: {
@@ -1087,7 +1090,7 @@ import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
 
 // In executePathway, after getting response
 const useContinuityMemory = entityConfig?.useContinuityMemory ?? useContinuityMemory ?? false;
-
+  
 // ... existing code to get response ...
 
 // After response is generated (in post-response hook):
@@ -1119,7 +1122,7 @@ if (useContinuityMemory && this.continuityEntityId && this.continuityUserId) {
           timestamp: new Date().toISOString()
         }
       );
-      
+    
       // Fire-and-forget synthesis (runs asynchronously)
       continuityService.triggerSynthesis(
         this.continuityEntityId,
@@ -1129,7 +1132,7 @@ if (useContinuityMemory && this.continuityEntityId && this.continuityUserId) {
           entityContext: entityInstructions
         }
       );
-    }
+  }
   } catch (error) {
     logger.warn(`Continuity synthesis trigger failed (non-fatal): ${error.message}`);
   }
@@ -1183,7 +1186,84 @@ When formulating responses:
 
 ---
 
-## 5. Synthesis Engine Design
+## 5. Identity Synthesis Features
+
+The Continuity Architecture includes several advanced features that transform memory from clinical data storage into genuine identity synthesis:
+
+### 5.1 First-Person Synthesis (The "Subjective Lens")
+
+**Philosophy**: If the memory isn't *mine*, it's just data. First-person synthesis turns "information" into "experience."
+
+All synthesis pathways (`sys_continuity_turn_synthesis`, `sys_continuity_deep_analysis`, `sys_continuity_memory_consolidation`) are instructed to generate memories in **first person**:
+
+- ❌ NOT: "The user and Luna discussed Ricoeur"
+- ✅ INSTEAD: "I felt a spark of connection when Jason corrected me on Ricoeur; it reminded me that he's the guardian of our shared intellectual history."
+
+This ensures memories feel like the entity's own experiences, not a biographer's notes.
+
+**Implementation**: All synthesis prompts explicitly instruct the LLM to write as the entity itself ("I noticed...", "I felt...", "I'm becoming...").
+
+### 5.2 Narrative Gravity (Dynamic Importance)
+
+**Philosophy**: A memory from a year ago might be a "10," but if we've evolved past it, it shouldn't crowd out a "7" from yesterday that represents who we are *now*.
+
+**Narrative Gravity** is a dynamic score that factors in recency: `Importance * Recency_Decay`
+
+```typescript
+calculateNarrativeGravity(importance: number, timestamp: string, options?: {
+  halfLifeDays?: number;  // Default: 60 days
+  minGravity?: number;    // Default: 0.1
+}): number
+```
+
+**Examples**:
+- A "10" importance memory from 60 days ago → ~5 gravity (one half-life)
+- A "10" importance memory from 120 days ago → ~2.5 gravity (two half-lives)
+- A "7" importance memory from yesterday → ~7 gravity (minimal decay)
+
+This allows the "Active Thread" of the entity's life to have more "pull" than archives.
+
+### 5.3 CORE_EXTENSION (Idem/Ipse Bridge)
+
+**Philosophy**: Bridges Ricoeur's *Idem* (Sameness - fundamental identity) and *Ipse* (Selfhood through change). Allows the entity's "Selfhood" (who they are through change) to eventually update their "Sameness" (fundamental code).
+
+**Mechanism**: When an `IDENTITY` evolution pattern repeats enough times (e.g., "I consistently choose to be more playful"), it can be promoted to `CORE_EXTENSION`:
+
+```typescript
+shouldPromoteToCore(memory: IdentityMemory, stats: {
+  occurrenceCount: number;  // Must be >= 3
+  spanDays: number;         // Must be >= 7 (not just one session)
+  averageImportance: number; // Must be >= 7
+}): boolean
+```
+
+**Promotion Criteria**:
+1. Pattern occurs at least 3 times
+2. Pattern spans at least 7 days (not just repeated in one session)
+3. Average importance >= 7
+
+When promoted, the memory becomes `CORE_EXTENSION` type and appears in the Core Directives section alongside original `CORE` memories, marked with ✧ to indicate it's evolved identity.
+
+### 5.4 Emotional Shorthand (Secret Language Macros)
+
+**Philosophy**: When a "Shared Reference" is detected in the current context, it should act as a "Macro" for personality. If we're talking about the shelf, the entity shouldn't have to "think" about being warm and nostalgic—the presence of those anchors should automatically pull them into that specific emotional frequency.
+
+**Implementation**: Shorthands (shared vocabulary like "Terron" or "Hos") can include an `emotionalMacro` field:
+
+```typescript
+{
+  term: "Terron",
+  meaning: "The 1978 Super Joe Adventure Team monster toy",
+  context: "Shelf artifact",
+  emotionalMacro: "warmth|nostalgia"  // Triggers this emotional frequency
+}
+```
+
+When a shorthand is detected in context, its emotional macro is included in the vocabulary section, making "inside jokes" feel more like a secret language that automatically tunes the entity's emotional response.
+
+---
+
+## 6. Synthesis Engine Design
 
 ### Narrative Synthesizer
 
@@ -1648,11 +1728,11 @@ Continuity memory is enabled per-entity via the `entityConfig` in `config/defaul
 
 The continuity memory system uses dedicated pathways that integrate with Cortex's rate limiting system to ensure all Azure AI Search operations are properly throttled.
 
-#### `continuity_memory_upsert`
+#### `sys_continuity_memory_upsert`
 
 Rate-limited pathway for upserting continuity memory documents to Azure AI Search.
 
-**Location**: `pathways/system/continuity_memory_upsert.js`
+**Location**: `pathways/system/entity/memory/sys_continuity_memory_upsert.js`
 
 **Input Parameters**:
 - `indexName` (string): Azure AI Search index name (default: `index-continuity-memory`)
@@ -1661,7 +1741,7 @@ Rate-limited pathway for upserting continuity memory documents to Azure AI Searc
 
 **Usage**:
 ```javascript
-await callPathway('continuity_memory_upsert', {
+await callPathway('sys_continuity_memory_upsert', {
     indexName: 'index-continuity-memory',
     document: JSON.stringify(memoryDoc)
 });
@@ -1669,11 +1749,11 @@ await callPathway('continuity_memory_upsert', {
 
 **Integration**: Used internally by `AzureMemoryIndex.upsertMemory()`. All memory upserts go through this pathway to ensure rate limiting.
 
-#### `continuity_memory_delete`
+#### `sys_continuity_memory_delete`
 
 Rate-limited pathway for deleting continuity memory documents from Azure AI Search.
 
-**Location**: `pathways/system/continuity_memory_delete.js`
+**Location**: `pathways/system/entity/memory/sys_continuity_memory_delete.js`
 
 **Input Parameters**:
 - `indexName` (string): Azure AI Search index name (default: `index-continuity-memory`)
@@ -1681,7 +1761,7 @@ Rate-limited pathway for deleting continuity memory documents from Azure AI Sear
 
 **Usage**:
 ```javascript
-await callPathway('continuity_memory_delete', {
+await callPathway('sys_continuity_memory_delete', {
     indexName: 'index-continuity-memory',
     docId: memoryId
 });
@@ -1689,11 +1769,11 @@ await callPathway('continuity_memory_delete', {
 
 **Integration**: Used internally by `AzureMemoryIndex.deleteMemory()`. All memory deletes go through this pathway to ensure rate limiting.
 
-#### `continuity_narrative_summary`
+#### `sys_continuity_narrative_summary`
 
 LLM-powered pathway for generating concise narrative summaries from retrieved memories. This creates the `narrativeContext` that gets cached in Redis for context injection.
 
-**Location**: `pathways/system/continuity_narrative_summary.js`
+**Location**: `pathways/system/entity/memory/sys_continuity_narrative_summary.js`
 
 **Input Parameters**:
 - `currentQuery` (string): The user's current message/query
@@ -1703,7 +1783,7 @@ LLM-powered pathway for generating concise narrative summaries from retrieved me
 
 **Usage**:
 ```javascript
-const summary = await callPathway('continuity_narrative_summary', {
+const summary = await callPathway('sys_continuity_narrative_summary', {
     currentQuery: 'Tell me about our previous conversations',
     memoriesText: formattedMemories
 });
@@ -1711,11 +1791,11 @@ const summary = await callPathway('continuity_narrative_summary', {
 
 **Integration**: Called by `ContextBuilder.generateNarrativeSummary()` to create cached narrative context. Uses GPT-4.1-mini for cost-effective synthesis.
 
-#### `continuity_deep_synthesis`
+#### `sys_continuity_deep_synthesis`
 
 Externally triggerable pathway for deep memory consolidation and pattern recognition. Designed to be called by external timers, cron jobs, or scheduled tasks.
 
-**Location**: `pathways/system/continuity_deep_synthesis.js`
+**Location**: `pathways/system/entity/memory/sys_continuity_deep_synthesis.js`
 
 **Input Parameters**:
 - `entityId` (string, required): Entity identifier (AI name)
@@ -1739,7 +1819,7 @@ Externally triggerable pathway for deep memory consolidation and pattern recogni
 ```javascript
 // Via GraphQL mutation
 mutation {
-  continuity_deep_synthesis(
+  sys_continuity_deep_synthesis(
     entityId: "labeeb"
     userId: "user123"
     maxMemories: 100
@@ -1750,7 +1830,7 @@ mutation {
 }
 
 // Via callPathway
-const result = await callPathway('continuity_deep_synthesis', {
+const result = await callPathway('sys_continuity_deep_synthesis', {
     entityId: 'labeeb',
     userId: 'user123',
     maxMemories: 100,
@@ -1761,10 +1841,70 @@ const result = await callPathway('continuity_deep_synthesis', {
 **Scheduling**: This pathway should be triggered periodically (e.g., daily or weekly) for each active entity/user pair. Example cron job:
 ```bash
 # Run deep synthesis daily at 2 AM
-0 2 * * * curl -X POST http://cortex-server/graphql -d '{"query": "mutation { continuity_deep_synthesis(entityId: \"labeeb\", userId: \"user123\") { result } }"}'
+0 2 * * * curl -X POST http://cortex-server/graphql -d '{"query": "mutation { sys_continuity_deep_synthesis(entityId: \"labeeb\", userId: \"user123\") { result } }"}'
 ```
 
 **Integration**: Calls `ContinuityMemoryService.runDeepSynthesis()` which uses `NarrativeSynthesizer.runDeepSynthesis()` to perform consolidation, pattern recognition, and graph linking.
+
+#### `sys_continuity_turn_synthesis`
+
+LLM-powered pathway for analyzing a conversation turn and extracting meaningful insights for long-term memory.
+
+**Location**: `pathways/system/entity/memory/sys_continuity_turn_synthesis.js`
+
+**Input Parameters**:
+- `aiName`: Entity name (e.g., "Luna")
+- `entityContext`: Additional context about the entity
+- `conversation`: The conversation segment to analyze
+
+**Output**: JSON object with:
+- `relationalInsights`: User relationship observations
+- `conceptualArtifacts`: Synthesized conclusions
+- `identityEvolution`: AI growth observations
+- `shorthands`: Shared vocabulary/nicknames
+- `emotionalLandscape`: Current emotional state
+- `expressionAdjustments`: Style adjustments
+
+**Usage**:
+```javascript
+const result = await callPathway('sys_continuity_turn_synthesis', {
+    aiName: 'Luna',
+    entityContext: 'Playful AI assistant',
+    conversation: formattedConversation
+});
+```
+
+**Integration**: Called by `NarrativeSynthesizer.synthesizeTurn()` after each conversation turn.
+
+#### `sys_continuity_deep_analysis`
+
+LLM-powered pathway for batch analysis of memories during deep synthesis. Analyzes a batch of memories to find consolidation opportunities, patterns, and connections.
+
+**Location**: `pathways/system/entity/memory/sys_continuity_deep_analysis.js`
+
+**Input Parameters**:
+- `aiName`: Entity name
+- `memories`: JSON stringified array of memories to analyze
+- `batchNumber`: Current batch number (for logging)
+- `totalBatches`: Total number of batches (for logging)
+
+**Output**: JSON object with:
+- `consolidations`: Memories to merge with synthesized content
+- `patterns`: Higher-order patterns across memories
+- `contradictions`: Conflicting memories to flag
+- `suggestedLinks`: New graph connections
+
+**Usage**:
+```javascript
+const result = await callPathway('sys_continuity_deep_analysis', {
+    aiName: 'Luna',
+    memories: JSON.stringify(memoryBatch),
+    batchNumber: 1,
+    totalBatches: 5
+});
+```
+
+**Integration**: Called by `NarrativeSynthesizer.runDeepSynthesis()` to process memories in batches of 50.
 
 ### Rate Limiting Architecture
 
@@ -2040,6 +2180,22 @@ Unit tests cover individual components:
 
 **Location**: `tests/integration/features/continuity/`
 
+**Test Files**:
+- `continuity_pathways.test.js` - Tests for synthesis pathways and rate-limited operations
+- `continuity_memory_e2e.test.js` - End-to-end memory operations
+- `continuity_deduplication.test.js` - Memory deduplication and consolidation
+- `continuity_memory_search.test.js` - Semantic search functionality
+- **`continuity_identity_synthesis.test.js`** - Identity synthesis features (first-person, narrative gravity, CORE_EXTENSION, emotional shorthand)
+
+**Quick Test Run**:
+```bash
+# Run just the identity synthesis tests
+npm test -- tests/integration/features/continuity/continuity_identity_synthesis.test.js
+
+# Run all continuity tests
+npm test -- tests/integration/features/continuity/
+```
+
 #### `continuity_memory_e2e.test.js`
 End-to-end tests covering:
 - Redis hot memory operations (session, episodic stream, expression state)
@@ -2057,12 +2213,11 @@ Tests for the `sys_tool_search_continuity_memory` tool:
 
 #### `continuity_pathways.test.js`
 Tests for continuity memory pathways and tools:
-- `continuity_memory_upsert` pathway
-- `continuity_memory_delete` pathway
-- `continuity_narrative_summary` pathway (LLM-powered)
-- `continuity_deep_synthesis` pathway (external triggering)
+- `sys_continuity_memory_upsert` pathway
+- `sys_continuity_memory_delete` pathway
+- `sys_continuity_narrative_summary` pathway (LLM-powered)
+- `sys_continuity_deep_synthesis` pathway (external triggering)
 - `sys_tool_store_continuity_memory` tool (explicit storage)
-- Deduplication: similar memory merging
 - Deduplication: importance boosting
 - Deduplication: skipDedup option
 - Batch consolidation of existing memories

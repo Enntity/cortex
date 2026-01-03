@@ -15,8 +15,8 @@
  * Output: JSON with consolidation results
  */
 
-import { getContinuityMemoryService } from '../../lib/continuity/index.js';
-import logger from '../../lib/logger.js';
+import { getContinuityMemoryService } from '../../../../lib/continuity/index.js';
+import logger from '../../../../lib/logger.js';
 
 export default {
     prompt: [],
@@ -58,7 +58,8 @@ export default {
                 daysToLookBack
             });
             
-            logger.info(`Deep synthesis complete for ${entityId}/${userId}: ${JSON.stringify(result)}`);
+            // Log summary without full details
+            logger.info(`Deep synthesis complete for ${entityId}/${userId}: ${result.consolidated || 0} consolidated, ${result.patterns || 0} patterns, ${result.links || 0} links`);
             
             return JSON.stringify({
                 success: true,

@@ -20,12 +20,15 @@ class AzureCognitivePlugin extends ModelPlugin {
         super(pathway, model);
     }
 
-    async getInputVector (text) {
+    async getInputVector (text, model = 'oai-text-embedding-3-small') {
         try{
             if(!text || !text.trim()){
                 return;
             }
-            return JSON.parse(await callPathway('embeddings', { text }))[0];
+            return JSON.parse(await callPathway('embeddings', { 
+                text,
+                model // Default to small model for cost efficiency, can be overridden
+            }))[0];
         }catch(err){
             logger.error(`Error in calculating input vector for text: ${text}, error: ${err}`);
         }
@@ -338,6 +341,74 @@ class AzureCognitivePlugin extends ModelPlugin {
 
     parseResponse(data) {
         return JSON.stringify(data || {});
+    }
+
+    /**
+     * Sanitize response data by replacing vectors with redaction placeholders
+     * @param {any} data - Response data (object or string)
+     * @returns {string} - Sanitized JSON string with vector placeholders
+     */
+    _sanitizeResponseForLogging(data) {
+        if (!data) return JSON.stringify(data || {});
+        
+        try {
+            // Parse if string, otherwise use as-is
+            const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+            
+            // Recursively replace vectors with redaction placeholders
+            const sanitize = (obj, depth = 0) => {
+                if (Array.isArray(obj)) {
+                    // Check if this is a vector array (array of numbers)
+                    if (obj.length > 0 && typeof obj[0] === 'number') {
+                        return `[vector: ${obj.length} dimensions, redacted]`;
+                    }
+                    return obj.map(item => sanitize(item, depth + 1));
+                } else if (obj && typeof obj === 'object') {
+                    const sanitized = {};
+                    for (const [key, value] of Object.entries(obj)) {
+                        if (key === 'contentVector' || key === 'inputVector') {
+                            // Replace vector fields with redaction placeholder
+                            if (Array.isArray(value) && value.length > 0) {
+                                sanitized[key] = `[${key}: ${value.length} dimensions, redacted]`;
+                            } else {
+                                sanitized[key] = `[${key}: redacted]`;
+                            }
+                        } else {
+                            sanitized[key] = sanitize(value, depth + 1);
+                        }
+                    }
+                    return sanitized;
+                }
+                return obj;
+            };
+            
+            const sanitized = sanitize(parsed);
+            return JSON.stringify(sanitized);
+        } catch (error) {
+            // If parsing fails, return original data as string
+            return typeof data === 'string' ? data : JSON.stringify(data);
+        }
+    }
+
+    /**
+     * Override logRequestData to sanitize vectors from responses
+     */
+    logRequestData(data, responseData, prompt) {
+        const modelInput = data.prompt || (data.messages && data.messages[0].content) || (data.length > 0 && data[0].Text) || null;
+    
+        if (modelInput) {
+            const { length, units } = this.getLength(modelInput);
+            logger.info(`[request sent containing ${length} ${units}]`);
+            logger.verbose(`${this.shortenContent(modelInput)}`);
+        }
+    
+        // Sanitize response data to remove vectors before logging
+        const responseText = this._sanitizeResponseForLogging(responseData);
+        const { length, units } = this.getLength(responseText);
+        logger.info(`[response received containing ${length} ${units}]`);
+        logger.verbose(`${this.shortenContent(responseText)}`);
+    
+        prompt && prompt.debugInfo && (prompt.debugInfo += `\n${JSON.stringify(data)}`);
     }
 
 }
