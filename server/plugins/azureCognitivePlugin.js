@@ -145,7 +145,7 @@ class AzureCognitivePlugin extends ModelPlugin {
         //default mode, 'search'
         data.search = modelPromptText;
         data.top = parameters.top || 50;
-        data.skip = 0;
+        data.skip = parameters.skip || 0;
         data.count = true;
 
         // If semanticConfiguration is provided, switch to semantic mode

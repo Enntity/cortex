@@ -25,13 +25,13 @@ export default {
     inputParameters: {
         entityId: ``,       // Entity identifier (AI name)
         userId: ``,         // User/context identifier
-        maxMemories: { type: 'integer', default: 50 },  // Max memories to analyze
-        daysToLookBack: { type: 'integer', default: 7 }, // How far back to look
+        maxMemories: { type: 'integer', default: 300 },  // Max memories to analyze
+        daysToLookBack: { type: 'integer', default: 90 }, // How far back to look (null/0 = all memories)
     },
     timeout: 300, // 5 minutes - this is a long-running operation
     
     executePathway: async ({ args }) => {
-        const { entityId, userId, maxMemories = 50, daysToLookBack = 7 } = args;
+        const { entityId, userId, maxMemories = 300, daysToLookBack = 90 } = args;
         
         if (!entityId || !userId) {
             return JSON.stringify({

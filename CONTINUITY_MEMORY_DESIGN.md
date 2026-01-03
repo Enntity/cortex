@@ -2077,7 +2077,282 @@ npm test -- tests/integration/features/continuity/
 
 ---
 
-## 11. Open Questions
+## 11. Scripts and Utilities
+
+The continuity memory system includes several utility scripts for setup, maintenance, migration, and backup operations.
+
+### Setup Scripts
+
+#### `scripts/setup-continuity-memory-index.js`
+
+Creates the Azure AI Search index for continuity memory storage.
+
+**Usage:**
+```bash
+node scripts/setup-continuity-memory-index.js
+```
+
+**What it does:**
+- Creates the `index-continuity-memory` index in Azure AI Search
+- Defines all required fields (content, vectors, metadata, etc.)
+- Configures vector search profiles and analyzers
+- Sets up proper indexing for semantic search
+
+**Requirements:**
+- Azure AI Search service configured
+- `AZURE_COGNITIVE_API_URL` and `AZURE_COGNITIVE_API_KEY` environment variables set
+
+**Note:** This script is idempotent - safe to run multiple times.
+
+---
+
+### Maintenance Scripts
+
+#### `scripts/run-deep-synthesis.js`
+
+Runs the deep synthesis job (consolidation, pattern recognition) for a specific entity/user. This is the "sleep" job that processes memories in the background.
+
+**Usage:**
+```bash
+# Default: last 90 days, up to 300 memories
+node scripts/run-deep-synthesis.js --entityId Luna --userId 057650da-eeec-4bf8-99a1-cb71e801bc07
+
+# Analyze all memories (recommended for initial deduplication)
+node scripts/run-deep-synthesis.js --all
+
+# Custom parameters
+node scripts/run-deep-synthesis.js --maxMemories 500 --daysToLookBack 30
+```
+
+**Options:**
+- `--entityId <id>`: Entity identifier (default: Luna)
+- `--userId <id>`: User/context identifier
+- `--maxMemories <n>`: Maximum memories to analyze (default: 300)
+- `--daysToLookBack <n>`: How far back to look (default: 90). Use "all" or 0 for all memories
+- `--all`: Analyze all memories (sets daysToLookBack=null, maxMemories=1000)
+
+**What it does:**
+- Consolidates similar/redundant memories
+- Identifies patterns across memories
+- Creates new graph connections
+- Deletes source memories after consolidation (prevents index growth)
+
+**Output:**
+- Number of consolidated memories
+- Patterns identified
+- Links created
+
+---
+
+#### `scripts/cleanup-test-memories.js`
+
+Removes test memories from the Azure AI Search index.
+
+**Usage:**
+```bash
+# Remove all memories where entityId is not "Luna"
+node scripts/cleanup-test-memories.js
+
+# Dry run (preview what would be deleted)
+node scripts/cleanup-test-memories.js --dry-run
+```
+
+**Options:**
+- `--dry-run`: Preview deletions without actually deleting
+
+**What it does:**
+- Searches for memories matching cleanup criteria
+- Deletes matching memories from Azure AI Search
+- Provides summary of deletions
+
+---
+
+### Migration Scripts
+
+#### `scripts/bootload-continuity-memory.js`
+
+Migrates memories from the old 3.1.0 memory format to the continuity memory system.
+
+**Usage:**
+```bash
+# Basic usage
+node scripts/bootload-continuity-memory.js --input old-memories.json --entityId Luna --userId 057650da-eeec-4bf8-99a1-cb71e801bc07
+
+# Dry run first to validate
+node scripts/bootload-continuity-memory.js --input old-memories.json --dry-run
+```
+
+**Options:**
+- `--input <file>`: Path to JSON file containing 3.1.0 memory format (required)
+- `--entityId <id>`: Entity identifier (default: Luna)
+- `--userId <id>`: User/context identifier
+- `--dry-run`: Parse and validate without actually storing memories
+
+**Input Format:**
+The script expects a JSON file with sections:
+- `memorySelf`: Identity memories → `IDENTITY` type
+- `memoryUser`: User memories → `ANCHOR` type
+- `memoryDirectives`: Directives → `CORE` (priority 1) or `ANCHOR` (priority > 1)
+- `memoryTopics`: Topics → `ARTIFACT` type
+
+Each section contains lines in format: `priority|timestamp|content`
+
+**What it does:**
+- Parses 3.1.0 format memory sections
+- Maps sections to continuity memory types
+- Converts priority (1-3) to importance (1-10)
+- Stores memories with deduplication (merges similar existing memories)
+- Tags memories with `['bootloaded', 'migration-3.1.0', sectionName]`
+
+**Priority Mapping:**
+- Priority 1 → Importance 9 (high)
+- Priority 2 → Importance 6 (medium)
+- Priority 3 → Importance 4 (lower)
+
+---
+
+### Backup and Restore Scripts
+
+#### `scripts/export-continuity-memories.js`
+
+Exports all continuity memories for a given entity/user to a JSON file.
+
+**Usage:**
+```bash
+# Standard export (vectors excluded for readability)
+node scripts/export-continuity-memories.js --entityId Luna --userId 057650da-eeec-4bf8-99a1-cb71e801bc07 --output memories.json
+
+# Full backup (includes all fields including vectors)
+node scripts/export-continuity-memories.js --include-vectors --output full-backup.json
+```
+
+**Options:**
+- `--entityId <id>`: Entity identifier (default: Luna)
+- `--userId <id>`: User/context identifier
+- `--output <file>`: Output JSON file path (default: continuity-memories-export.json)
+- `--include-vectors`: Include vector data and all index fields (for full backup)
+
+**Output Format:**
+```json
+{
+  "metadata": {
+    "exportedAt": "2026-01-02T18:00:00.000Z",
+    "entityId": "Luna",
+    "userId": "057650da-eeec-4bf8-99a1-cb71e801bc07",
+    "totalMemories": 150,
+    "exportVersion": "1.0",
+    "includeVectors": true,
+    "backupType": "full",
+    "importable": true,
+    "format": "continuity-memory-v1"
+  },
+  "memories": [...]
+}
+```
+
+**What it does:**
+- Fetches all memories for entity/user (up to 10,000 limit)
+- Removes transient fields (`_vectorScore`, `_recallScore`, `@search.score`)
+- Optionally removes vector data for readability
+- Creates import-ready format for bulk import
+- Provides breakdown by memory type
+
+---
+
+#### `scripts/bulk-import-continuity-memory.js`
+
+Imports memories from an export file back into the continuity memory index.
+
+**Usage:**
+```bash
+# Basic import
+node scripts/bulk-import-continuity-memory.js --input backup.json
+
+# Override entity/user IDs
+node scripts/bulk-import-continuity-memory.js --input backup.json --entityId Luna --userId abc123
+
+# Fast bulk import (skip deduplication)
+node scripts/bulk-import-continuity-memory.js --input backup.json --skip-dedup
+
+# Dry run first
+node scripts/bulk-import-continuity-memory.js --input backup.json --dry-run
+```
+
+**Options:**
+- `--input <file>`: Path to export JSON file (required)
+- `--entityId <id>`: Override entity ID from export (optional)
+- `--userId <id>`: Override user ID from export (optional)
+- `--skip-dedup`: Skip deduplication for faster bulk import (use with caution)
+- `--dry-run`: Parse and validate without actually importing
+
+**What it does:**
+- Validates export format and all memories
+- Converts format (objects → JSON strings for Azure)
+- Processes memories in batches (10 at a time) to avoid rate limits
+- Supports deduplication (default) or skip for faster import
+- Provides detailed progress and error reporting
+
+**Complete Backup/Restore Workflow:**
+```bash
+# 1. Export (with vectors for full backup)
+node scripts/export-continuity-memories.js --include-vectors --output backup.json
+
+# 2. Import back
+node scripts/bulk-import-continuity-memory.js --input backup.json
+```
+
+---
+
+### Benchmark Scripts
+
+#### `scripts/benchmark-continuity-memory.js`
+
+Benchmarks the performance of continuity memory operations.
+
+**Usage:**
+```bash
+node scripts/benchmark-continuity-memory.js
+```
+
+**What it measures:**
+- Upsert performance (Azure AI Search)
+- Search performance (semantic search)
+- Context building performance
+- Expression state updates (Redis)
+- Overall throughput
+
+**Output:**
+- Operation latencies (p50, p95, p99)
+- Throughput (operations/second)
+- Error rates
+- Memory usage
+
+**Note:** Cleans up all benchmark data after completion.
+
+---
+
+### Script Requirements
+
+All scripts require:
+- Cortex server configuration (via `config/default.json` or environment variables)
+- Redis connection (for hot memory operations)
+- Azure AI Search configuration (for cold memory operations)
+- Node.js environment with required dependencies
+
+**Environment Variables:**
+- `AZURE_COGNITIVE_API_URL`: Azure AI Search endpoint
+- `AZURE_COGNITIVE_API_KEY`: Azure AI Search API key
+- `REDIS_URL`: Redis connection string (optional, defaults to localhost)
+
+**Configuration:**
+Scripts use the Cortex config system, loading from:
+1. `CORTEX_CONFIG_FILE` environment variable (if set)
+2. `config/default.json` (default)
+3. Environment variables (fallback)
+
+---
+
+## 12. Open Questions
 
 1. **Memory Decay**: How aggressively should we decay old memories? Should we have explicit "forgetting" or just reduced recall priority?
 
