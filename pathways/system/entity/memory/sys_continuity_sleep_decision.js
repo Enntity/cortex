@@ -215,3 +215,8 @@ function truncate(str, maxLen) {
     return str.substring(0, maxLen) + '...';
 }
 
+
+
+
+
+
