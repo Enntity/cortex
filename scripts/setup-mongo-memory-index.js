@@ -49,7 +49,7 @@ const VECTOR_INDEX_DEFINITION = {
             },
             {
                 type: 'filter',
-                path: 'userId'
+                path: 'assocEntityIds'  // Array of associated entity IDs
             },
             {
                 type: 'filter',
@@ -75,25 +75,25 @@ const INDEXES = [
         key: { id: 1 },
         options: { unique: true }
     },
-    // Entity + User compound index (most common filter)
+    // Entity + AssocEntityIds compound index (most common filter)
     {
-        name: 'idx_entity_user',
-        key: { entityId: 1, userId: 1 }
+        name: 'idx_entity_assoc',
+        key: { entityId: 1, assocEntityIds: 1 }
     },
-    // Entity + User + Type (for getByType, getPromotionCandidates, etc.)
+    // Entity + AssocEntityIds + Type (for getByType, getPromotionCandidates, etc.)
     {
-        name: 'idx_entity_user_type',
-        key: { entityId: 1, userId: 1, type: 1 }
+        name: 'idx_entity_assoc_type',
+        key: { entityId: 1, assocEntityIds: 1, type: 1 }
     },
-    // Entity + User + Importance (for getTopByImportance)
+    // Entity + AssocEntityIds + Importance (for getTopByImportance)
     {
-        name: 'idx_entity_user_importance',
-        key: { entityId: 1, userId: 1, importance: -1, timestamp: -1 }
+        name: 'idx_entity_assoc_importance',
+        key: { entityId: 1, assocEntityIds: 1, importance: -1, timestamp: -1 }
     },
-    // Entity + User + Tags (for unprocessed memories)
+    // Entity + AssocEntityIds + Tags (for unprocessed memories)
     {
-        name: 'idx_entity_user_tags',
-        key: { entityId: 1, userId: 1, tags: 1 }
+        name: 'idx_entity_assoc_tags',
+        key: { entityId: 1, assocEntityIds: 1, tags: 1 }
     },
     // Timestamp index for sorting/filtering
     {

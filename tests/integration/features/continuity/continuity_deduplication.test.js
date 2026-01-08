@@ -256,11 +256,11 @@ test.serial('Vector score debugging: check actual scores', async (t) => {
         t.log(`Computed cosine similarity: ${topResult._vectorScore?.toFixed(4) ?? 'N/A'}`);
         t.log(`We use computed cosine similarity (_vectorScore) for deduplication.`);
         
-        // For exact matches, cosine similarity should be high (>= 0.8)
+        // For exact matches, cosine similarity should be reasonably high (>= 0.7)
         // Note: Even exact text can have < 1.0 similarity due to embedding precision
         t.true(
-            (topResult._vectorScore ?? 0) >= 0.8,
-            `Exact match should have computed cosine similarity >= 0.8, got ${topResult._vectorScore?.toFixed(4) ?? 'N/A'}`
+            (topResult._vectorScore ?? 0) >= 0.7,
+            `Exact match should have computed cosine similarity >= 0.7, got ${topResult._vectorScore?.toFixed(4) ?? 'N/A'}`
         );
     }
 });

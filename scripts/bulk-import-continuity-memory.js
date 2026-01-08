@@ -69,10 +69,13 @@ Example:
  * Handles conversion of emotionalState/relationalContext from objects to JSON strings
  */
 function prepareMemoryForImport(memory, entityId, userId) {
+    // Handle both old (userId) and new (assocEntityIds) formats in import data
+    const resolvedUserId = userId || memory.userId || (memory.assocEntityIds && memory.assocEntityIds[0]);
+    
     const prepared = {
         id: memory.id,
         entityId: entityId || memory.entityId,
-        userId: userId || memory.userId,
+        userId: resolvedUserId,
         type: memory.type || ContinuityMemoryType.ANCHOR,
         content: memory.content || '',
         contentVector: memory.contentVector || [], // Will be regenerated if empty
@@ -130,8 +133,8 @@ function validateMemory(memory) {
     if (!memory.entityId) {
         errors.push('Missing entityId');
     }
-    if (!memory.userId) {
-        errors.push('Missing userId');
+    if (!memory.userId && !memory.assocEntityIds) {
+        errors.push('Missing userId or assocEntityIds');
     }
     if (!memory.content || memory.content.trim() === '') {
         errors.push('Missing or empty content');

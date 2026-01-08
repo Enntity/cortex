@@ -97,10 +97,13 @@ function prepareMemoryForImport(memory, entityId, userId) {
         }
     }
     
+    // Handle both old (userId) and new (assocEntityIds) formats
+    const resolvedUserId = userId || memory.userId || (memory.assocEntityIds && memory.assocEntityIds[0]);
+    
     return {
         id: memory.id,
         entityId: entityId || memory.entityId,
-        userId: userId || memory.userId,
+        assocEntityIds: memory.assocEntityIds || [resolvedUserId],
         type: memory.type || ContinuityMemoryType.ANCHOR,
         content: memory.content || '',
         contentVector: memory.contentVector || [],
@@ -132,8 +135,8 @@ function validateMemory(memory) {
     if (!memory.entityId) {
         errors.push('Missing entityId');
     }
-    if (!memory.userId) {
-        errors.push('Missing userId');
+    if (!memory.assocEntityIds && !memory.userId) {
+        errors.push('Missing assocEntityIds or userId');
     }
     if (!memory.content || memory.content.trim() === '') {
         errors.push('Missing or empty content');

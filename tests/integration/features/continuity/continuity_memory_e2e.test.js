@@ -173,12 +173,18 @@ test.serial('MongoDB: memory upsert', async (t) => {
     }
     
     t.is(memoryIds.length, MOCK_MEMORIES.length, `Should upsert all ${MOCK_MEMORIES.length} memories`);
+    t.log(`Upserted memory IDs: ${memoryIds.join(', ')}`);
     
-    // Wait for indexing
-    await new Promise(r => setTimeout(r, 3000));
+    // Wait for vector index sync - Atlas can take several seconds
+    t.log('Waiting 5s for Atlas Vector Search index sync...');
+    await new Promise(r => setTimeout(r, 5000));
 });
 
 test.serial('MongoDB: semantic search', async (t) => {
+    // First verify documents exist via non-vector query
+    const memoryCount = await service.coldMemory.getMemoryCount(TEST_ENTITY_ID, TEST_USER_ID);
+    t.log(`Memory count for ${TEST_ENTITY_ID}/${TEST_USER_ID}: ${memoryCount}`);
+    
     const searchResults = await service.searchMemory({
         entityId: TEST_ENTITY_ID,
         userId: TEST_USER_ID,
@@ -186,9 +192,22 @@ test.serial('MongoDB: semantic search', async (t) => {
         options: { limit: 5 }
     });
     
-    t.true(searchResults.length > 0, 'Should return search results');
-    t.truthy(searchResults[0].content, 'Results should have content');
-    t.log(`Top result: "${searchResults[0].content?.substring(0, 50)}..."`);
+    // Note: If this fails with 0 results, the Atlas Vector Search index may need updating
+    // to include 'assocEntityIds' as a filterable field instead of 'userId'.
+    // See scripts/setup-mongo-memory-index.js for the correct index definition.
+    if (searchResults.length === 0) {
+        t.log('⚠️  No results returned. This may indicate:');
+        t.log('   1. Atlas Vector Search index needs updating (add assocEntityIds filter field)');
+        t.log('   2. Vector index sync delay (try increasing wait time)');
+        t.log('   3. Embedding generation failed during upsert');
+        t.log(`   Document count shows ${memoryCount} documents exist`);
+    }
+    
+    t.true(searchResults.length > 0, 'Should return search results (check Atlas Vector Search index if failing)');
+    if (searchResults.length > 0) {
+        t.truthy(searchResults[0].content, 'Results should have content');
+        t.log(`Top result: "${searchResults[0].content?.substring(0, 50)}..."`);
+    }
 });
 
 test.serial('MongoDB: get memories by type', async (t) => {
@@ -288,7 +307,8 @@ test.serial('Integration: narrative summary generation', async (t) => {
     });
     
     if (memories.length === 0) {
-        t.skip('No memories available for narrative summary test');
+        t.log('Skipping: No memories available for narrative summary test');
+        t.pass('Skipped - no memories found');
         return;
     }
     

@@ -129,9 +129,10 @@ function prepareMemoryForExport(memory, includeVectors = false) {
         logger.warn(`Memory missing ID, cannot be re-imported: ${prepared.content?.substring(0, 50)}`);
     }
     
-    // Ensure entityId and userId are present (required for import)
-    if (!prepared.entityId || !prepared.userId) {
-        logger.warn(`Memory missing entityId or userId: ${prepared.id || 'unknown'}`);
+    // Ensure entityId and assocEntityIds are present (required for import)
+    // Note: Old docs may have userId instead of assocEntityIds (pre-migration)
+    if (!prepared.entityId || (!prepared.assocEntityIds && !prepared.userId)) {
+        logger.warn(`Memory missing entityId or assocEntityIds: ${prepared.id || 'unknown'}`);
     }
     
     // Keep emotionalState and relationalContext as objects (they'll be converted back to JSON strings on import)
