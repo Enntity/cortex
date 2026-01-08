@@ -93,8 +93,45 @@ test.before(async () => {
         }
     }
     
-    // Wait for Azure indexing
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Wait for index sync - Atlas Vector Search filter fields take longer to sync
+    // Poll until we can find memories with type filters (more reliable than fixed timeout)
+    const isMongo = process.env.CONTINUITY_MEMORY_BACKEND === 'mongo' || process.env.MONGO_URI;
+    if (isMongo) {
+        const maxWaitMs = 30000;
+        const pollIntervalMs = 2000;
+        const startTime = Date.now();
+        
+        // Wait until we can find at least one memory with each type filter
+        const typesToCheck = ['ANCHOR', 'ARTIFACT', 'IDENTITY'];
+        let allTypesFound = false;
+        
+        while (!allTypesFound && (Date.now() - startTime) < maxWaitMs) {
+            await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+            
+            // Check if we can find memories with type filters
+            const results = await Promise.all(typesToCheck.map(async (type) => {
+                const searchResult = await service.searchMemory({
+                    entityId: TEST_ENTITY_ID,
+                    userId: TEST_USER_ID,
+                    query: 'test query',
+                    options: { types: [type], limit: 1 }
+                });
+                return searchResult.memories && searchResult.memories.length > 0;
+            }));
+            
+            allTypesFound = results.every(found => found);
+            if (!allTypesFound) {
+                console.log(`Waiting for Atlas index sync... (${Math.round((Date.now() - startTime) / 1000)}s)`);
+            }
+        }
+        
+        if (!allTypesFound) {
+            console.warn('Warning: Not all memory types indexed after max wait time');
+        }
+    } else {
+        // Non-Mongo backend (Azure) - shorter fixed wait
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
 });
 
 test.after.always('cleanup', async () => {
@@ -104,7 +141,7 @@ test.after.always('cleanup', async () => {
             const result = await service.deleteAllMemories(TEST_ENTITY_ID, TEST_USER_ID, {
                 tags: ['test']
             });
-            console.log(`Cleaned up ${result.deleted} test memories from Azure`);
+            console.log(`Cleaned up ${result.deleted} test memories`);
         } catch (error) {
             console.error(`Cleanup error: ${error.message}`);
             // Fallback: try to delete tracked IDs
@@ -136,7 +173,7 @@ test.after.always('cleanup', async () => {
 });
 
 // Helper function to execute search query
-async function executeSearch(query, memoryTypes = null, expandGraph = false) {
+async function executeSearch(query, memoryTypes = null, expandGraph = false, limit = 10) {
     const response = await testServer.executeOperation({
         query: `
             query TestSearch($query: String!, $memoryTypes: [String], $limit: Int, $expandGraph: Boolean, $contextId: String, $aiName: String) {
@@ -155,7 +192,7 @@ async function executeSearch(query, memoryTypes = null, expandGraph = false) {
         variables: {
             query,
             memoryTypes,
-            limit: 5,
+            limit,
             expandGraph,
             contextId: TEST_USER_ID,
             aiName: TEST_ENTITY_ID

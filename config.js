@@ -113,7 +113,7 @@ var config = convict({
                 instructions: "",
                 tools: ["*"],
                 useMemory: true,
-                useContinuityMemory: true,
+                memoryBackend: "continuity",  // "legacy" or "continuity"
             },
         },
     },

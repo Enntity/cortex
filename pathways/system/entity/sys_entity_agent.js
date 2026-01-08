@@ -82,9 +82,11 @@ export default {
         researchMode: false,
         userInfo: '',
         model: 'oai-gpt41',
-        // Continuity Memory Architecture (parallel system)
-        // Set to true to enable narrative memory with relational anchors and identity evolution
-        useContinuityMemory: false
+        // Memory backend selection: "legacy" or "continuity"
+        // - "legacy": Traditional Redis-based memory with sections (memoryUser, memorySelf, etc.)
+        // - "continuity": Narrative memory with relational anchors and identity evolution
+        // Note: useMemory must be true for any memory to work; this just selects which system
+        memoryBackend: 'continuity'
     },
     timeout: 600,
 
@@ -454,19 +456,25 @@ export default {
         let pathwayResolver = resolver;
 
         // Load input parameters and information into args
-        const { entityId, voiceResponse, aiMemorySelfModify, chatId, researchMode, useContinuityMemory } = { ...pathwayResolver.pathway.inputParameters, ...args };
+        const { entityId, voiceResponse, aiMemorySelfModify, chatId, researchMode, memoryBackend: paramMemoryBackend } = { ...pathwayResolver.pathway.inputParameters, ...args };
         
         const entityConfig = loadEntityConfig(entityId);
         const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
         const { name: entityName, instructions: entityInstructions } = entityConfig || {};
         
-        // Determine useMemory: entityConfig.useMemory === false is a hard disable (entity can't use memory)
-        // Otherwise args.useMemory can disable it, default true
+        // Determine useMemory: Master switch for any memory system
+        // entityConfig.useMemory === false is a hard disable, otherwise args.useMemory can disable it, default true
         args.useMemory = entityConfig?.useMemory === false ? false : (args.useMemory ?? true);
         
-        // Determine useContinuityMemory: entityConfig can override, otherwise use args
-        // This enables the narrative memory layer (Continuity Architecture)
-        args.useContinuityMemory = entityConfig?.useContinuityMemory ?? useContinuityMemory ?? false;
+        // Determine memoryBackend: Which memory system to use ("legacy" or "continuity")
+        // Priority: entityConfig > args > default ("continuity")
+        // Legacy support: useContinuityMemory=true maps to memoryBackend="continuity"
+        const legacyFlag = entityConfig?.useContinuityMemory ?? args.useContinuityMemory;
+        args.memoryBackend = entityConfig?.memoryBackend ?? paramMemoryBackend ?? (legacyFlag ? 'continuity' : 'continuity');
+        
+        // Convenience flags for template/code use
+        const useLegacyMemory = args.useMemory && args.memoryBackend === 'legacy';
+        const useContinuityMemory = args.useMemory && args.memoryBackend === 'continuity';
 
         // Initialize chat history if needed
         if (!args.chatHistory || args.chatHistory.length === 0) {
@@ -500,9 +508,9 @@ export default {
             ));
         }
 
-        // Kick off the memory lookup required pathway in parallel - this takes like 500ms so we want to start it early
+        // Kick off the legacy memory lookup in parallel - only for legacy memory backend
         let memoryLookupRequiredPromise = null;
-        if (args.useMemory) {
+        if (useLegacyMemory) {
             const chatHistoryLastTurn = args.chatHistory.slice(-2);
             const chatHistorySizeOk = (JSON.stringify(chatHistoryLastTurn).length < 5000);
             if (chatHistorySizeOk) {
@@ -531,21 +539,20 @@ export default {
             aiMemorySelfModify,
             chatId,
             researchMode,
-            useContinuityMemory: args.useContinuityMemory
+            memoryBackend: args.memoryBackend,
+            useContinuityMemory  // Keep for backward compatibility with pathwayResolver
         };
 
         pathwayResolver.args = {...args};
 
         const promptPrefix = '';
 
-        args.useMemory = false;
-
-        const memoryTemplates = args.useMemory ? 
+        // Legacy memory templates - only when using legacy backend
+        const memoryTemplates = useLegacyMemory ? 
             `{{renderTemplate AI_MEMORY_INSTRUCTIONS}}\n\n{{renderTemplate AI_MEMORY}}\n\n{{renderTemplate AI_MEMORY_CONTEXT}}\n\n` : '';
 
-        // Continuity Memory context injection (narrative layer - parallel system)
-        // This provides rich relational context, emotional resonance, and identity evolution
-        const continuityContextTemplate = args.useContinuityMemory ? 
+        // Continuity Memory context injection - only when using continuity backend
+        const continuityContextTemplate = useContinuityMemory ? 
             `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n` : '';
 
         const instructionTemplates = entityInstructions ? (entityInstructions + '\n\n') : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n{{renderTemplate AI_EXPERTISE}}\n\n`;
@@ -580,8 +587,8 @@ export default {
         // truncate the chat history in case there is really long content
         const truncatedChatHistory = resolver.modelExecutor.plugin.truncateMessagesToTargetLength(args.chatHistory, null, 1000);
       
-        // Asynchronously manage memory for this context
-        if (args.aiMemorySelfModify && args.useMemory) {
+        // Asynchronously manage legacy memory for this context (only for legacy backend)
+        if (args.aiMemorySelfModify && useLegacyMemory) {
             callPathway('sys_memory_manager', {  ...args, chatHistory: truncatedChatHistory, stream: false })    
             .catch(error => logger.error(error?.message || "Error in sys_memory_manager pathway"));
         }

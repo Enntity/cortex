@@ -444,10 +444,12 @@ class PathwayResolver {
                     this.memoryContext = '';
                 }
                 
-                // === CONTINUITY MEMORY INTEGRATION (Parallel System) ===
+                // === CONTINUITY MEMORY INTEGRATION ===
                 // Load narrative context from the Continuity Architecture if enabled
-                // This runs in parallel with the existing memory system
-                const useContinuityMemory = args.useContinuityMemory || this.pathway.useContinuityMemory;
+                // Only enabled when explicitly configured (not default for all pathways)
+                const memoryBackend = args.memoryBackend || this.pathway.memoryBackend;
+                const useMemory = args.useMemory !== false;
+                const useContinuityMemory = useMemory && memoryBackend === 'continuity';
                 if (useContinuityMemory) {
                     try {
                         const continuityService = getContinuityMemoryService();
@@ -587,8 +589,10 @@ class PathwayResolver {
             
             // === CONTINUITY MEMORY SYNTHESIS (Post-Response Hook) ===
             // Trigger async synthesis after response - fire and forget
-            const useContinuityMemory = args.useContinuityMemory || this.pathway.useContinuityMemory;
-            if (useContinuityMemory && this.continuityEntityId && this.continuityUserId) {
+            const memoryBackendPost = args.memoryBackend || this.pathway.memoryBackend;
+            const useMemoryPost = args.useMemory !== false;
+            const useContinuityMemoryPost = useMemoryPost && memoryBackendPost === 'continuity';
+            if (useContinuityMemoryPost && this.continuityEntityId && this.continuityUserId) {
                 try {
                     const continuityService = getContinuityMemoryService();
                     if (continuityService.isAvailable()) {
