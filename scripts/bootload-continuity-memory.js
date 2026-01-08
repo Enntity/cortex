@@ -165,7 +165,7 @@ function priorityToImportance(priority) {
 
 /**
  * In-memory deduplication store
- * Accumulates all memories, deduplicates in-memory, then batch syncs to Azure at the end
+ * Accumulates all memories, deduplicates in-memory, then batch syncs to MongoDB at the end
  */
 class InMemoryDeduplicator {
     constructor(similarityThreshold = 0.85) {
@@ -200,22 +200,22 @@ class InMemoryDeduplicator {
     }
     
     /**
-     * Check against existing Azure memories and REMOVE duplicates from our set
+     * Check against existing database memories and REMOVE duplicates from our set
      * Returns count of duplicates found (skipped)
      */
-    removeAzureDuplicates(existingMemories) {
+    removeExistingDuplicates(existingMemories) {
         const toRemove = new Set();  // IDs from our in-memory set to skip
         
         for (const existing of existingMemories) {
             if (!existing.contentVector?.length) continue;
             
-            // Check if any of our new memories are similar to this Azure memory
+            // Check if any of our new memories are similar to this existing memory
             for (const [id, memory] of this.memories) {
                 if (toRemove.has(id)) continue;  // Already marked for removal
                 
                 const similarity = this._cosineSimilarity(memory.contentVector, existing.contentVector);
                 if (similarity > this.similarityThreshold) {
-                    // This memory already exists in Azure - skip it
+                    // This memory already exists - skip it
                     toRemove.add(id);
                     break;
                 }
@@ -251,8 +251,8 @@ class InMemoryDeduplicator {
 }
 
 /**
- * Process all memories in-memory, then batch sync to Azure at the end
- * MUCH faster than per-record Azure operations
+ * Process all memories in-memory, then batch sync to MongoDB at the end
+ * MUCH faster than per-record database operations
  */
 async function processAllSections(service, entityId, userId, memoryData, sections, dryRun, batchSize) {
     console.log('\n📥 Phase 1: Loading and parsing all memories...');
@@ -343,35 +343,35 @@ async function processAllSections(service, entityId, userId, memoryData, section
     console.log(`  ${allRawMemories.length} → ${deduplicator.size()} unique memories (${mergedCount} merged within input)`);
     
     if (dryRun) {
-        console.log('\n📋 DRY RUN - no changes made to Azure');
+        console.log('\n📋 DRY RUN - no changes made to database');
         return { 
             inputCount: allRawMemories.length,
             mergedWithinInput: mergedCount,
             uniqueFromInput: deduplicator.size(),
             newMemories: deduplicator.size(),  // Would be uploaded
-            duplicatesSkipped: 0,  // Can't check Azure in dry run
+            duplicatesSkipped: 0,  // Can't check database in dry run
             failed: 0
         };
     }
     
-    // Phase 4: Check against existing Azure memories
-    console.log('\n🔍 Phase 4: Checking against existing Azure memories...');
+    // Phase 4: Check against existing database memories
+    console.log('\n🔍 Phase 4: Checking against existing database memories...');
     let existingMemories = [];
     let duplicatesSkipped = 0;
     try {
         existingMemories = await service.getAllMemories(entityId, userId, { limit: 10000 });
-        console.log(`  Found ${existingMemories.length} existing memories in Azure.`);
+        console.log(`  Found ${existingMemories.length} existing memories in database.`);
         
         // Remove duplicates from our set (don't upload them)
-        duplicatesSkipped = deduplicator.removeAzureDuplicates(existingMemories);
+        duplicatesSkipped = deduplicator.removeExistingDuplicates(existingMemories);
         if (duplicatesSkipped > 0) {
-            console.log(`  ${duplicatesSkipped} skipped (already exist in Azure).`);
+            console.log(`  ${duplicatesSkipped} skipped (already exist in database).`);
         }
     } catch (error) {
         console.log(`  Could not fetch existing memories: ${error.message}`);
     }
     
-    // Phase 5: Upload new memories to Azure
+    // Phase 5: Upload new memories to database
     const finalMemories = deduplicator.getAll();
     
     if (finalMemories.length === 0) {
@@ -386,7 +386,7 @@ async function processAllSections(service, entityId, userId, memoryData, section
         };
     }
     
-    console.log(`\n💾 Phase 5: Uploading ${finalMemories.length} new memories to Azure...`);
+    console.log(`\n💾 Phase 5: Uploading ${finalMemories.length} new memories to database...`);
     const upsertBatchSize = 50;
     let upserted = 0;
     
@@ -488,11 +488,11 @@ async function bootloadMemories() {
         const service = args.dryRun ? null : getContinuityMemoryService();
         
         if (!args.dryRun && !service.isAvailable()) {
-            console.error('✗ Continuity memory service is not available. Check Redis and Azure configuration.');
+            console.error('✗ Continuity memory service is not available. Check Redis and MongoDB configuration.');
             process.exit(1);
         }
         
-        // Process all sections with in-memory deduplication, then batch sync to Azure
+        // Process all sections with in-memory deduplication, then batch sync to database
         const sections = ['memorySelf', 'memoryUser', 'memoryDirectives', 'memoryTopics'];
         
         const stats = await processAllSections(

@@ -30,7 +30,7 @@ test.before(async (t) => {
     // Wait for Redis if needed
     const redisReady = await service.hotMemory.waitForReady(5000);
     if (!redisReady && !service.coldMemory.isConfigured()) {
-        t.fail('Neither Redis nor Azure is configured. Cannot run tests.');
+        t.fail('Neither Redis nor MongoDB is configured. Cannot run tests.');
     }
     
     // Initialize session
@@ -75,7 +75,7 @@ test.after.always('cleanup', async (t) => {
         // Comprehensive cleanup: delete all test-tagged memories for this entity/user
         try {
             const result = await service.deleteAllMemories(TEST_ENTITY_ID, TEST_USER_ID, ['test']);
-            t.log(`Cleaned up ${result.deleted} test memories from Azure`);
+            t.log(`Cleaned up ${result.deleted} test memories from database`);
         } catch (error) {
             t.log(`Cleanup error: ${error.message}`);
             // Fallback: try to delete tracked IDs
@@ -101,23 +101,23 @@ test.after.always('cleanup', async (t) => {
     }
 });
 
-// ==================== PATHWAY TESTS ====================
+// ==================== SERVICE TESTS ====================
 
-test.serial('Pathway: sys_continuity_memory_upsert via callPathway', async (t) => {
+test.serial('Service: upsertMemory stores memory in MongoDB', async (t) => {
     const testMemory = {
         type: ContinuityMemoryType.ANCHOR,
-        content: 'Test memory for pathway upsert',
+        content: 'Test memory for service upsert',
         importance: 5,
         tags: ['test']
     };
     
-    // Upsert via service (which uses the pathway internally)
+    // Upsert via service
     const id = await service.addMemory(TEST_ENTITY_ID, TEST_USER_ID, testMemory);
     
     t.truthy(id, 'Should return a memory ID');
     t.true(typeof id === 'string', 'ID should be a string');
     
-    // Wait for Azure Search indexing
+    // Wait for indexing
     await new Promise(r => setTimeout(r, 3000));
     
     // Verify it was stored
@@ -129,11 +129,11 @@ test.serial('Pathway: sys_continuity_memory_upsert via callPathway', async (t) =
     await service.deleteMemory(id);
 });
 
-test.serial('Pathway: sys_continuity_memory_delete via callPathway', async (t) => {
+test.serial('Service: deleteMemory removes memory from MongoDB', async (t) => {
     // Create a memory to delete
     const testMemory = {
         type: ContinuityMemoryType.ARTIFACT,
-        content: 'Test memory for pathway delete',
+        content: 'Test memory for service delete',
         importance: 5
     };
     
@@ -147,17 +147,16 @@ test.serial('Pathway: sys_continuity_memory_delete via callPathway', async (t) =
     const beforeDelete = await service.coldMemory.getByIds([id]);
     t.is(beforeDelete.length, 1, 'Memory should exist before delete');
     
-    // Delete via pathway
+    // Delete via service
     await service.deleteMemory(id);
     
     // Wait for deletion to propagate
     await new Promise(r => setTimeout(r, 2000));
     
-    // Verify it's gone (may take a moment for Azure to reflect)
+    // Verify it's gone
     const memories = await service.coldMemory.getByIds([id]);
-    // Azure may still return it briefly, so we check it's being deleted
     if (memories.length > 0) {
-        t.log('Note: Memory may still appear in Azure briefly after delete');
+        t.log('Note: Memory may still appear briefly after delete due to indexing delay');
     }
     t.pass('Delete operation completed');
 });
@@ -366,7 +365,7 @@ test.serial('Deduplication: exact duplicate content is merged', async (t) => {
         memoryIds.push(firstId);
     }
     
-    // Wait for Azure Search indexing (critical for vector search to find the first memory)
+    // Wait for indexing (critical for vector search to find the first memory)
     await new Promise(r => setTimeout(r, 5000));
     
     // Store the EXACT same content - should definitely be merged

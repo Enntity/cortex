@@ -2,7 +2,7 @@
 import 'dotenv/config';  // Load .env file
 
 /**
- * Cleanup Test Memories from Azure AI Search Index
+ * Cleanup Test Memories from Continuity Memory Index
  * 
  * Removes all memories where entityId does not match CONTINUITY_DEFAULT_ENTITY_ID
  * This cleans up test data left behind by integration tests.
@@ -45,7 +45,7 @@ async function cleanupTestMemories() {
     const service = getContinuityMemoryService();
     
     if (!service.coldMemory.isConfigured()) {
-        console.error('❌ Azure AI Search is not configured. Cannot clean up memories.');
+        console.error('❌ MongoDB is not configured. Cannot clean up memories.');
         process.exit(1);
     }
     
@@ -53,8 +53,7 @@ async function cleanupTestMemories() {
     
     try {
         // Search for all memories where entityId does not match the configured entity
-        // Using Azure's OData filter syntax
-        const filter = `entityId ne '${entityId}'`;
+        const filter = { entityId: { $ne: entityId } };
         const testMemories = await service.coldMemory.searchAllWithFilter(filter, { limit: 10000 });
         
         if (testMemories.length === 0) {
@@ -112,7 +111,7 @@ async function cleanupTestMemories() {
             console.log('✅ Verification passed: All test memories removed!\n');
         } else {
             console.log(`⚠️  Warning: ${remainingTest.length} test memories still remain.`);
-            console.log('   This may be due to Azure Search indexing delay.\n');
+            console.log('   This may be due to indexing delay.\n');
         }
         
         await server.stop();

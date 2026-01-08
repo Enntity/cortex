@@ -107,9 +107,9 @@ async function benchmarkUpsert(service, sampleCount) {
 async function benchmarkSearch(service, sampleCount) {
     console.log(`\n🔍 Benchmarking Semantic Search (${sampleCount} samples)...`);
     
-    // Wait a bit for Azure indexing (if needed)
+    // Wait a bit for indexing (if needed)
     if (sampleCount > 0) {
-        console.log('  Waiting 2s for Azure indexing...');
+        console.log('  Waiting 2s for indexing...');
         await new Promise(r => setTimeout(r, 2000));
     }
     
@@ -219,7 +219,7 @@ async function cleanup(service) {
         const result = await service.deleteAllMemories(TEST_ENTITY_ID, TEST_USER_ID, {
             tags: ['benchmark']
         });
-        console.log(`  Deleted ${result.deleted} benchmark memories from Azure`);
+        console.log(`  Deleted ${result.deleted} benchmark memories from database`);
         
         // Fallback: if comprehensive cleanup didn't catch everything, delete tracked IDs
         if (result.deleted < results.memoryIds.length) {

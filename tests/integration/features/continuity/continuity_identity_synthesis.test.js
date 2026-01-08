@@ -35,7 +35,7 @@ test.before(async (t) => {
     // Wait for Redis if needed
     const redisReady = await service.hotMemory.waitForReady(5000);
     if (!redisReady && !service.coldMemory.isConfigured()) {
-        t.fail('Neither Redis nor Azure is configured. Cannot run tests.');
+        t.fail('Neither Redis nor MongoDB is configured. Cannot run tests.');
     }
     
     // Initialize session
@@ -249,7 +249,7 @@ ASSISTANT: Oh, Terron! That always brings back such warm memories.`;
 
 test('CORE_EXTENSION memories are included in context', async (t) => {
     if (!service.coldMemory.isConfigured()) {
-        t.pass('Azure not configured, skipping CORE_EXTENSION test');
+        t.pass('MongoDB not configured, skipping CORE_EXTENSION test');
         return;
     }
     
@@ -284,7 +284,7 @@ test('CORE_EXTENSION memories are included in context', async (t) => {
 
 test('CORE_EXTENSION appears in Core Directives section', async (t) => {
     if (!service.coldMemory.isConfigured()) {
-        t.pass('Azure not configured, skipping test');
+        t.pass('MongoDB not configured, skipping test');
         return;
     }
     
@@ -325,7 +325,7 @@ test('CORE_EXTENSION appears in Core Directives section', async (t) => {
 
 test('narrative gravity affects memory retrieval priority', async (t) => {
     if (!service.coldMemory.isConfigured()) {
-        t.pass('Azure not configured, skipping test');
+        t.pass('MongoDB not configured, skipping test');
         return;
     }
     

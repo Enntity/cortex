@@ -105,7 +105,7 @@ Examples:
 
 /**
  * Prepare memory for export, ensuring it's in a format that can be re-imported
- * @param {Object} memory - Memory object from Azure
+ * @param {Object} memory - Memory object from database
  * @param {boolean} includeVectors - If true, keep all fields including vectors
  */
 function prepareMemoryForExport(memory, includeVectors = false) {
@@ -195,22 +195,22 @@ async function exportMemories() {
         const service = getContinuityMemoryService();
         
         if (!service.isAvailable()) {
-            console.error('✗ Continuity memory service is not available. Check Redis and Azure configuration.');
+            console.error('✗ Continuity memory service is not available. Check Redis and MongoDB configuration.');
             process.exit(1);
         }
         
         console.log('Fetching all memories (with pagination)...');
         const startTime = Date.now();
         
-        // Azure AI Search has a hard limit of 1000 results per query
+        // Paginate to get all memories in case there are many
         // We need to paginate to get all memories
         const allMemories = [];
-        const PAGE_SIZE = 1000; // Azure's maximum
+        const PAGE_SIZE = 1000; // Reasonable batch size
         let skip = 0;
         let hasMore = true;
         let pageCount = 0;
         
-        // Helper function to deserialize memory (parses JSON fields from Azure)
+        // Helper function to deserialize memory
         const deserializeMemory = (memory) => {
             if (!memory) return memory;
             const result = { ...memory };

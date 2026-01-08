@@ -129,7 +129,7 @@ test.before(async () => {
             console.warn('Warning: Not all memory types indexed after max wait time');
         }
     } else {
-        // Non-Mongo backend (Azure) - shorter fixed wait
+        // Legacy backend - shorter fixed wait
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
 });

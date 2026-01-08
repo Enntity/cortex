@@ -29,7 +29,7 @@ test.before(async (t) => {
     // Wait for Redis if needed
     const redisReady = await service.hotMemory.waitForReady(5000);
     if (!redisReady && !service.coldMemory.isConfigured()) {
-        t.fail('Neither Redis nor Azure is configured. Cannot run tests.');
+        t.fail('Neither Redis nor MongoDB is configured. Cannot run tests.');
     }
     
     // Initialize session
@@ -41,7 +41,7 @@ test.after.always('cleanup', async (t) => {
         // Comprehensive cleanup: delete all test-tagged memories for this entity/user
         try {
             const result = await service.deleteAllMemories(TEST_ENTITY_ID, TEST_USER_ID, ['test']);
-            t.log(`Cleaned up ${result.deleted} test memories from Azure`);
+            t.log(`Cleaned up ${result.deleted} test memories from database`);
         } catch (error) {
             t.log(`Cleanup error: ${error.message}`);
             // Fallback: try to delete tracked IDs
@@ -89,8 +89,8 @@ test.serial('Exact duplicate content is merged', async (t) => {
     }
     t.log(`First memory stored with ID: ${firstId}, merged: ${parsed1.merged}`);
     
-    // Wait for Azure Search indexing (critical for vector search to find the first memory)
-    t.log('Waiting 5 seconds for Azure Search indexing...');
+    // Wait for indexing (critical for vector search to find the first memory)
+    t.log('Waiting 5 seconds for indexing...');
     await new Promise(r => setTimeout(r, 5000));
     
     // Store the EXACT same content - should definitely be merged
@@ -138,7 +138,7 @@ test.serial('Very similar memories are merged', async (t) => {
     t.log(`First memory stored with ID: ${parsed1.memoryId}`);
     
     // Wait for indexing
-    t.log('Waiting 5 seconds for Azure Search indexing...');
+    t.log('Waiting 5 seconds for indexing...');
     await new Promise(r => setTimeout(r, 5000));
     
     // Store a very similar memory - should be merged (similarity > 0.85)
@@ -241,10 +241,9 @@ test.serial('Vector score debugging: check actual scores', async (t) => {
     );
     
     t.log(`Found ${searchResults.length} results for exact content search`);
-    t.log(`\n=== Azure Search Score Analysis ===`);
+    t.log(`\n=== Vector Search Score Analysis ===`);
     for (const result of searchResults) {
         t.log(`  ID: ${result.id}`);
-        t.log(`    Azure @search.score: ${result['@search.score']}`);
         t.log(`    Computed _vectorScore (cosine): ${result._vectorScore?.toFixed(4) ?? 'N/A'}`);
         t.log(`    Recall score: ${result._recallScore?.toFixed(4) ?? 'N/A'}`);
         t.log(`    Content preview: ${result.content?.substring(0, 60)}...`);
@@ -254,10 +253,8 @@ test.serial('Vector score debugging: check actual scores', async (t) => {
     if (searchResults.length > 0) {
         const topResult = searchResults[0];
         t.log(`\n=== Top Result Analysis ===`);
-        t.log(`Azure @search.score: ${topResult['@search.score']}`);
         t.log(`Computed cosine similarity: ${topResult._vectorScore?.toFixed(4) ?? 'N/A'}`);
-        t.log(`\nConclusion: Azure's @search.score is NOT cosine similarity.`);
-        t.log(`We should use computed cosine similarity (_vectorScore) for deduplication.`);
+        t.log(`We use computed cosine similarity (_vectorScore) for deduplication.`);
         
         // For exact matches, cosine similarity should be high (>= 0.8)
         // Note: Even exact text can have < 1.0 similarity due to embedding precision

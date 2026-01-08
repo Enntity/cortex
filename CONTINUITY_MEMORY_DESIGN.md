@@ -27,7 +27,7 @@ This document describes the design for a new "Continuity Architecture" memory sy
 │                                                                              │
 │  ┌─────────────────────┐     ┌──────────────────────────────────────────┐  │
 │  │   HOT MEMORY        │     │          COLD/WARM MEMORY                 │  │
-│  │   (Redis)           │     │          (Azure AI Search)                │  │
+│  │   (Redis)           │     │          (MongoDB Atlas)                  │  │
 │  │                     │     │                                           │  │
 │  │  • Episodic Stream  │     │  • Relational Anchors                    │  │
 │  │    (last 20 turns)  │     │  • Resonance Artifacts                   │  │
@@ -133,7 +133,7 @@ export interface RelationalContext {
 }
 
 /**
- * Main memory node document schema for Azure AI Search
+ * Main memory node document schema for MongoDB Atlas
  */
 export interface ContinuityMemoryNode {
   id: string;                    // UUID
@@ -249,7 +249,7 @@ lib/continuity/
 ├── ContinuityMemoryService.ts  # Main orchestrator
 ├── storage/
 │   ├── RedisHotMemory.ts       # Redis episodic stream & cache
-│   └── AzureMemoryIndex.ts     # Azure AI Search operations
+│   └── MongoMemoryIndex.ts     # MongoDB Atlas operations
 ├── synthesis/
 │   ├── ContextBuilder.ts       # Pre-response context assembly
 │   ├── NarrativeSynthesizer.ts # Post-response insight extraction
@@ -265,7 +265,7 @@ lib/continuity/
 // lib/continuity/ContinuityMemoryService.ts
 
 import { RedisHotMemory } from './storage/RedisHotMemory.js';
-import { AzureMemoryIndex } from './storage/AzureMemoryIndex.js';
+import { MongoMemoryIndex } from './storage/MongoMemoryIndex.js';
 import { ContextBuilder } from './synthesis/ContextBuilder.js';
 import { NarrativeSynthesizer } from './synthesis/NarrativeSynthesizer.js';
 import {
@@ -287,13 +287,13 @@ import {
  */
 export class ContinuityMemoryService {
   private hotMemory: RedisHotMemory;
-  private coldMemory: AzureMemoryIndex;
+  private coldMemory: MongoMemoryIndex;
   private contextBuilder: ContextBuilder;
   private synthesizer: NarrativeSynthesizer;
   
   constructor(config: ContinuityConfig) {
     this.hotMemory = new RedisHotMemory(config.redis);
-    this.coldMemory = new AzureMemoryIndex(config.azureSearch);
+    this.coldMemory = new MongoMemoryIndex(config.mongo);
     this.contextBuilder = new ContextBuilder(this.hotMemory, this.coldMemory);
     this.synthesizer = new NarrativeSynthesizer(this.hotMemory, this.coldMemory);
   }
@@ -680,7 +680,7 @@ export class RedisHotMemory {
    * 
    * Caches CORE, CORE_EXTENSION, and relational anchor memories in Redis.
    * These memories are identity-based (not query-based), so they're the same
-   * for every turn in a session. Caching eliminates 3 Azure calls per turn.
+   * for every turn in a session. Caching eliminates 3 database calls per turn.
    * 
    * Cache is automatically invalidated on any memory write to maintain consistency.
    * TTL: 10 minutes (configurable via DEFAULT_CONFIG.bootstrapCacheTTL)
@@ -766,13 +766,12 @@ export class RedisHotMemory {
 }
 ```
 
-### Azure AI Search Memory Index
+### MongoDB Atlas Memory Index
 
 ```typescript
-// lib/continuity/storage/AzureMemoryIndex.ts
+// lib/continuity/storage/MongoMemoryIndex.ts
 
-import { callPathway } from '../../pathwayTools.js';
-import { config } from '../../config.js';
+import { MongoClient } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
 import {
   ContinuityMemoryNode,
@@ -780,40 +779,40 @@ import {
 } from '../types.js';
 
 /**
- * Azure AI Search index for long-term memory storage.
+ * MongoDB Atlas collection for long-term memory storage.
  * 
- * Index name: index-continuity-memory
+ * Collection name: continuity_memories
  * 
- * Required index fields:
- * - id: Edm.String (key)
- * - entityId: Edm.String (filterable)
- * - userId: Edm.String (filterable)
- * - type: Edm.String (filterable)
- * - content: Edm.String (searchable)
- * - contentVector: Collection(Edm.Single) (searchable, vector config)
- * - relatedMemoryIds: Collection(Edm.String)
- * - parentMemoryId: Edm.String (filterable)
- * - tags: Collection(Edm.String) (filterable, facetable)
- * - timestamp: Edm.DateTimeOffset (sortable)
- * - lastAccessed: Edm.DateTimeOffset (sortable)
- * - recallCount: Edm.Int32
- * - importance: Edm.Int32 (filterable)
- * - confidence: Edm.Double
- * - emotionalState: Edm.ComplexType
- * - relationalContext: Edm.ComplexType
- * - synthesizedFrom: Collection(Edm.String)
- * - synthesisType: Edm.String (filterable)
- * - decayRate: Edm.Double
+ * Required fields:
+ * - id: string (indexed, unique)
+ * - entityId: string (indexed)
+ * - userId: string (indexed)
+ * - type: string (indexed)
+ * - content: string
+ * - contentVector: number[] (vector search index)
+ * - relatedMemoryIds: string[]
+ * - parentMemoryId: string
+ * - tags: string[]
+ * - timestamp: string (ISO 8601)
+ * - lastAccessed: string (ISO 8601)
+ * - recallCount: number
+ * - importance: number (indexed)
+ * - confidence: number
+ * - emotionalState: object
+ * - relationalContext: object
+ * - synthesizedFrom: string[]
+ * - synthesisType: string
+ * - decayRate: number
  */
-export class AzureMemoryIndex {
-  private indexName: string;
-  private apiUrl: string;
-  private apiKey: string;
+export class MongoMemoryIndex {
+  private collectionName: string;
+  private databaseName: string | null;
+  private connectionString: string;
   
-  constructor(azureConfig?: { indexName?: string }) {
-    this.indexName = azureConfig?.indexName || 'index-continuity-memory';
-    this.apiUrl = config.get('azureCognitiveApiUrl');
-    this.apiKey = config.get('azureCognitiveApiKey');
+  constructor(mongoConfig?: { collectionName?: string; databaseName?: string }) {
+    this.collectionName = mongoConfig?.collectionName || 'continuity_memories';
+    this.databaseName = mongoConfig?.databaseName || null;
+    this.connectionString = process.env.MONGO_URI || '';
   }
   
   /**
@@ -1071,7 +1070,7 @@ export class AzureMemoryIndex {
    */
   private async incrementRecallCount(id: string): Promise<void> {
     // This would require a partial update - for now, we'll skip this
-    // In production, we'd use Azure Search's merge operation
+    // In production, we'd use MongoDB's update operation
   }
 }
 ```
@@ -1381,7 +1380,7 @@ The heart of the Continuity Architecture - extracts meaning, not just facts.
 
 import { callPathway } from '../../pathwayTools.js';
 import { RedisHotMemory } from '../storage/RedisHotMemory.js';
-import { AzureMemoryIndex } from '../storage/AzureMemoryIndex.js';
+import { MongoMemoryIndex } from '../storage/MongoMemoryIndex.js';
 import {
   SynthesisRequest,
   SynthesisResult,
@@ -1391,9 +1390,9 @@ import {
 
 export class NarrativeSynthesizer {
   private hotMemory: RedisHotMemory;
-  private coldMemory: AzureMemoryIndex;
+  private coldMemory: MongoMemoryIndex;
   
-  constructor(hotMemory: RedisHotMemory, coldMemory: AzureMemoryIndex) {
+  constructor(hotMemory: RedisHotMemory, coldMemory: MongoMemoryIndex) {
     this.hotMemory = hotMemory;
     this.coldMemory = coldMemory;
   }
@@ -1730,11 +1729,11 @@ Continuity memory is enabled per-entity via the `entityConfig` in `config/defaul
 
 **System Requirements**:
 - Redis configured (for hot memory) - set `storageConnectionString` in config or `STORAGE_CONNECTION_STRING` env var
-- Azure AI Search configured (for cold memory) - set `azureCognitiveApiUrl` and `azureCognitiveApiKey` in config or environment variables
-- Continuity memory index created - run `scripts/setup-continuity-memory-index.js` to create the index
+- MongoDB Atlas configured (for cold memory) - set `MONGO_URI` environment variable
+- Continuity memory collection created automatically on first use
 
 **Default Configuration** (used if not overridden):
-- Index name: `index-continuity-memory`
+- Collection name: `continuity_memories`
 - Synthesis model: `oai-gpt41-mini`
 - Deep synthesis model: `oai-gpt41`
 - Episodic stream limit: 50 turns
@@ -1742,9 +1741,9 @@ Continuity memory is enabled per-entity via the `entityConfig` in `config/defaul
 
 ---
 
-## 7. Azure AI Search Index Setup
+## 7. MongoDB Atlas Setup
 
-### Index Definition
+### Collection Setup
 
 ```json
 {
@@ -1833,48 +1832,7 @@ Continuity memory is enabled per-entity via the `entityConfig` in `config/defaul
 
 ### Continuity Memory Pathways
 
-The continuity memory system uses dedicated pathways that integrate with Cortex's rate limiting system to ensure all Azure AI Search operations are properly throttled.
-
-#### `sys_continuity_memory_upsert`
-
-Rate-limited pathway for upserting continuity memory documents to Azure AI Search.
-
-**Location**: `pathways/system/entity/memory/sys_continuity_memory_upsert.js`
-
-**Input Parameters**:
-- `indexName` (string): Azure AI Search index name (default: `index-continuity-memory`)
-- `document` (string): JSON stringified continuity memory document
-- `inputVector` (string, optional): Pre-computed embedding vector
-
-**Usage**:
-```javascript
-await callPathway('sys_continuity_memory_upsert', {
-    indexName: 'index-continuity-memory',
-    document: JSON.stringify(memoryDoc)
-});
-```
-
-**Integration**: Used internally by `AzureMemoryIndex.upsertMemory()`. All memory upserts go through this pathway to ensure rate limiting.
-
-#### `sys_continuity_memory_delete`
-
-Rate-limited pathway for deleting continuity memory documents from Azure AI Search.
-
-**Location**: `pathways/system/entity/memory/sys_continuity_memory_delete.js`
-
-**Input Parameters**:
-- `indexName` (string): Azure AI Search index name (default: `index-continuity-memory`)
-- `docId` (string): Document ID to delete
-
-**Usage**:
-```javascript
-await callPathway('sys_continuity_memory_delete', {
-    indexName: 'index-continuity-memory',
-    docId: memoryId
-});
-```
-
-**Integration**: Used internally by `AzureMemoryIndex.deleteMemory()`. All memory deletes go through this pathway to ensure rate limiting.
+The continuity memory system uses MongoDB Atlas for long-term storage. Operations are performed directly through the MongoDB driver without requiring rate-limited pathways.
 
 #### `sys_continuity_narrative_summary`
 
@@ -2163,15 +2121,9 @@ const discoveryResult = await service.runDeepSynthesis(entityId, userId, {
 // }
 ```
 
-### Rate Limiting Architecture
+### MongoDB Operations
 
-All continuity memory Azure operations go through the `azure-cognitive` model endpoint, which provides:
-- **Automatic rate limiting**: Uses Cortex's existing rate limiter for Azure Cognitive Services
-- **Consistent throttling**: Same rate limits as other cognitive operations
-- **Error handling**: Proper retry logic and error propagation
-- **Monitoring**: All operations appear in Cortex's request monitoring
-
-The `azureCognitivePlugin` has been extended to support `continuity-upsert` and `continuity-delete` modes, which use the same `index` endpoint as standard operations but with the continuity memory document schema.
+All continuity memory operations use MongoDB Atlas directly through the MongoDB driver. Operations are performed synchronously with proper error handling and connection pooling.
 
 ### Memory Deduplication
 
@@ -2428,7 +2380,7 @@ Memory types:
 
 Unit tests cover individual components:
 - `RedisHotMemory`: Episodic stream, expression state, context cache
-- `AzureMemoryIndex`: Search, upsert, delete, graph expansion
+- `MongoMemoryIndex`: Search, upsert, delete, graph expansion
 - `ContextBuilder`: Context window assembly, narrative summary generation
 - `NarrativeSynthesizer`: Turn synthesis, deep synthesis
 - `MemoryDeduplicator`: Similarity detection, content merging, property resolution
@@ -2456,7 +2408,7 @@ npm test -- tests/integration/features/continuity/
 #### `continuity_memory_e2e.test.js`
 End-to-end tests covering:
 - Redis hot memory operations (session, episodic stream, expression state)
-- Azure cold memory operations (upsert, search, get by type)
+- MongoDB cold memory operations (upsert, search, get by type)
 - Context building with narrative summary
 - Graph expansion
 - Service availability checks
@@ -2495,26 +2447,25 @@ The continuity memory system includes several utility scripts for setup, mainten
 
 ### Setup Scripts
 
-#### `scripts/setup-continuity-memory-index.js`
+#### `scripts/setup-mongo-memory-index.js`
 
-Creates the Azure AI Search index for continuity memory storage.
+Sets up MongoDB Atlas vector search index for continuity memory storage.
 
 **Usage:**
 ```bash
-node scripts/setup-continuity-memory-index.js
+node scripts/setup-mongo-memory-index.js
 ```
 
 **What it does:**
-- Creates the `index-continuity-memory` index in Azure AI Search
-- Defines all required fields (content, vectors, metadata, etc.)
-- Configures vector search profiles and analyzers
-- Sets up proper indexing for semantic search
+- Creates the `continuity_memories` collection in MongoDB
+- Sets up vector search index on `contentVector` field
+- Creates indexes on `entityId`, `userId`, `type`, and `importance` for efficient queries
 
 **Requirements:**
-- Azure AI Search service configured
-- `AZURE_COGNITIVE_API_URL` and `AZURE_COGNITIVE_API_KEY` environment variables set
+- MongoDB Atlas cluster configured
+- `MONGO_URI` environment variable set
 
-**Note:** This script is idempotent - safe to run multiple times.
+**Note:** The collection and indexes are created automatically on first use if not already present.
 
 ---
 
@@ -2585,7 +2536,7 @@ node scripts/run-deep-synthesis.js --cortex-url http://localhost:5000
 
 #### `scripts/cleanup-test-memories.js`
 
-Removes test memories from the Azure AI Search index.
+Removes test memories from the MongoDB collection.
 
 **Usage:**
 ```bash
@@ -2601,7 +2552,7 @@ node scripts/cleanup-test-memories.js --dry-run
 
 **What it does:**
 - Searches for memories matching cleanup criteria
-- Deletes matching memories from Azure AI Search
+- Deletes matching memories from MongoDB
 - Provides summary of deletions
 
 ---
@@ -2744,7 +2695,7 @@ node scripts/bulk-import-continuity-memory.js --input backup.json --dry-run
 
 **What it does:**
 - Validates export format and all memories
-- Converts format (objects → JSON strings for Azure)
+- Validates and prepares memory format for MongoDB
 - Processes memories in batches (10 at a time) to avoid rate limits
 - Supports deduplication (default) or skip for faster import
 - Provides detailed progress and error reporting
@@ -2772,7 +2723,7 @@ node scripts/benchmark-continuity-memory.js
 ```
 
 **What it measures:**
-- Upsert performance (Azure AI Search)
+- Upsert performance (MongoDB Atlas)
 - Search performance (semantic search)
 - Context building performance
 - Expression state updates (Redis)
@@ -2793,7 +2744,7 @@ node scripts/benchmark-continuity-memory.js
 All scripts require:
 - Cortex server configuration (via `config/default.json` or environment variables)
 - Redis connection (for hot memory operations)
-- Azure AI Search configuration (for cold memory operations)
+- MongoDB Atlas configuration (for cold memory operations)
 - Node.js environment with required dependencies
 
 **Environment Variables:**
@@ -2801,8 +2752,7 @@ All scripts require:
 - `CONTINUITY_DEFAULT_USER_ID`: Default user/context identifier for scripts (can be overridden via `--userId` flag)
 - `CONTINUITY_CORTEX_API_URL`: Cortex server URL for client scripts (default: `http://localhost:4000`)
 - `CONTINUITY_BOOTLOAD_BATCH_SIZE`: Batch size for bootloader processing (default: 10)
-- `AZURE_COGNITIVE_API_URL`: Azure AI Search endpoint
-- `AZURE_COGNITIVE_API_KEY`: Azure AI Search API key
+- `MONGO_URI`: MongoDB Atlas connection string
 - `REDIS_URL`: Redis connection string (optional, defaults to localhost)
 
 **Configuration:**
@@ -2868,7 +2818,7 @@ This is fast (vector math, no LLM) and gives semantic neighborhoods. Most consol
 **Implementation options:**
 - Simple k-means in JS (via `ml-kmeans` package)
 - Python microservice in `cortex-autogen2`
-- Azure AI Search clustering capabilities (if available)
+- MongoDB Atlas vector search capabilities
 
 #### Layer 2: Intra-Cluster Consolidation
 
@@ -2989,7 +2939,7 @@ This approach requires a dedicated synthesis service, likely in Python due to be
 │                                                                  │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
 │  │ Memory Fetcher  │  │ Vector Clusterer│  │ Graph Builder  │  │
-│  │ (Azure Search)  │  │ (scikit-learn)  │  │ (NetworkX)     │  │
+│  │ (MongoDB)       │  │ (scikit-learn)  │  │ (NetworkX)     │  │
 │  └────────┬────────┘  └────────┬────────┘  └───────┬────────┘  │
 │           │                    │                    │           │
 │           ▼                    ▼                    ▼           │
@@ -3016,7 +2966,7 @@ This approach requires a dedicated synthesis service, likely in Python due to be
 1. **Clustering library choice**: 
    - `ml-kmeans` (JS) - simpler integration, less powerful
    - `scikit-learn` (Python) - more algorithms, requires service
-   - Azure capabilities - unknown, needs research
+   - MongoDB Atlas vector search - supports vector similarity search
 
 2. **Cluster size tuning**: Fixed k vs. dynamic (HDBSCAN)? Trade-off between cluster coherence and LLM context size.
 
@@ -3048,7 +2998,7 @@ Before implementing:
 
 4. **Backup/Restore**: How do we backup/restore the Redis hot memory structures?
 
-5. **Cost**: What's the expected Azure AI Search query volume? Should we implement more aggressive caching?
+5. **Cost**: What's the expected MongoDB Atlas query volume? Should we implement more aggressive caching?
 
 ---
 

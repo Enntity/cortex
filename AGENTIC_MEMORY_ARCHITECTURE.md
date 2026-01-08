@@ -949,7 +949,7 @@ The Continuity Architecture is built on these principles:
 │                              │                                  │
 │                              ▼                                  │
 │   ┌─────────────────────────────────────────────────────────┐  │
-│   │             AZURE AI SEARCH (Cold Memory)                │  │
+│   │             MONGODB ATLAS (Cold Memory)                  │  │
 │   │  ┌──────────────┬──────────────┬──────────────────────┐ │  │
 │   │  │ Relational   │ Resonance    │ Identity             │ │  │
 │   │  │ Anchors      │ Artifacts    │ Evolution            │ │  │
@@ -978,7 +978,7 @@ Low-importance memories naturally fade off the bottom of results while high-impo
 |-----------|----------|---------|
 | `ContinuityMemoryService` | `lib/continuity/ContinuityMemoryService.js` | Main orchestrator |
 | `RedisHotMemory` | `lib/continuity/storage/RedisHotMemory.js` | Episodic stream, expression state |
-| `AzureMemoryIndex` | `lib/continuity/storage/AzureMemoryIndex.js` | Long-term semantic memory |
+| `MongoMemoryIndex` | `lib/continuity/storage/MongoMemoryIndex.js` | Long-term semantic memory |
 | `ContextBuilder` | `lib/continuity/synthesis/ContextBuilder.js` | Pre-response context assembly |
 | `NarrativeSynthesizer` | `lib/continuity/synthesis/NarrativeSynthesizer.js` | Post-response meaning extraction |
 | `types.js` | `lib/continuity/types.js` | Type definitions and constants |
@@ -1011,7 +1011,7 @@ After the response is sent, asynchronously:
 2. Triggers narrative synthesis
 3. Extracts relational insights, artifacts, identity notes
 4. Detects new shared vocabulary (shorthand)
-5. Stores to Azure AI Search
+5. Stores to MongoDB Atlas
 
 ```javascript
 // In pathwayResolver.js

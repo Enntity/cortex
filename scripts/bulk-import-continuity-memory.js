@@ -89,7 +89,7 @@ function prepareMemoryForImport(memory, entityId, userId) {
         synthesisType: memory.synthesisType || null
     };
     
-    // Convert emotionalState from object to JSON string (Azure format)
+    // Convert emotionalState from object to JSON string for storage
     if (memory.emotionalState) {
         if (typeof memory.emotionalState === 'object') {
             prepared.emotionalState = JSON.stringify(memory.emotionalState);
@@ -102,7 +102,7 @@ function prepareMemoryForImport(memory, entityId, userId) {
         prepared.emotionalState = null;
     }
     
-    // Convert relationalContext from object to JSON string (Azure format)
+    // Convert relationalContext from object to JSON string for storage
     if (memory.relationalContext) {
         if (typeof memory.relationalContext === 'object') {
             prepared.relationalContext = JSON.stringify(memory.relationalContext);
@@ -212,7 +212,7 @@ async function bulkImport() {
         const service = args.dryRun ? null : getContinuityMemoryService();
         
         if (!args.dryRun && !service.isAvailable()) {
-            console.error('✗ Continuity memory service is not available. Check Redis and Azure configuration.');
+            console.error('✗ Continuity memory service is not available. Check Redis and MongoDB configuration.');
             process.exit(1);
         }
         

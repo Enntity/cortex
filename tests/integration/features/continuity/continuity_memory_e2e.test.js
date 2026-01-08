@@ -67,11 +67,11 @@ test.before(async (t) => {
     // Check service availability
     const redisAvailable = service.hotMemory.isAvailable();
     const redisStatus = service.hotMemory.client?.status || 'no client';
-    const azureConfigured = service.coldMemory.isConfigured();
+    const mongoConfigured = service.coldMemory.isConfigured();
     
     t.log(`Redis client status: ${redisStatus}`);
     t.log(`Redis available: ${redisAvailable}`);
-    t.log(`Azure configured: ${azureConfigured}`);
+    t.log(`MongoDB configured: ${mongoConfigured}`);
     
     // Wait for Redis if needed
     if (!redisAvailable) {
@@ -81,8 +81,8 @@ test.before(async (t) => {
     
     // Wait for Redis to be ready
     const redisReady = await service.hotMemory.waitForReady(5000);
-    if (!redisReady && !azureConfigured) {
-        t.fail('Neither Redis nor Azure is configured. Cannot run tests.');
+    if (!redisReady && !mongoConfigured) {
+        t.fail('Neither Redis nor MongoDB is configured. Cannot run tests.');
     }
 });
 
@@ -93,7 +93,7 @@ test.after.always('cleanup', async (t) => {
             const result = await service.deleteAllMemories(TEST_ENTITY_ID, TEST_USER_ID, {
                 tags: ['test']
             });
-            t.log(`Cleaned up ${result.deleted} test memories from Azure`);
+            t.log(`Cleaned up ${result.deleted} test memories from database`);
         } catch (error) {
             t.log(`Cleanup error: ${error.message}`);
             // Fallback: try to delete tracked IDs
@@ -162,9 +162,9 @@ test.serial('Redis: session info', async (t) => {
     t.is(info.turnCount, MOCK_EPISODIC_TURNS.length, `Should have ${MOCK_EPISODIC_TURNS.length} turns recorded`);
 });
 
-// ==================== AZURE COLD MEMORY TESTS ====================
+// ==================== MONGODB COLD MEMORY TESTS ====================
 
-test.serial('Azure: memory upsert', async (t) => {
+test.serial('MongoDB: memory upsert', async (t) => {
     for (const memory of MOCK_MEMORIES) {
         const id = await service.addMemory(TEST_ENTITY_ID, TEST_USER_ID, memory);
         if (id) {
@@ -178,7 +178,7 @@ test.serial('Azure: memory upsert', async (t) => {
     await new Promise(r => setTimeout(r, 3000));
 });
 
-test.serial('Azure: semantic search', async (t) => {
+test.serial('MongoDB: semantic search', async (t) => {
     const searchResults = await service.searchMemory({
         entityId: TEST_ENTITY_ID,
         userId: TEST_USER_ID,
@@ -191,7 +191,7 @@ test.serial('Azure: semantic search', async (t) => {
     t.log(`Top result: "${searchResults[0].content?.substring(0, 50)}..."`);
 });
 
-test.serial('Azure: get memories by type', async (t) => {
+test.serial('MongoDB: get memories by type', async (t) => {
     const anchors = await service.getMemoriesByType(
         TEST_ENTITY_ID, TEST_USER_ID, 
         ContinuityMemoryType.ANCHOR, 10
@@ -243,7 +243,7 @@ test.serial('Context: build context window', async (t) => {
 
 test.serial('Integration: service availability check', async (t) => {
     const isAvailable = service.isAvailable();
-    t.true(isAvailable, 'Service should be available (Redis or Azure configured)');
+    t.true(isAvailable, 'Service should be available (Redis or MongoDB configured)');
 });
 
 test.serial('Integration: search with graph expansion', async (t) => {

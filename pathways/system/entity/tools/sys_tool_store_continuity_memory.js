@@ -168,7 +168,7 @@ Nuanced resonance states:
             if (!continuityService.isAvailable()) {
                 return JSON.stringify({
                     success: false,
-                    error: 'Continuity memory service is not available. Check Redis and Azure configuration.'
+                    error: 'Continuity memory service is not available. Check Redis and MongoDB configuration.'
                 });
             }
             

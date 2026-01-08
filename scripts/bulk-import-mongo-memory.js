@@ -72,12 +72,12 @@ Example:
 
 /**
  * Convert memory from export format to MongoDB format
- * Handles conversion from Azure format if needed
+ * Handles conversion from legacy formats if needed
  */
 function prepareMemoryForImport(memory, entityId, userId) {
     const now = new Date().toISOString();
     
-    // Parse emotionalState if it's a JSON string (Azure format)
+    // Parse emotionalState if it's a JSON string (legacy format)
     let emotionalState = memory.emotionalState;
     if (typeof emotionalState === 'string' && emotionalState) {
         try {
@@ -87,7 +87,7 @@ function prepareMemoryForImport(memory, entityId, userId) {
         }
     }
     
-    // Parse relationalContext if it's a JSON string (Azure format)
+    // Parse relationalContext if it's a JSON string (legacy format)
     let relationalContext = memory.relationalContext;
     if (typeof relationalContext === 'string' && relationalContext) {
         try {
