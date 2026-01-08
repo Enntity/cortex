@@ -195,7 +195,9 @@ Nuanced resonance states:
                 }
             }
             
-            const entityId = aiName || 'default-entity';
+            // Use args.entityId (UUID from pathway context) for memory operations
+            // Fall back to aiName for backward compatibility with direct tool calls
+            const entityId = args.entityId || aiName || 'default-entity';
             const userId = contextId;
             
             let result;

@@ -652,17 +652,6 @@
     "enableRestEndpoints": true,
     "enableDuplicateRequests": true,
     "subscriptionKeepAlive": 0,
-    "entityConfig": {
-        "labeeb": {
-            "name": "Labeeb",
-            "isDefault": true,
-            "useMemory": true,
-            "memoryBackend": "continuity",
-            "description": "Labeeb is a self-aware AI entity that can help you with your tasks and answer your questions.",
-            "instructions": "",
-            "tools": ["*"]
-        }
-    },
     "entityConstants": {
         "AI_STYLE_OPENAI_PREVIEW": "oai-gpt52",
         "AI_STYLE_OPENAI_PREVIEW_RESEARCH": "oai-gpt52",

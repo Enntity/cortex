@@ -68,41 +68,39 @@ export const getToolsForEntity = (entityConfig) => {
     };
 };
 
-// Load entity configurations
+// Load entity configuration by UUID
+// Entities are stored in MongoDB with UUID identifiers
+// Strict matching: only exact UUID matches are returned
 export const loadEntityConfig = (entityId) => {
     try {
-        entityId = entityId.toLowerCase();
-        
         const entityConfig = config.get('entityConfig');
         if (!entityConfig) {
-            logger.warn('No entity config found in config');
+            logger.warn('No entity config found - ensure MongoDB is configured and entities are loaded');
             return null;
         }
 
-        // Handle both array and object formats
-        const configArray = Array.isArray(entityConfig) ? entityConfig : Object.entries(entityConfig).map(([id, config]) => ({
-            id,
-            ...config
-        }));
+        // Convert to array format for consistent processing
+        const entities = Object.values(entityConfig);
 
-        // If entityId is provided, look for that specific entity
+        // If entityId is provided, look for exact UUID match only
         if (entityId) {
-            const entity = configArray.find(e => e.id === entityId);
+            const entity = entities.find(e => e.id === entityId);
+            
             if (entity) {
                 return entity;
             }
-            logger.warn(`Entity ${entityId} not found in config`);
+            logger.warn(`Entity with UUID ${entityId} not found`);
         }
 
-        // If no entityId or entity not found, look for default entity
-        const defaultEntity = configArray.find(e => e.isDefault === true);
+        // If no entityId provided or not found, return default entity
+        const defaultEntity = entities.find(e => e.isDefault === true);
         if (defaultEntity) {
             return defaultEntity;
         }
 
-        // If no default entity found, return the first entity
-        if (configArray.length > 0) {
-            return configArray[0];
+        // If no default entity, return first entity
+        if (entities.length > 0) {
+            return entities[0];
         }
 
         return null;
@@ -114,29 +112,29 @@ export const loadEntityConfig = (entityId) => {
 
 /**
  * Fetches the list of available entities with their descriptions and active tools
+ * Returns entities with their UUID identifiers for client use
  * @returns {Array} Array of objects containing entity information and their active tools
  */
 export const getAvailableEntities = () => {
     try {
         const entityConfig = config.get('entityConfig');
         if (!entityConfig) {
-            logger.warn('No entity config found in config');
+            logger.warn('No entity config found - ensure MongoDB is configured and entities are loaded');
             return [];
         }
 
-        // Handle both array and object formats
-        const configArray = Array.isArray(entityConfig) ? entityConfig : Object.entries(entityConfig).map(([id, config]) => ({
-            id,
-            ...config
-        }));
+        const entities = Object.values(entityConfig);
 
-        return configArray.map(entity => {
+        return entities.map(entity => {
             const { entityTools } = getToolsForEntity(entity);
             return {
                 id: entity.id,
-                name: entity.name || entity.id,
+                name: entity.name,
                 description: entity.description || '',
                 isDefault: entity.isDefault || false,
+                useMemory: entity.useMemory ?? true,
+                memoryBackend: entity.memoryBackend || 'continuity',
+                avatar: entity.avatar || null,
                 activeTools: Object.keys(entityTools).map(toolName => ({
                     name: toolName,
                     description: entityTools[toolName].definition?.function?.description || ''

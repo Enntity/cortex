@@ -15,7 +15,7 @@ import { WebSocketServer } from 'ws';
 import responseCachePlugin from '@apollo/server-plugin-response-cache';
 import { KeyvAdapter } from '@apollo/utils.keyvadapter';
 import cors from 'cors';
-import { buildModels, buildPathways } from '../config.js';
+import { buildModels, buildPathways, loadEntitiesFromMongo } from '../config.js';
 import logger from '../lib/logger.js';
 import { buildModelEndpoints } from '../lib/requestExecutor.js';
 import { startTestServer } from '../tests/helpers/server.js';
@@ -151,6 +151,9 @@ const getResolvers = (config, pathways, pathwayManager) => {
 
 // Build the server including the GraphQL schema and REST endpoints
 const build = async (config) => {
+    // Load entities from MongoDB if available (falls back to config file)
+    await loadEntitiesFromMongo();
+    
     // First perform config build
     const { pathwayManager } = await buildPathways(config);
     buildModels(config);

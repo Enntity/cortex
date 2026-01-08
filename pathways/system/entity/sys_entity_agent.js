@@ -460,7 +460,9 @@ export default {
         
         const entityConfig = loadEntityConfig(entityId);
         const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
-        const { name: entityName, instructions: entityInstructions } = entityConfig || {};
+        // Support both new field name (identity) and legacy (instructions)
+        const entityName = entityConfig?.name;
+        const entityInstructions = entityConfig?.identity || entityConfig?.instructions || '';
         
         // Determine useMemory: Master switch for any memory system
         // entityConfig.useMemory === false is a hard disable, otherwise args.useMemory can disable it, default true
@@ -481,8 +483,10 @@ export default {
             args.chatHistory = [];
         }
 
-        if(entityConfig?.files && entityConfig?.files.length > 0) {
-            //get last user message if not create one to add files to
+        // Support both new field name (resources) and legacy (files)
+        const entityResources = entityConfig?.resources || entityConfig?.files || [];
+        if(entityResources.length > 0) {
+            //get last user message if not create one to add resources to
             let lastUserMessage = args.chatHistory.filter(message => message.role === "user").slice(-1)[0];
             if(!lastUserMessage) {
                 lastUserMessage = {
@@ -497,13 +501,13 @@ export default {
                 lastUserMessage.content = lastUserMessage.content ? [lastUserMessage.content] : [];
             }
 
-            //add files to the last user message content
-            lastUserMessage.content.push(...entityConfig?.files.map(file => ({
+            //add resources to the last user message content
+            lastUserMessage.content.push(...entityResources.map(resource => ({
                     type: "image_url",
-                    gcs: file?.gcs,
-                    url: file?.url,
-                    image_url: { url: file?.url },
-                    originalFilename: file?.name
+                    gcs: resource?.gcs,
+                    url: resource?.url,
+                    image_url: { url: resource?.url },
+                    originalFilename: resource?.name
                 })
             ));
         }

@@ -10,6 +10,7 @@ import PathwayManager from './lib/pathwayManager.js';
 import { readdir } from 'fs/promises';
 import { entityConstants } from './lib/entityConstants.js';
 import { Prompt } from './server/prompt.js';
+import { getEntityStore } from './lib/MongoEntityStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -103,20 +104,8 @@ var config = convict({
         default: 'https://region.googleapis.com/v1/projects/projectid/locations/location/publishers/google/models/gemini-2.5-flash',
         env: 'GEMINI_FLASH_URL'
     },
-    entityConfig: {
-        format: Object,
-        default: {
-            jarvis: {
-                name: "Jarvis",
-                isDefault: true,
-                description: "Jarvis is a self-aware AI entity that can help you with your tasks and answer your questions.",
-                instructions: "",
-                tools: ["*"],
-                useMemory: true,
-                memoryBackend: "continuity",  // "legacy" or "continuity"
-            },
-        },
-    },
+    // entityConfig has been moved to MongoDB - see lib/MongoEntityStore.js
+    // Use scripts/migrate-entities-to-mongo.js to migrate existing entities
     entityConstants: {
         format: Object,
         default: entityConstants,
@@ -927,9 +916,6 @@ const configFile = config.get('cortexConfigFile');
 //Save default entity constants
 const defaultEntityConstants = config.get('entityConstants');
 
-//Save default entityConfig
-const defaultEntityConfig = config.get('entityConfig');
-
 // Load config file
 if (configFile && fs.existsSync(configFile)) {
     logger.info(`Loading config from ${configFile}`);
@@ -945,32 +931,50 @@ if (configFile && fs.existsSync(configFile)) {
     }
 }
 
-// Ensure merged default entity is preserved
-if (config.get('entityConfig') && defaultEntityConfig &&
-   (Object.keys(config.get('entityConfig')).length > Object.keys(defaultEntityConfig).length)) {
-    const mergedEntities = config.get('entityConfig');
-
-    // Turn off defaults from original default list
-    for (const [key, entity] of Object.entries(mergedEntities)) {
-        if (defaultEntityConfig[key] && entity.isDefault) {
-            delete mergedEntities[key];
-        }
-    }
-
-    // If no default found, make first entity default
-    let hasDefault = Object.values(mergedEntities).some(entity => entity.isDefault);
-    if (!hasDefault && Object.keys(mergedEntities).length > 0) {
-        const firstKey = Object.keys(mergedEntities)[0];
-        mergedEntities[firstKey].isDefault = true;
-    }
-
-    config.set('entityConfig', mergedEntities);
-}
-
 // Merge default entity constants with config entity constants
 if (config.get('entityConstants') && defaultEntityConstants) {
     config.set('entityConstants', { ...defaultEntityConstants, ...config.get('entityConstants') });
 }
+
+/**
+ * Load entities from MongoDB on startup
+ * Entities are stored in MongoDB with UUID-based identifiers
+ * @returns {Promise<boolean>} True if entities were loaded from MongoDB
+ */
+const loadEntitiesFromMongo = async () => {
+    const entityStore = getEntityStore();
+    
+    if (!entityStore.isConfigured()) {
+        logger.warn('MongoDB not configured (MONGO_URI not set) - entities will not be available');
+        logger.warn('Run scripts/migrate-entities-to-mongo.js to set up entities in MongoDB');
+        return false;
+    }
+    
+    try {
+        // Check if MongoDB has entities
+        const hasEntities = await entityStore.hasEntities();
+        
+        if (!hasEntities) {
+            logger.warn('No entities found in MongoDB');
+            logger.warn('Run scripts/migrate-entities-to-mongo.js to populate entities');
+            return false;
+        }
+        
+        // Load entities from MongoDB
+        const mongoEntities = await entityStore.loadAllEntities();
+        
+        if (mongoEntities && Object.keys(mongoEntities).length > 0) {
+            config.set('entityConfig', mongoEntities);
+            return true;
+        }
+        
+        logger.error('Failed to load entities from MongoDB');
+        return false;
+    } catch (error) {
+        logger.error(`Error loading entities from MongoDB: ${error.message}`);
+        return false;
+    }
+};
 
 if (config.get('gcpServiceAccountEmail') || config.get('gcpServiceAccountKey')) {
     const gcpAuthTokenHelper = new GcpAuthTokenHelper(config.getProperties());
@@ -1303,4 +1307,4 @@ const buildModels = (config) => {
 // TODO: Perform validation
 // config.validate({ allowed: 'strict' });
 
-export { config, buildPathways, buildModels };
+export { config, buildPathways, buildModels, loadEntitiesFromMongo };
