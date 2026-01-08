@@ -20,7 +20,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import serverFactory from '../index.js';
 import { getContinuityMemoryService } from '../lib/continuity/index.js';
+import { callPathway } from '../lib/pathwayTools.js';
 import logger from '../lib/logger.js';
+import { DEFAULT_CONFIG } from '../lib/continuity/types.js';
 
 const DEFAULT_ENTITY_ID = process.env.CONTINUITY_DEFAULT_ENTITY_ID || null;  // Required - set via CONTINUITY_DEFAULT_ENTITY_ID env var
 const DEFAULT_USER_ID = process.env.CONTINUITY_DEFAULT_USER_ID || null;      // Required - set via CONTINUITY_DEFAULT_USER_ID env var
@@ -34,7 +36,8 @@ function parseArgs() {
         outputFile: DEFAULT_OUTPUT_FILE,
         includeVectors: false,
         filterType: null,  // Filter by memory type
-        printOnly: false   // Print to console instead of file
+        printOnly: false,  // Print to console instead of file
+        exportAll: false   // Export all memories regardless of entity/user
     };
     
     for (let i = 2; i < process.argv.length; i++) {
@@ -51,13 +54,16 @@ function parseArgs() {
             args.filterType = process.argv[++i].toUpperCase();
         } else if (arg === '--print' || arg === '-p') {
             args.printOnly = true;
+        } else if (arg === '--all') {
+            args.exportAll = true;
         } else if (arg === '--help' || arg === '-h') {
             console.log(`
 Usage: node scripts/export-continuity-memories.js [options]
 
 Options:
-  --entityId <id>        Entity identifier (required, or set CONTINUITY_DEFAULT_ENTITY_ID env var)
-  --userId <id>          User/context identifier (required, or set CONTINUITY_DEFAULT_USER_ID env var)
+  --all                  Export all memories from the index (ignores entityId/userId filters)
+  --entityId <id>        Entity identifier (required unless --all, or set CONTINUITY_DEFAULT_ENTITY_ID env var)
+  --userId <id>          User/context identifier (required unless --all, or set CONTINUITY_DEFAULT_USER_ID env var)
   --output <file>        Output JSON file path (default: ${DEFAULT_OUTPUT_FILE})
   --include-vectors      Include vector data and all index fields (for full backup)
   --type, -t <type>      Filter by memory type (e.g., CORE, CORE_EXTENSION, ANCHOR, EPISODE)
@@ -75,8 +81,11 @@ Memory Types:
   EPISODE                Recent conversational episodes
 
 Examples:
-  # Export all memories
+  # Export all memories for specific entity/user
   node scripts/export-continuity-memories.js --output luna-memories.json
+  
+  # Export ALL memories from entire index (across all entities/users)
+  node scripts/export-continuity-memories.js --all --output full-index-backup.json
   
   # View just CORE_EXTENSION memories
   node scripts/export-continuity-memories.js --type CORE_EXTENSION --print
@@ -84,8 +93,8 @@ Examples:
   # Export only ANCHOR memories to file
   node scripts/export-continuity-memories.js --type ANCHOR --output anchors.json
   
-  # Full backup (includes all fields including vectors)
-  node scripts/export-continuity-memories.js --include-vectors --output full-backup.json
+  # Full backup with vectors (all memories from index)
+  node scripts/export-continuity-memories.js --all --include-vectors --output full-backup.json
             `);
             process.exit(0);
         }
@@ -134,24 +143,30 @@ function prepareMemoryForExport(memory, includeVectors = false) {
 async function exportMemories() {
     const args = parseArgs();
     
-    // Validate required parameters
-    if (!args.entityId) {
-        console.error('\n✗ Error: entityId is required');
-        console.error('  Set via --entityId flag or CONTINUITY_DEFAULT_ENTITY_ID environment variable\n');
-        process.exit(1);
-    }
-    
-    if (!args.userId) {
-        console.error('\n✗ Error: userId is required');
-        console.error('  Set via --userId flag or CONTINUITY_DEFAULT_USER_ID environment variable\n');
-        process.exit(1);
+    // Validate required parameters (unless --all is used)
+    if (!args.exportAll) {
+        if (!args.entityId) {
+            console.error('\n✗ Error: entityId is required (or use --all to export entire index)');
+            console.error('  Set via --entityId flag or CONTINUITY_DEFAULT_ENTITY_ID environment variable\n');
+            process.exit(1);
+        }
+        
+        if (!args.userId) {
+            console.error('\n✗ Error: userId is required (or use --all to export entire index)');
+            console.error('  Set via --userId flag or CONTINUITY_DEFAULT_USER_ID environment variable\n');
+            process.exit(1);
+        }
     }
     
     console.log('='.repeat(60));
     console.log('Export Continuity Memories');
     console.log('='.repeat(60));
-    console.log(`Entity ID: ${args.entityId}`);
-    console.log(`User ID: ${args.userId}`);
+    if (args.exportAll) {
+        console.log(`Mode: EXPORT ALL (entire index, all entities/users)`);
+    } else {
+        console.log(`Entity ID: ${args.entityId}`);
+        console.log(`User ID: ${args.userId}`);
+    }
     if (args.filterType) {
         console.log(`Filter Type: ${args.filterType}`);
     }
@@ -160,7 +175,7 @@ async function exportMemories() {
     } else {
         console.log(`Output File: ${args.outputFile}`);
     }
-    console.log(`Mode: ${args.includeVectors ? 'FULL BACKUP (includes vectors)' : 'STANDARD (vectors excluded)'}`);
+    console.log(`Backup Type: ${args.includeVectors ? 'FULL BACKUP (includes vectors)' : 'STANDARD (vectors excluded)'}`);
     console.log('='.repeat(60));
     console.log('');
     
@@ -195,16 +210,75 @@ async function exportMemories() {
         let hasMore = true;
         let pageCount = 0;
         
+        // Helper function to deserialize memory (parses JSON fields from Azure)
+        const deserializeMemory = (memory) => {
+            if (!memory) return memory;
+            const result = { ...memory };
+            
+            // Parse emotionalState if it's a JSON string
+            if (typeof result.emotionalState === 'string' && result.emotionalState) {
+                try {
+                    result.emotionalState = JSON.parse(result.emotionalState);
+                } catch {
+                    result.emotionalState = null;
+                }
+            }
+            
+            // Parse relationalContext if it's a JSON string
+            if (typeof result.relationalContext === 'string' && result.relationalContext) {
+                try {
+                    result.relationalContext = JSON.parse(result.relationalContext);
+                } catch {
+                    result.relationalContext = null;
+                }
+            }
+            
+            return result;
+        };
+        
         while (hasMore) {
             pageCount++;
             console.log(`  Fetching page ${pageCount} (skip: ${skip}, limit: ${PAGE_SIZE})...`);
             
-            const pageMemories = await service.coldMemory.searchFullText(
-                args.entityId,
-                args.userId,
-                '*',
-                { limit: PAGE_SIZE, skip }
-            );
+            let pageMemories = [];
+            
+            if (args.exportAll) {
+                // Export all: call cognitive_search directly with no filter
+                const indexName = service.coldMemory.indexName || DEFAULT_CONFIG.indexName;
+                
+                // Build type filter if specified
+                let filter = null;
+                if (args.filterType) {
+                    filter = `type eq '${args.filterType}'`;
+                }
+                
+                const response = await callPathway('cognitive_search', {
+                    text: '*',
+                    indexName: indexName,
+                    filter: filter || undefined,
+                    top: PAGE_SIZE,
+                    skip: skip
+                });
+                
+                // Parse response
+                try {
+                    const parsed = JSON.parse(response);
+                    const rawMemories = parsed.value || [];
+                    pageMemories = rawMemories.map(m => deserializeMemory(m));
+                } catch (error) {
+                    logger.error(`Failed to parse search response: ${error.message}`);
+                    hasMore = false;
+                    break;
+                }
+            } else {
+                // Normal export: use searchFullText with entity/user filter
+                pageMemories = await service.coldMemory.searchFullText(
+                    args.entityId,
+                    args.userId,
+                    '*',
+                    { limit: PAGE_SIZE, skip }
+                );
+            }
             
             if (pageMemories.length === 0) {
                 hasMore = false;
@@ -226,11 +300,16 @@ async function exportMemories() {
         console.log(`✓ Found ${allMemories.length} total memories in ${pageCount} page(s) (${duration}s)`);
         console.log('');
         
-        // Filter by type if specified
+        // Filter by type if specified (only if not already filtered at query time with --all)
         let filteredMemories = allMemories;
-        if (args.filterType) {
+        if (args.filterType && !args.exportAll) {
+            // When using --all, type filtering happens at query time, so skip here
             filteredMemories = allMemories.filter(m => m.type === args.filterType);
             console.log(`✓ Filtered to ${filteredMemories.length} memories of type ${args.filterType}`);
+            console.log('');
+        } else if (args.filterType && args.exportAll) {
+            // When using --all with --type, filtering already happened at query time
+            console.log(`✓ Filtered to ${filteredMemories.length} memories of type ${args.filterType} (filtered at query time)`);
             console.log('');
         }
         
@@ -251,8 +330,9 @@ async function exportMemories() {
         const exportData = {
             metadata: {
                 exportedAt: new Date().toISOString(),
-                entityId: args.entityId,
-                userId: args.userId,
+                entityId: args.exportAll ? null : args.entityId,
+                userId: args.exportAll ? null : args.userId,
+                exportAll: args.exportAll,
                 totalMemories: preparedMemories.length,
                 exportVersion: '1.0',
                 includeVectors: args.includeVectors,
@@ -330,6 +410,21 @@ async function exportMemories() {
                 console.log(`  ${type}: ${count}`);
             }
             console.log('');
+            
+            // If exporting all, also show breakdown by entity/user
+            if (args.exportAll) {
+                const entityUserCounts = {};
+                for (const memory of preparedMemories) {
+                    const key = `${memory.entityId || 'UNKNOWN'}/${memory.userId || 'UNKNOWN'}`;
+                    entityUserCounts[key] = (entityUserCounts[key] || 0) + 1;
+                }
+                
+                console.log('Memory breakdown by entity/user:');
+                for (const [key, count] of Object.entries(entityUserCounts).sort((a, b) => b[1] - a[1])) {
+                    console.log(`  ${key}: ${count}`);
+                }
+                console.log('');
+            }
         }
         
     } catch (error) {

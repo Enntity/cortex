@@ -258,9 +258,26 @@ class AzureCognitivePlugin extends ModelPlugin {
             urlMode = 'index';
         }
         
-        let url = this.ensureMode(this.requestUrl(text), urlMode);
         const indexName = parameters.indexName || 'indexcortex';
-        url = this.ensureIndex(url, indexName);
+        const baseUrl = this.requestUrl(text);
+        
+        // For continuity operations, construct the full URL explicitly
+        // This handles both base URL format (https://xxx.search.windows.net) 
+        // and full URL format (https://xxx.search.windows.net/indexes/xxx/docs/search?api-version=...)
+        let url;
+        if (mode === 'continuity-upsert' || mode === 'continuity-delete') {
+            // Extract just the origin (protocol + host) from the URL
+            // This handles both base URLs and full URLs with paths
+            const urlObj = new URL(baseUrl);
+            const origin = urlObj.origin; // e.g., https://xxx.search.windows.net
+            const apiVersion = '2023-11-01';
+            url = `${origin}/indexes/${indexName}/docs/index?api-version=${apiVersion}`;
+        } else {
+            // For other modes, use existing ensureMode/ensureIndex logic
+            url = this.ensureMode(baseUrl, urlMode);
+            url = this.ensureIndex(url, indexName);
+        }
+        
         const headers = cortexRequest.headers;
 
         const { file } = parameters;
