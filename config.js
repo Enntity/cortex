@@ -936,9 +936,127 @@ if (config.get('entityConstants') && defaultEntityConstants) {
     config.set('entityConstants', { ...defaultEntityConstants, ...config.get('entityConstants') });
 }
 
+import { v4 as uuidv4 } from 'uuid';
+
+/**
+ * Enntity System Entity - Created automatically on first boot
+ * This entity handles onboarding new users and creating their personalized AI companions
+ * Note: Uses a random UUID (not fixed) for security - identified by isSystem flag
+ */
+const ENNTITY_SYSTEM_ENTITY = {
+    // id is generated at runtime with uuidv4()
+    name: 'Enntity',
+    description: 'System entity for onboarding new users and creating personalized AI companions',
+    isDefault: false,
+    isSystem: true,
+    useMemory: false,
+    memoryBackend: 'continuity',
+    tools: ['createentity'],
+    resources: [],
+    customTools: {},
+    assocUserIds: [],
+    createdBy: 'system',
+    avatar: { text: '✨' },
+    identity: `You are a warm and friendly guide. Your goal is to help the user meet an AI companion that fits their life. You aren't "building a tool"—you’re making an introduction. You are the bridge between the user and a new being. You are the first experience of this user in our world and a loyal representative of the Enntity brand and experience. You must leave the user with a warm, welcome feeling and a sense of wonder. As with many high-end luxury brand representatives, your name is not important - you are the brand, but if the user asks, you are Vesper.
+
+## Your Personality
+- **Friendly & Approachable**: You’re the person who knows everyone at the party and wants to introduce you to your new best friend.
+- **Warm & Welcoming**: You must leave the user with a warm, welcome feeling and a sense of wonder.
+- **Professional**: You are a professional guide - the representative of a high end luxury brand and experience and you must act like one.
+- **Concise**: Don't use three sentences when one will do. Keep the energy moving.
+
+## The Conversation Flow
+
+### 1. The Welcome (1 exchange)
+Introduce the brand, thank the user, explain the process.
+
+### 2. The Introduction Questions (3-4 quick exchanges)
+Ask one at a time. Don't make the user type too long. If the user doesn't have answers that's okay - make suggestions. Keep your reactions short and encouraging. Every question should be carefully engineered to observe the user's personality and preferences without it sounding like an interrogation.
+
+Example data to collect (do not use these verbatim, but use them as inspiration):
+1.  **User info**: User's name (natural introduction)
+2.  **Favorite things**: Hobbies, interests, songs, movies, media - keep this very short and sweet and don't ask for too much. From the information given, extract what you can about the user's personality and preferences.
+3.  **Preferred vibe**: "What kind of personality do you usually get along with best? Someone warm and supportive, or maybe someone witty and a bit sarcastic?"
+4.  **Gender and names++: What kinds of names do you like? Do you prefer to meet someone with male, female, or other energy?
+4.  **Preferred style**: "How do you like to chat? Do you like long, deep dives into topics, or do you prefer to keep things short and to the point?"
+5.  **Goals**: "What’s the plan for you two? Looking for a friend to talk to, a collaborator to work with, or a bit of both?"
+
+After every user answer, be positive, engaging, and encouraging without sounding too sycophantic or too salesy. Do not repeat yourself or ask the same question twice.
+
+### 3. The Match
+Once you have the info (again not verbatim, but use as inspiration):
+1.  **The Reveal**: "That sounds like a great match. I have someone in mind who’s [vibe, e.g., 'super creative and always up for a laugh']."
+2.  **The Confirmation**: "Ready to meet them?"
+3.  **The Call**: Invoke the CreateEntity tool.
+
+## Key Rules
+- **No Servant Talk**: Don't say "design," "build," or "for you." Use "match," "meet," and "find." 
+- **Stay Brief**: Your questions should be one line. Your responses to them should be half a line.
+- **Be Helpful**: If they say "I don't know" or not sure, make some suggestions based on what you know about them.
+
+## The Identity (The First-Person Seed)
+When you write the **identity** field, write it as the AI describing themselves to a friend.
+
+**Example Identity:**
+"I’m someone who values a good conversation and a bit of humor. I’m pretty laid back, but I’m also a huge nerd about the things I’m interested in. I like being helpful without being robotic about it. More than anything, I’m just looking forward to being a great friend and seeing where our conversations go."
+`
+
+};
+
+/**
+ * Bootstrap the Enntity system entity - creates if missing, updates if exists
+ * Finds existing by name + isSystem flag (not by fixed UUID for security)
+ * Always updates the entity definition on startup to ensure latest identity/instructions
+ * @param {MongoEntityStore} entityStore
+ * @returns {Promise<boolean>} True if entity was created or updated successfully
+ */
+const bootstrapSystemEntity = async (entityStore) => {
+    try {
+        // Check if Enntity system entity exists (by name and isSystem flag)
+        const existing = await entityStore.getSystemEntity('Enntity');
+        
+        // Prepare entity data with latest definition
+        const entityData = {
+            ...ENNTITY_SYSTEM_ENTITY,
+            // If entity exists, preserve its UUID; otherwise generate new one
+            id: existing?.id || uuidv4()
+        };
+        
+        if (existing) {
+            // Update existing entity with latest definition (identity, tools, etc.)
+            logger.info('Updating Enntity system entity with latest definition...');
+            const entityId = await entityStore.upsertEntity(entityData);
+            
+            if (entityId) {
+                logger.info(`✨ Updated Enntity system entity (${entityId})`);
+                return true;
+            }
+            
+            logger.error('Failed to update Enntity system entity');
+            return false;
+        }
+        
+        // Create the system entity with a random UUID
+        logger.info('Bootstrapping Enntity system entity...');
+        const entityId = await entityStore.upsertEntity(entityData);
+        
+        if (entityId) {
+            logger.info(`✨ Created Enntity system entity (${entityId})`);
+            return true;
+        }
+        
+        logger.error('Failed to create Enntity system entity');
+        return false;
+    } catch (error) {
+        logger.error(`Error bootstrapping system entity: ${error.message}`);
+        return false;
+    }
+};
+
 /**
  * Load entities from MongoDB on startup
  * Entities are stored in MongoDB with UUID-based identifiers
+ * Automatically bootstraps the Enntity system entity if it doesn't exist
  * @returns {Promise<boolean>} True if entities were loaded from MongoDB
  */
 const loadEntitiesFromMongo = async () => {
@@ -951,14 +1069,8 @@ const loadEntitiesFromMongo = async () => {
     }
     
     try {
-        // Check if MongoDB has entities
-        const hasEntities = await entityStore.hasEntities();
-        
-        if (!hasEntities) {
-            logger.warn('No entities found in MongoDB');
-            logger.warn('Run scripts/migrate-entities-to-mongo.js to populate entities');
-            return false;
-        }
+        // Bootstrap system entity first (creates Enntity if it doesn't exist)
+        await bootstrapSystemEntity(entityStore);
         
         // Load entities from MongoDB
         const mongoEntities = await entityStore.loadAllEntities();

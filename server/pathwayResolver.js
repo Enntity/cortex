@@ -453,10 +453,11 @@ class PathwayResolver {
                 if (useContinuityMemory) {
                     try {
                         const continuityService = getContinuityMemoryService();
-                        if (continuityService.isAvailable()) {
+                        if (continuityService.isAvailable() && args.entityId) {
                             // Extract entity and user identifiers
                             // Use args.entityId (UUID) for memory operations, not args.aiName (display name)
-                            const entityId = args.entityId || 'default-entity';
+                            // If no entityId is provided, skip continuity memory entirely
+                            const entityId = args.entityId;
                             const userId = this.savedContextId;
                             
                             // Extract current query from args.text or last USER message in chatHistory

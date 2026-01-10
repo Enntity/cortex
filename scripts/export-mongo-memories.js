@@ -22,6 +22,7 @@ const COLLECTION_NAME = 'continuity_memories';
 // Parse command line arguments
 function parseArgs() {
     const args = {
+        all: false,             // Export all memories
         entityId: null,
         userId: null,
         outputFile: null,
@@ -32,7 +33,9 @@ function parseArgs() {
     
     for (let i = 2; i < process.argv.length; i++) {
         const arg = process.argv[i];
-        if (arg === '--entityId' && i + 1 < process.argv.length) {
+        if (arg === '--all') {
+            args.all = true;
+        } else if (arg === '--entityId' && i + 1 < process.argv.length) {
             args.entityId = process.argv[++i];
         } else if (arg === '--userId' && i + 1 < process.argv.length) {
             args.userId = process.argv[++i];
@@ -49,17 +52,24 @@ function parseArgs() {
 Usage: node scripts/export-mongo-memories.js [options]
 
 Options:
-  --entityId <id>       Entity ID to export (required)
-  --userId <id>         User ID to export (required)
-  --output <file>       Output JSON file path (required)
-  --types <types>       Comma-separated list of memory types to export
-  --exclude-vectors     Exclude contentVector field (smaller file size)
-  --pretty              Pretty print JSON output
-  --help, -h            Show this help message
+  --all                  Export all memories (ignores --entityId and --userId)
+  --entityId <id>        Entity ID to export (required unless --all)
+  --userId <id>          User ID to export (required unless --all)
+  --output <file>        Output JSON file path (required)
+  --types <types>        Comma-separated list of memory types to export
+  --exclude-vectors      Exclude contentVector field (smaller file size)
+  --pretty               Pretty print JSON output
+  --help, -h             Show this help message
 
-Example:
+Examples:
+  # Export specific entity/user
   node scripts/export-mongo-memories.js --entityId Luna --userId abc123 --output backup.json
-  node scripts/export-mongo-memories.js --entityId Luna --userId abc123 --output backup.json --exclude-vectors --pretty
+  
+  # Export all memories
+  node scripts/export-mongo-memories.js --all --output all-memories.json
+  
+  # Export with options
+  node scripts/export-mongo-memories.js --all --output backup.json --exclude-vectors --pretty
   node scripts/export-mongo-memories.js --entityId Luna --userId abc123 --types CORE,ANCHOR --output core-backup.json
             `);
             process.exit(0);
@@ -73,16 +83,18 @@ async function exportMemories() {
     const args = parseArgs();
     
     // Validate required arguments
-    if (!args.entityId) {
-        console.error('Error: --entityId is required');
-        console.error('Use --help for usage information');
-        process.exit(1);
-    }
-    
-    if (!args.userId) {
-        console.error('Error: --userId is required');
-        console.error('Use --help for usage information');
-        process.exit(1);
+    if (!args.all) {
+        if (!args.entityId) {
+            console.error('Error: --entityId is required (or use --all to export all memories)');
+            console.error('Use --help for usage information');
+            process.exit(1);
+        }
+        
+        if (!args.userId) {
+            console.error('Error: --userId is required (or use --all to export all memories)');
+            console.error('Use --help for usage information');
+            process.exit(1);
+        }
     }
     
     if (!args.outputFile) {
@@ -100,8 +112,12 @@ async function exportMemories() {
     console.log('='.repeat(60));
     console.log('Export Continuity Memories from MongoDB');
     console.log('='.repeat(60));
-    console.log(`Entity ID: ${args.entityId}`);
-    console.log(`User ID: ${args.userId}`);
+    if (args.all) {
+        console.log('Export Mode: ALL memories');
+    } else {
+        console.log(`Entity ID: ${args.entityId}`);
+        console.log(`User ID: ${args.userId}`);
+    }
     console.log(`Output: ${args.outputFile}`);
     console.log(`Include Vectors: ${args.excludeVectors ? 'NO' : 'YES'}`);
     if (args.types) {
@@ -127,10 +143,12 @@ async function exportMemories() {
         console.log('');
         
         // Build query
-        const query = {
-            entityId: args.entityId,
-            userId: args.userId
-        };
+        const query = {};
+        
+        if (!args.all) {
+            query.entityId = args.entityId;
+            query.userId = args.userId;
+        }
         
         if (args.types && args.types.length > 0) {
             query.type = { $in: args.types };
@@ -152,7 +170,11 @@ async function exportMemories() {
         console.log('');
         
         if (memories.length === 0) {
-            console.log('⚠️  No memories found for the specified entity/user.');
+            if (args.all) {
+                console.log('⚠️  No memories found in the database.');
+            } else {
+                console.log('⚠️  No memories found for the specified entity/user.');
+            }
             console.log('');
             process.exit(0);
         }
@@ -175,14 +197,31 @@ async function exportMemories() {
             if (m.relatedMemoryIds && m.relatedMemoryIds.length > 0) stats.withRelatedMemories++;
         }
         
+        // Calculate unique entity/user counts for --all mode
+        let uniqueEntities = null;
+        let uniqueUsers = null;
+        if (args.all) {
+            const entitySet = new Set();
+            const userSet = new Set();
+            for (const m of memories) {
+                if (m.entityId) entitySet.add(m.entityId);
+                if (m.userId) userSet.add(m.userId);
+            }
+            uniqueEntities = entitySet.size;
+            uniqueUsers = userSet.size;
+        }
+        
         // Build export object
         const exportData = {
             metadata: {
                 format: 'continuity-memory-export-v1',
                 source: 'mongodb',
                 exportedAt: new Date().toISOString(),
-                entityId: args.entityId,
-                userId: args.userId,
+                exportMode: args.all ? 'all' : 'filtered',
+                entityId: args.all ? null : args.entityId,
+                userId: args.all ? null : args.userId,
+                uniqueEntities: uniqueEntities,
+                uniqueUsers: uniqueUsers,
                 totalMemories: memories.length,
                 includesVectors: !args.excludeVectors,
                 typesFilter: args.types || null,
@@ -212,6 +251,10 @@ async function exportMemories() {
         console.log('Export Complete');
         console.log('='.repeat(60));
         console.log(`Total memories: ${memories.length}`);
+        if (args.all && uniqueEntities !== null) {
+            console.log(`Unique entities: ${uniqueEntities}`);
+            console.log(`Unique users: ${uniqueUsers}`);
+        }
         console.log('');
         console.log('By type:');
         for (const [type, count] of Object.entries(stats.byType).sort((a, b) => b[1] - a[1])) {

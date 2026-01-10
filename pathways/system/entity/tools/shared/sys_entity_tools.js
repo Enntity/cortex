@@ -113,9 +113,20 @@ export const loadEntityConfig = (entityId) => {
 /**
  * Fetches the list of available entities with their descriptions and active tools
  * Returns entities with their UUID identifiers for client use
- * @returns {Array} Array of objects containing entity information and their active tools
+ * @param {Object} [options]
+ * @param {boolean} [options.includeSystem=false] - Include system entities (like Enntity)
+ * @param {string} options.userId - User ID (required) - Filter to entities associated with this user
+ * @returns {Array|Error} Array of objects containing entity information and their active tools, or Error if userId is missing
  */
-export const getAvailableEntities = () => {
+export const getAvailableEntities = (options = {}) => {
+    const { includeSystem = false, userId } = options;
+    
+    // Require userId - return error if not provided
+    if (!userId || userId.trim() === '') {
+        logger.warn('getAvailableEntities called without userId - userId is required');
+        throw new Error('userId is required to get available entities');
+    }
+    
     try {
         const entityConfig = config.get('entityConfig');
         if (!entityConfig) {
@@ -123,7 +134,36 @@ export const getAvailableEntities = () => {
             return [];
         }
 
-        const entities = Object.values(entityConfig);
+        let entities = Object.values(entityConfig);
+        
+        // Filter out system entities unless explicitly requested
+        if (!includeSystem) {
+            entities = entities.filter(e => !e.isSystem);
+        }
+        
+        // Filter by userId
+        // System entities: always included (no assocUserIds check)
+        // Non-system entities: must have userId in assocUserIds array
+        entities = entities.filter(e => {
+            // System entities are always accessible
+            if (e.isSystem) {
+                return true;
+            }
+            
+            // Non-system entities: must have userId in assocUserIds array
+            // Empty, missing, or null assocUserIds means the entity is not accessible
+            const hasValidAssocUserIds = e.assocUserIds && 
+                                        Array.isArray(e.assocUserIds) && 
+                                        e.assocUserIds.length > 0;
+            
+            if (!hasValidAssocUserIds) {
+                // No valid assocUserIds array - exclude this entity
+                return false;
+            }
+            
+            // Must have userId in the array
+            return e.assocUserIds.includes(userId);
+        });
 
         return entities.map(entity => {
             const { entityTools } = getToolsForEntity(entity);
@@ -132,17 +172,40 @@ export const getAvailableEntities = () => {
                 name: entity.name,
                 description: entity.description || '',
                 isDefault: entity.isDefault || false,
+                isSystem: entity.isSystem || false,
                 useMemory: entity.useMemory ?? true,
                 memoryBackend: entity.memoryBackend || 'continuity',
                 avatar: entity.avatar || null,
-                activeTools: Object.keys(entityTools).map(toolName => ({
-                    name: toolName,
-                    description: entityTools[toolName].definition?.function?.description || ''
-                }))
+                createdAt: entity.createdAt ? (entity.createdAt instanceof Date ? entity.createdAt.toISOString() : entity.createdAt) : null,
+                updatedAt: entity.updatedAt ? (entity.updatedAt instanceof Date ? entity.updatedAt.toISOString() : entity.updatedAt) : null,
+                activeTools: Object.keys(entityTools) // Just return array of tool names
             };
         });
     } catch (error) {
         logger.error(`Error fetching available entities: ${error.message}`);
         return [];
+    }
+};
+
+/**
+ * Get the system entity by name (e.g., "Enntity")
+ * @param {string} name - System entity name
+ * @returns {Object|null} Entity config or null
+ */
+export const getSystemEntity = (name) => {
+    try {
+        const entityConfig = config.get('entityConfig');
+        if (!entityConfig) {
+            return null;
+        }
+
+        const entities = Object.values(entityConfig);
+        return entities.find(e => 
+            e.isSystem && 
+            e.name.toLowerCase() === name.toLowerCase()
+        ) || null;
+    } catch (error) {
+        logger.error(`Error getting system entity: ${error.message}`);
+        return null;
     }
 };

@@ -4,35 +4,45 @@ import 'dotenv/config';  // Load .env file
 /**
  * Cleanup Test Memories from Continuity Memory Index
  * 
- * Removes all memories where entityId does not match CONTINUITY_DEFAULT_ENTITY_ID
+ * Interactively removes memories by entityId, asking for confirmation for each.
  * This cleans up test data left behind by integration tests.
  * 
  * Usage:
- *   node scripts/cleanup-test-memories.js
- *   node scripts/cleanup-test-memories.js --dry-run  # Preview what would be deleted
- * 
- * Requires CONTINUITY_DEFAULT_ENTITY_ID environment variable to be set.
+ *   node scripts/cleanup-test-memories.js              # Preview mode (default, no deletions)
+ *   node scripts/cleanup-test-memories.js --execute  # Actually perform deletions
  */
 
 import { getContinuityMemoryService } from '../lib/continuity/index.js';
 import logger from '../lib/logger.js';
 import serverFactory from '../index.js';
+import readline from 'readline';
 
-const DRY_RUN = process.argv.includes('--dry-run');
+const EXECUTE = process.argv.includes('--execute');
+const DRY_RUN = !EXECUTE; // Dry run is default unless --execute is specified
+
+/**
+ * Prompt user for input
+ */
+function askQuestion(query) {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+
+    return new Promise(resolve => {
+        rl.question(query, answer => {
+            rl.close();
+            resolve(answer);
+        });
+    });
+}
 
 async function cleanupTestMemories() {
     console.log('🧹 Continuity Memory Test Cleanup\n');
     
-    // Get entity ID from environment
-    const entityId = process.env.CONTINUITY_DEFAULT_ENTITY_ID;
-    if (!entityId) {
-        console.error('❌ Error: CONTINUITY_DEFAULT_ENTITY_ID environment variable is required');
-        console.error('   This script removes memories where entityId does not match CONTINUITY_DEFAULT_ENTITY_ID\n');
-        process.exit(1);
-    }
-    
     if (DRY_RUN) {
-        console.log('⚠️  DRY RUN MODE - No deletions will be performed\n');
+        console.log('⚠️  PREVIEW MODE - No deletions will be performed');
+        console.log('   Add --execute flag to actually delete memories\n');
     }
     
     // Initialize server to load config
@@ -49,15 +59,14 @@ async function cleanupTestMemories() {
         process.exit(1);
     }
     
-    console.log(`📊 Scanning index for memories where entityId is not "${entityId}"...\n`);
+    console.log('📊 Scanning index for all memories...\n');
     
     try {
-        // Search for all memories where entityId does not match the configured entity
-        const filter = { entityId: { $ne: entityId } };
-        const testMemories = await service.coldMemory.searchAllWithFilter(filter, { limit: 10000 });
+        // Search for all memories
+        const testMemories = await service.coldMemory.searchAllWithFilter({}, { limit: 10000 });
         
         if (testMemories.length === 0) {
-            console.log('✅ No test memories found. Index is clean!\n');
+            console.log('✅ No memories found. Index is clean!\n');
             await server.stop();
             process.exit(0);
         }
@@ -72,45 +81,95 @@ async function cleanupTestMemories() {
             byEntity[entityId].push(memory);
         }
         
-        console.log(`📋 Found ${testMemories.length} test memories across ${Object.keys(byEntity).length} entity(ies):\n`);
+        console.log(`📋 Found ${testMemories.length} memories across ${Object.keys(byEntity).length} entity(ies):\n`);
         
-        for (const [entityId, memories] of Object.entries(byEntity)) {
+        // Get sorted list of entityIds for consistent ordering
+        const entityIds = Object.keys(byEntity).sort();
+        
+        for (const entityId of entityIds) {
+            const memories = byEntity[entityId];
             console.log(`   ${entityId}: ${memories.length} memories`);
         }
         
         console.log('');
         
         if (DRY_RUN) {
-            console.log('🔍 DRY RUN: Would delete the above memories.');
-            console.log('   Run without --dry-run to actually delete them.\n');
+            console.log('🔍 PREVIEW MODE: Would prompt for deletion of the above memories.');
+            console.log('   Run with --execute to actually delete them.\n');
             await server.stop();
             process.exit(0);
         }
         
-        // Delete all test memories
-        console.log('🗑️  Deleting test memories...\n');
+        // Process each entityId interactively
+        const entityIdsToDelete = [];
+        const entityIdsToKeep = [];
         
-        const memoryIds = testMemories.map(m => m.id);
+        for (const entityId of entityIds) {
+            const memories = byEntity[entityId];
+            const answer = await askQuestion(
+                `🗑️  Delete ${memories.length} memories for entity "${entityId}"? [K]eep/[D]elete (default: Keep): `
+            );
+            
+            const normalizedAnswer = answer.trim().toLowerCase();
+            if (normalizedAnswer === 'd' || normalizedAnswer === 'delete') {
+                entityIdsToDelete.push(entityId);
+                console.log(`   ✓ Marked for deletion\n`);
+            } else {
+                entityIdsToKeep.push(entityId);
+                console.log(`   ✓ Keeping\n`);
+            }
+        }
+        
+        if (entityIdsToDelete.length === 0) {
+            console.log('✅ No memories marked for deletion. Exiting.\n');
+            await server.stop();
+            process.exit(0);
+        }
+        
+        // Delete memories for selected entityIds
+        console.log(`🗑️  Deleting memories for ${entityIdsToDelete.length} entity(ies)...\n`);
+        
+        const memoryIdsToDelete = [];
+        for (const entityId of entityIdsToDelete) {
+            const memories = byEntity[entityId];
+            memoryIdsToDelete.push(...memories.map(m => m.id));
+        }
+        
         const batchSize = 100;
         let deleted = 0;
         
-        for (let i = 0; i < memoryIds.length; i += batchSize) {
-            const batch = memoryIds.slice(i, i + batchSize);
+        for (let i = 0; i < memoryIdsToDelete.length; i += batchSize) {
+            const batch = memoryIdsToDelete.slice(i, i + batchSize);
             await service.coldMemory.deleteMemories(batch);
             deleted += batch.length;
-            console.log(`   Deleted ${deleted}/${memoryIds.length} memories...`);
+            console.log(`   Deleted ${deleted}/${memoryIdsToDelete.length} memories...`);
         }
         
-        console.log(`\n✅ Successfully deleted ${deleted} test memories!\n`);
+        console.log(`\n✅ Successfully deleted ${deleted} memories from ${entityIdsToDelete.length} entity(ies)!`);
+        if (entityIdsToKeep.length > 0) {
+            console.log(`   Kept memories from ${entityIdsToKeep.length} entity(ies).\n`);
+        } else {
+            console.log('');
+        }
         
         // Verify cleanup
         console.log('🔍 Verifying cleanup...\n');
-        const remainingTest = await service.coldMemory.searchAllWithFilter(filter, { limit: 10000 });
+        const remainingTest = await service.coldMemory.searchAllWithFilter({}, { limit: 10000 });
         
-        if (remainingTest.length === 0) {
-            console.log('✅ Verification passed: All test memories removed!\n');
+        // Filter to only count memories from entities we intended to delete
+        const remainingFromDeletedEntities = remainingTest.filter(m => 
+            entityIdsToDelete.includes(m.entityId)
+        );
+        
+        if (remainingFromDeletedEntities.length === 0) {
+            console.log('✅ Verification passed: All selected memories removed!');
+            if (remainingTest.length > 0) {
+                console.log(`   (${remainingTest.length} memories remain from kept entities)\n`);
+            } else {
+                console.log('');
+            }
         } else {
-            console.log(`⚠️  Warning: ${remainingTest.length} test memories still remain.`);
+            console.log(`⚠️  Warning: ${remainingFromDeletedEntities.length} memories still remain from deleted entities.`);
             console.log('   This may be due to indexing delay.\n');
         }
         

@@ -88,8 +88,16 @@ This searches your long-term memory beyond the current context window.`,
                 : null;
             
             // Use args.entityId (UUID from pathway context) for memory operations
-            // Fall back to aiName for backward compatibility with direct tool calls
-            const entityId = args.entityId || aiName || 'default-entity';
+            // If no entityId is provided, memory operations are not allowed
+            if (!args.entityId) {
+                return JSON.stringify({
+                    success: false,
+                    error: 'entityId is required for memory operations. Memory search is disabled when no entityId is provided.',
+                    memories: []
+                });
+            }
+            
+            const entityId = args.entityId;
             const userId = contextId;
             
             const memories = await continuityService.searchMemory({

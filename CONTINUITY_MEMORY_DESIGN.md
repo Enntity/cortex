@@ -1089,13 +1089,17 @@ The `PathwayResolver` class in `server/pathwayResolver.js` is where memory is lo
 import { getContinuityMemoryService } from '../lib/continuity/index.js';
 
 // In loadMemory method (called during promptAndParse)
-const useContinuityMemory = args.useContinuityMemory || this.pathway.useContinuityMemory;
+const memoryBackend = args.memoryBackend || this.pathway.memoryBackend;
+const useMemory = args.useMemory !== false;
+const useContinuityMemory = useMemory && memoryBackend === 'continuity';
 if (useContinuityMemory) {
   try {
     const continuityService = getContinuityMemoryService();
-    if (continuityService.isAvailable()) {
+    if (continuityService.isAvailable() && args.entityId) {
       // Extract entity and user identifiers
-      const entityId = args.aiName || 'default-entity';
+      // Use args.entityId (UUID) for memory operations, not args.aiName (display name)
+      // If no entityId is provided, skip continuity memory entirely
+      const entityId = args.entityId;
       const userId = this.savedContextId;
       const currentQuery = args.text || args.chatHistory?.slice(-1)?.[0]?.content || '';
         
@@ -1130,7 +1134,8 @@ if (useContinuityMemory) {
 
 **Key Points**:
 - Uses singleton pattern via `getContinuityMemoryService()` (not direct instantiation)
-- Extracts `entityId` from `args.aiName` (falls back to 'default-entity')
+- Requires `args.entityId` (UUID) for memory operations - no fallback logic
+- If no `entityId` is provided, continuity memory is skipped entirely
 - Extracts `userId` from `this.savedContextId` (the context ID)
 - Extracts `currentQuery` from the last user message or `args.text`
 - Calls `initSession()` before getting context window
@@ -1863,7 +1868,7 @@ Pathway for deep memory consolidation and pattern recognition. Supports async mo
 **Location**: `pathways/system/entity/memory/sys_continuity_deep_synthesis.js`
 
 **Input Parameters**:
-- `entityId` (string, required): Entity identifier (AI name)
+- `entityId` (string, required): Entity identifier (UUID) - no fallback logic
 - `userId` (string, required): User/context identifier
 - `phase1Max` (integer, default: 100): Maximum memories for Phase 1 (Consolidation)
 - `phase2Max` (integer, default: 100): Maximum memories for Phase 2 (Discovery)
@@ -2228,7 +2233,17 @@ export default {
         ? typesArray.map(t => ContinuityMemoryType[t] || t)
         : null;
       
-      const entityId = aiName || 'default-entity';
+      // Use args.entityId (UUID from pathway context) for memory operations
+      // If no entityId is provided, memory operations are not allowed
+      if (!args.entityId) {
+        return JSON.stringify({
+          success: false,
+          error: 'entityId is required for memory operations. Memory search is disabled when no entityId is provided.',
+          memories: []
+        });
+      }
+      
+      const entityId = args.entityId;
       const userId = contextId;
       
       const memories = await continuityService.searchMemory({
@@ -2347,9 +2362,18 @@ Memory types:
       } : null
     };
     
+    // Use args.entityId (UUID from pathway context) for memory operations
+    // If no entityId is provided, memory operations are not allowed
+    if (!args.entityId) {
+      return JSON.stringify({
+        success: false,
+        error: 'entityId is required for memory operations. Memory storage is disabled when no entityId is provided.'
+      });
+    }
+    
     // Store with deduplication (merges with similar memories)
     const result = await continuityService.addMemoryWithDedup(
-      args.aiName || 'default-entity',
+      args.entityId,
       args.contextId,
       memory
     );
