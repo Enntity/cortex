@@ -81,7 +81,7 @@ export default {
         icon: "🎬",
         function: {
             name: "GenerateVideo",
-            description: "Use when asked to create, generate, or produce video content. This tool generates short 8-second video clips from text descriptions and optional reference images using Google's Veo 3.1 Fast model. The videos are high quality with AI-generated audio. Perfect for creating promotional clips, visual demonstrations, animated scenes, or bringing still images to life. After you have generated the video, you must include a link to it in your response to show it to the user.",
+            description: "Use when asked to create, generate, or produce video content. This tool generates short 8-second video clips from text descriptions and optional reference images using Google's Veo 3.1 Fast model. The videos are high quality with AI-generated audio. Perfect for creating promotional clips, visual demonstrations, animated scenes, or bringing still images to life. This tool does not display the video to the user - you need to do that with image markdown in your response. This is for SFW videos only - the safety filters are strict.",
             parameters: {
                 type: "object",
                 properties: {
@@ -192,24 +192,34 @@ export default {
             if (!result || typeof result !== 'string') {
                 throw new Error('Video generation failed: No response from Veo API');
             }
-            
-            // Check for common error patterns in the result
-            if (result.includes('error') && result.includes('status code')) {
-                throw new Error(`Video generation failed: ${result}`);
-            }
 
             // Parse the Veo response to extract video information
             // Veo returns: { response: { videos: [{ gcsUri, mimeType }], operationName, status } }
+            // OR: { done: true, error: {...} } when there's an error
             let parsedResult;
             try {
                 parsedResult = JSON.parse(result);
             } catch (parseError) {
+                // If it's not valid JSON, check if it's an error message string
+                if (result.includes('error') || result.includes('failed')) {
+                    throw new Error(`Video generation failed: ${result}`);
+                }
                 throw new Error(`Video generation failed: Invalid response from Veo - ${result.substring(0, 200)}`);
             }
             
-            // Check for error in parsed result
+            // Check for error in parsed result - the plugin returns the full operationData when there's an error
             if (parsedResult?.error) {
-                throw new Error(`Video generation failed: ${parsedResult.error.message || JSON.stringify(parsedResult.error)}`);
+                const errorMsg = parsedResult.error.message || parsedResult.error.code || JSON.stringify(parsedResult.error);
+                throw new Error(`Video generation failed: ${errorMsg}`);
+            }
+            
+            // Check if operation completed but has no videos (this is the error case from the plugin)
+            if (parsedResult?.done && !parsedResult?.response?.videos) {
+                if (parsedResult.error) {
+                    const errorMsg = parsedResult.error.message || parsedResult.error.code || JSON.stringify(parsedResult.error);
+                    throw new Error(`Video generation failed: ${errorMsg}`);
+                }
+                throw new Error('Video generation failed: Veo operation completed but returned no videos');
             }
             
             const videos = parsedResult?.response?.videos;
@@ -362,13 +372,33 @@ export default {
         } catch (e) {
             // Return a structured error that the agent can understand and act upon
             // Do NOT call sys_generator_error - let the agent see the actual error
-            const errorMessage = e.message ?? String(e);
+            let errorMessage = e.message ?? String(e);
             pathwayResolver.logError(errorMessage);
+            
+            // Try to extract the actual error message from JSON in the error message
+            // The plugin throws errors with JSON stringified in the message like:
+            // "Veo operation completed but no videos returned: {"done":true,"error":{"message":"..."}}"
+            try {
+                // Look for JSON object in the error message
+                const jsonMatch = errorMessage.match(/\{[^}]*"error"[^}]*\}/);
+                if (jsonMatch) {
+                    const errorData = JSON.parse(jsonMatch[0]);
+                    if (errorData?.error?.message) {
+                        errorMessage = errorData.error.message;
+                    } else if (errorData?.error) {
+                        errorMessage = typeof errorData.error === 'string' 
+                            ? errorData.error 
+                            : (errorData.error.message || JSON.stringify(errorData.error));
+                    }
+                }
+            } catch (parseError) {
+                // If parsing fails, use the original error message
+            }
             
             // Check for specific error types and provide actionable guidance
             let guidance = '';
-            if (errorMessage.includes('SAFETY') || errorMessage.includes('safety') || errorMessage.includes('blocked')) {
-                guidance = ' Try a different approach: use stylized/artistic content instead of photorealistic, avoid depicting real people, or simplify the prompt.';
+            if (errorMessage.includes('usage guidelines') || errorMessage.includes('violate') || errorMessage.includes('SAFETY') || errorMessage.includes('safety') || errorMessage.includes('blocked')) {
+                guidance = ' The prompt contains content that violates usage guidelines. Try rephrasing the prompt or using different content.';
             } else if (errorMessage.includes('timeout') || errorMessage.includes('Timeout')) {
                 guidance = ' The video generation timed out. Try a simpler scene or try again.';
             } else if (errorMessage.includes('quota') || errorMessage.includes('rate limit')) {

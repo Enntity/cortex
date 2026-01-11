@@ -436,6 +436,70 @@ class ReplicateApiPlugin extends ModelPlugin {
         };
         break;
       }
+      case "replicate-flux-2-dev": {
+        const validRatios = [
+          "match_input_image",
+          "custom",
+          "1:1",
+          "16:9",
+          "3:2",
+          "2:3",
+          "4:5",
+          "5:4",
+          "9:16",
+          "3:4",
+          "4:3"
+        ];
+        const validOutputFormats = ["webp", "jpg", "png"];
+
+        const normalizedImages = collectNormalizedImages(combinedParameters).slice(0, 5); // Maximum 5 images
+
+        const aspectRatio = validRatios.includes(combinedParameters.aspect_ratio ?? combinedParameters.aspectRatio) 
+          ? (combinedParameters.aspect_ratio ?? combinedParameters.aspectRatio) 
+          : "1:1";
+        
+        const outputFormat = validOutputFormats.includes(combinedParameters.output_format ?? combinedParameters.outputFormat) 
+          ? (combinedParameters.output_format ?? combinedParameters.outputFormat) 
+          : "webp";
+        
+        const outputQuality = combinedParameters.output_quality ?? combinedParameters.outputQuality ?? 80;
+        const goFast = combinedParameters.go_fast ?? combinedParameters.goFast ?? true;
+        const disableSafetyChecker = combinedParameters.disable_safety_checker ?? combinedParameters.disableSafetyChecker ?? false;
+
+        // Validate and round width/height to multiples of 32 if provided (only used when aspect_ratio=custom)
+        let width = combinedParameters.width;
+        let height = combinedParameters.height;
+        
+        if (width !== undefined && width !== null) {
+          width = Math.max(256, Math.min(1440, Math.round(width / 32) * 32));
+        }
+        if (height !== undefined && height !== null) {
+          height = Math.max(256, Math.min(1440, Math.round(height / 32) * 32));
+        }
+
+        const basePayload = omitUndefined({
+          prompt: modelPromptText,
+          aspect_ratio: aspectRatio,
+          output_format: outputFormat,
+          output_quality: Math.max(0, Math.min(100, outputQuality)),
+          go_fast: goFast,
+          disable_safety_checker: disableSafetyChecker,
+          ...(width !== undefined && width !== null ? { width } : {}),
+          ...(height !== undefined && height !== null ? { height } : {}),
+          ...(Number.isInteger(combinedParameters.seed) ? { seed: combinedParameters.seed } : {}),
+        });
+
+        // Include input_images array if we have images (max 5)
+        const inputPayload = {
+          ...basePayload,
+          ...(normalizedImages.length > 0 ? { input_images: normalizedImages } : {})
+        };
+
+        requestParameters = {
+          input: inputPayload,
+        };
+        break;
+      }
     }
 
     return requestParameters;
@@ -458,9 +522,11 @@ class ReplicateApiPlugin extends ModelPlugin {
     // Parse the response to get the actual Replicate data
     const parsedResponse = JSON.parse(response.output_text);
 
-    // If we got a completed response, return it as CortexResponse
+    // If we got a completed response, re-parse to extract artifacts properly
     if (parsedResponse?.status === "succeeded") {
-      return this.createCortexResponse(response);
+      // Re-parse the response data to extract artifacts (handles both string and array outputs)
+      const parsedWithArtifacts = this.parseResponse({ data: parsedResponse });
+      return this.createCortexResponse(parsedWithArtifacts);
     }
     
     logger.info("Replicate API returned a non-completed response.");
@@ -517,8 +583,13 @@ class ReplicateApiPlugin extends ModelPlugin {
     
     // Extract image URLs from Replicate response for artifacts
     const imageArtifacts = [];
-    if (responseData?.output && Array.isArray(responseData.output)) {
-      for (const outputItem of responseData.output) {
+    if (responseData?.output) {
+      // Handle both string and array outputs
+      const outputItems = Array.isArray(responseData.output) 
+        ? responseData.output 
+        : [responseData.output];
+      
+      for (const outputItem of outputItems) {
         if (typeof outputItem === 'string' && outputItem.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
           // This is an image URL from Replicate
           imageArtifacts.push({

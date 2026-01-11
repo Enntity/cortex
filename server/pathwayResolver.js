@@ -369,6 +369,12 @@ class PathwayResolver {
     }
 
     async executePathway(args) {
+        // Set rootRequestId from args if provided (for tool pathways called from sys_entity_agent)
+        // This ensures tool pathways inherit the rootRequestId from the parent resolver
+        if (args.rootRequestId) {
+            this.rootRequestId = args.rootRequestId;
+        }
+        
         // Bidirectional context transformation for backward compatibility:
         // 1. If agentContext provided: extract contextId/contextKey for legacy pathways
         // 2. If contextId provided without agentContext: create agentContext for new pathways

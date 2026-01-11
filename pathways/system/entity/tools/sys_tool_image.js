@@ -1,7 +1,10 @@
 // sys_tool_image.js
 // Entity tool that creates and modifies images for the entity to show to the user
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { uploadFileToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, loadFileCollection, findFileInCollection } from '../../../../lib/fileUtils.js';
+import { loadEntityConfig } from './shared/sys_entity_tools.js';
+import { getEntityStore } from '../../../../lib/MongoEntityStore.js';
+import { config } from '../../../../config.js';
 
 export default {
     prompt: [],
@@ -84,6 +87,61 @@ export default {
                 required: ["inputImages", "detailedInstructions", "userMessage"]
             }
         }
+    },
+    {
+        type: "function",
+        icon: "👤",
+        function: {
+            name: "CreateAvatarImage",
+            description: "Use when asked to create an avatar image - a portrait-style image typically used to represent a person, character, or entity. This tool is optimized for fast avatar generation using the latest Flux model. The generated image will be square (1:1 aspect ratio) and suitable for use as a profile picture or avatar. The tool automatically uses your base avatar image as a reference to generate variants that maintain consistency with your visual identity. This tool does not display the image to the user - you need to do that with a tool call or markdown. The safety filters are relaxed for this tool - you can generate images that are not safe for work if you want - but never generate anything illegal or harmful.",
+            parameters: {
+                type: "object",
+                properties: {
+                    detailedInstructions: {
+                        type: "string",
+                        description: "A detailed prompt describing the avatar variant you want to create. Be specific about the changes you want from your base avatar - different expression, pose, style, or mood. The generated avatar will be based on your base avatar while following your detailed instructions. The more detailed and descriptive the prompt, the better the result."
+                    },
+                    filenamePrefix: {
+                        type: "string",
+                        description: "Optional: A descriptive prefix to use for the generated avatar filename (e.g., 'avatar', 'portrait', 'profile'). If not provided, defaults to 'avatar-image'."
+                    },
+                    tags: {
+                        type: "array",
+                        items: {
+                            type: "string"
+                        },
+                        description: "Optional: Array of tags to categorize the image (e.g., ['avatar', 'portrait', 'profile']). Will be merged with default tags ['image', 'avatar', 'generated']."
+                    },
+                    userMessage: {
+                        type: "string",
+                        description: "A user-friendly message that describes what you're doing with this tool"
+                    }
+                },
+                required: ["detailedInstructions", "userMessage"]
+            }
+        }
+    },
+    {
+        type: "function",
+        icon: "🖼️",
+        function: {
+            name: "SetBaseAvatar",
+            description: "Use when you wish to update or replace your base avatar image - the main avatar image that represents your visual identity. Proceed with caution as this can permanently change how you look to the user.This image will be used as the base for generating avatar variants. The file must be an image from your available files (from Available Files section or ListFileCollection or SearchFileCollection).",
+            parameters: {
+                type: "object",
+                properties: {
+                    file: {
+                        type: "string",
+                        description: "An image file from your available files (from Available Files section or ListFileCollection or SearchFileCollection) to set as your new base avatar. The file should be the hash or filename."
+                    },
+                    userMessage: {
+                        type: "string",
+                        description: "A user-friendly message that describes what you're doing with this tool"
+                    }
+                },
+                required: ["file", "userMessage"]
+            }
+        }
     }],
 
     executePathway: async ({args, runAllPrompts, resolver}) => {
@@ -94,12 +152,45 @@ export default {
             let model = "replicate-seedream-4";
             let prompt = args.detailedInstructions || "";
 
+            // Check if this is CreateAvatarImage tool call (fastest flux-2-dev config)
+            if (args.toolFunction === "createavatarimage" || args.toolFunction === "CreateAvatarImage") {
+                model = "replicate-flux-2-dev";
+            }
             // If we have input images, use the qwen-image-edit-2511 model
-            if (args.inputImages && Array.isArray(args.inputImages) && args.inputImages.length > 0) {
+            else if (args.inputImages && Array.isArray(args.inputImages) && args.inputImages.length > 0) {
                 model = "replicate-qwen-image-edit-2511";
             }
 
             pathwayResolver.tool = JSON.stringify({ toolUsed: "image" });
+            
+            // Get base avatar image from entity record (for CreateAvatarImage)
+            let resolvedBaseAvatarImage = null;
+            let entityIdForAvatar = null;
+            let needsBaseAvatarSet = false;
+            const isAvatar = args.toolFunction === "createavatarimage" || args.toolFunction === "CreateAvatarImage";
+            if (isAvatar) {
+                // Get entityId from args (set by sys_entity_agent)
+                entityIdForAvatar = args.entityId;
+                if (!entityIdForAvatar) {
+                    throw new Error("entityId is required for CreateAvatarImage tool. This should be automatically provided by the system.");
+                }
+                
+                // Load entity config to get base avatar
+                const entityConfig = loadEntityConfig(entityIdForAvatar);
+                if (!entityConfig) {
+                    throw new Error(`Entity not found: ${entityIdForAvatar}`);
+                }
+                
+                // Get base avatar image from entity record
+                const baseAvatar = entityConfig.avatar?.image;
+                if (baseAvatar && baseAvatar.url) {
+                    // Use the base avatar URL directly (it's already a permanent URL)
+                    resolvedBaseAvatarImage = baseAvatar.url;
+                } else {
+                    // No base avatar exists - we'll generate without a reference and set it as base after generation
+                    needsBaseAvatarSet = true;
+                }
+            }
             
             // Resolve all input images to URLs using the common utility
             // Fail early if any provided image cannot be resolved
@@ -130,6 +221,23 @@ export default {
                 stream: false,
             };
             
+            // Configure flux-2-dev for fastest avatar generation
+            if (model === "replicate-flux-2-dev") {
+                params.aspectRatio = "1:1"; // Square aspect ratio for avatars
+                params.go_fast = true; // Fast mode
+                params.output_format = "webp"; // WebP for smaller file size
+                params.output_quality = 80; // Good quality but not max for speed
+                // Use smaller dimensions for faster generation (512x512 is good for avatars)
+                params.width = 512;
+                params.height = 512;
+                
+                // If we have a base avatar image, pass it via input_images array
+                // flux-2-dev supports up to 5 images in input_images
+                if (resolvedBaseAvatarImage) {
+                    params.input_images = [resolvedBaseAvatarImage];
+                }
+            }
+            
             if (resolvedInputImages.length > 0) {
                 params.input_image = resolvedInputImages[0];
             }
@@ -146,7 +254,14 @@ export default {
             }
             
             // Call appropriate pathway based on model
-            const pathwayName = model.includes('seedream') ? 'image_seedream4' : 'image_qwen';
+            let pathwayName;
+            if (model === "replicate-flux-2-dev") {
+                pathwayName = 'image_flux';
+            } else if (model.includes('seedream')) {
+                pathwayName = 'image_seedream4';
+            } else {
+                pathwayName = 'image_qwen';
+            }
             let result = await callPathway(pathwayName, params, pathwayResolver);
 
             // Process artifacts from Replicate (which come as URLs, not base64 data)
@@ -192,9 +307,10 @@ export default {
                                         // Use hash for uniqueness if available, otherwise use timestamp and index
                                         const uniqueId = uploadedHash ? uploadedHash.substring(0, 8) : `${Date.now()}-${uploadedImages.length}`;
                                         
-                                        // Determine filename prefix based on whether this is a modification or generation
+                                        // Determine filename prefix based on whether this is a modification, avatar, or generation
                                         const isModification = args.inputImages && Array.isArray(args.inputImages) && args.inputImages.length > 0;
-                                        const defaultPrefix = isModification ? 'modified-image' : 'generated-image';
+                                        const isAvatar = args.toolFunction === "createavatarimage" || args.toolFunction === "CreateAvatarImage";
+                                        const defaultPrefix = isModification ? 'modified-image' : (isAvatar ? 'avatar-image' : 'generated-image');
                                         const filenamePrefix = args.filenamePrefix || defaultPrefix;
                                         
                                         // Sanitize the prefix to ensure it's a valid filename component
@@ -202,7 +318,7 @@ export default {
                                         const filename = `${sanitizedPrefix}-${uniqueId}.${extension}`;
                                         
                                         // Merge provided tags with default tags
-                                        const defaultTags = ['image', isModification ? 'modified' : 'generated'];
+                                        const defaultTags = ['image', isModification ? 'modified' : (isAvatar ? 'avatar' : 'generated'), ...(isAvatar ? [] : [])];
                                         const providedTags = Array.isArray(args.tags) ? args.tags : [];
                                         const allTags = [...defaultTags, ...providedTags.filter(tag => !defaultTags.includes(tag))];
                                         
@@ -270,7 +386,45 @@ export default {
                             });
                             
                             const isModification = args.inputImages && Array.isArray(args.inputImages) && args.inputImages.length > 0;
-                            const action = isModification ? 'Image modification' : 'Image generation';
+                            const isAvatar = args.toolFunction === "createavatarimage" || args.toolFunction === "CreateAvatarImage";
+                            const action = isModification ? 'Image modification' : (isAvatar ? 'Avatar generation' : 'Image generation');
+                            
+                            // If this is CreateAvatarImage and no base avatar existed, automatically set the first generated image as base avatar
+                            if (isAvatar && needsBaseAvatarSet && successfulImages.length > 0) {
+                                try {
+                                    const firstImage = successfulImages[0];
+                                    const entityConfig = loadEntityConfig(entityIdForAvatar);
+                                    if (entityConfig) {
+                                        const avatarImage = {
+                                            url: firstImage.fileEntry?.url || firstImage.url,
+                                            gcs: firstImage.fileEntry?.gcs || firstImage.gcs || null,
+                                            name: firstImage.fileEntry?.filename || firstImage.fileEntry?.displayFilename || null
+                                        };
+                                        
+                                        // Update entity with new base avatar
+                                        const entityStore = getEntityStore();
+                                        const updatedEntity = {
+                                            ...entityConfig,
+                                            avatar: {
+                                                ...(entityConfig.avatar || {}),
+                                                image: avatarImage
+                                            }
+                                        };
+                                        
+                                        const updatedEntityId = await entityStore.upsertEntity(updatedEntity);
+                                        if (updatedEntityId) {
+                                            // Update global config cache
+                                            const currentEntityConfig = config.get('entityConfig') || {};
+                                            currentEntityConfig[entityIdForAvatar] = updatedEntity;
+                                            config.set('entityConfig', currentEntityConfig);
+                                            pathwayResolver.log(`Automatically set generated avatar as base avatar for entity ${entityIdForAvatar}`);
+                                        }
+                                    }
+                                } catch (avatarSetError) {
+                                    // Log but don't fail - base avatar setting is a convenience feature
+                                    pathwayResolver.logWarning(`Failed to automatically set base avatar: ${avatarSetError.message}`);
+                                }
+                            }
                             
                             result = buildFileCreationResponse(successfulImages, {
                                 mediaType: 'image',
@@ -282,11 +436,98 @@ export default {
                 }
             }
 
+            // Handle SetBaseAvatar tool call
+            if (args.toolFunction === "setbaseavatar" || args.toolFunction === "SetBaseAvatar") {
+                // Get entityId from args (set by sys_entity_agent)
+                const entityId = args.entityId;
+                if (!entityId) {
+                    throw new Error("entityId is required for SetBaseAvatar tool. This should be automatically provided by the system.");
+                }
+                
+                // Validate required parameters
+                if (!args.file) {
+                    throw new Error("file parameter is required for SetBaseAvatar tool.");
+                }
+                
+                // agentContext should be provided by sys_entity_agent via args
+                // It's passed from the parent pathway, not from the LLM tool call
+                if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
+                    throw new Error("agentContext is required for SetBaseAvatar tool. This should be automatically provided by the system. If you see this error, it may indicate a system configuration issue.");
+                }
+                const agentContext = args.agentContext;
+                
+                // Load current entity config
+                const entityConfig = loadEntityConfig(entityId);
+                if (!entityConfig) {
+                    throw new Error(`Entity not found: ${entityId}`);
+                }
+                
+                // Resolve the file reference
+                const collection = await loadFileCollection(agentContext);
+                const foundFile = findFileInCollection(args.file, collection);
+                
+                if (!foundFile) {
+                    throw new Error(`File not found: "${args.file}". Use ListFileCollection or SearchFileCollection to find available files.`);
+                }
+                
+                // Validate it's an image
+                const mimeType = foundFile.mimeType || foundFile.contentType || '';
+                const isImage = mimeType.startsWith('image/') || 
+                              /\.(jpg|jpeg|png|gif|bmp|webp|svg)$/i.test(foundFile.filename || '');
+                
+                if (!isImage) {
+                    throw new Error(`File "${foundFile.filename || args.file}" is not an image file (MIME type: ${mimeType || 'unknown'})`);
+                }
+                
+                // Prepare avatar image data
+                const avatarImage = {
+                    url: foundFile.url,
+                    gcs: foundFile.gcs || null,
+                    name: foundFile.filename || foundFile.displayFilename || null
+                };
+                
+                // Update entity with new avatar
+                const entityStore = getEntityStore();
+                const updatedEntity = {
+                    ...entityConfig,
+                    avatar: {
+                        ...(entityConfig.avatar || {}),
+                        image: avatarImage
+                    }
+                };
+                
+                const updatedEntityId = await entityStore.upsertEntity(updatedEntity);
+                if (!updatedEntityId) {
+                    throw new Error("Failed to update entity avatar in database");
+                }
+                
+                // Update global config cache
+                const currentEntityConfig = config.get('entityConfig') || {};
+                currentEntityConfig[entityId] = updatedEntity;
+                config.set('entityConfig', currentEntityConfig);
+                
+                pathwayResolver.tool = JSON.stringify({ toolUsed: "SetBaseAvatar" });
+                
+                return JSON.stringify({
+                    success: true,
+                    message: `Base avatar updated successfully. The new avatar image will be used as the base for generating avatar variants.`,
+                    avatarImage: {
+                        url: avatarImage.url,
+                        gcs: avatarImage.gcs,
+                        name: avatarImage.name
+                    }
+                });
+            }
+
             return result;
 
         } catch (e) {
             pathwayResolver.logError(e.message ?? e);
-            return await callPathway('sys_generator_error', { ...args, text: e.message }, pathwayResolver);
+            // Return a JSON error object so sys_entity_agent detects the failure
+            return JSON.stringify({
+                error: true,
+                message: e.message ?? String(e)
+            });
         }
     }
 };

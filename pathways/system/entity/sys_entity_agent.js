@@ -139,21 +139,24 @@ export default {
                         // Create an isolated copy of messages for this tool
                         const toolMessages = JSON.parse(JSON.stringify(preToolCallMessages));
                         
-                        // Get the tool definition to check for icon
+                        // Get the tool definition to check for icon and visibility
                         const toolDefinition = entityTools[toolFunction]?.definition;
                         const toolIcon = toolDefinition?.icon || '🛠️';
+                        const hideExecution = toolDefinition?.hideExecution === true;
                         
                         // Get the user message for the tool
                         const toolUserMessage = toolArgs.userMessage || `Executing tool: ${toolCall.function.name}`;
                         
-                        // Send tool start message
+                        // Send tool start message (unless execution is hidden)
                         const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
                         const toolCallId = toolCall.id;
-                        try {
-                            await sendToolStart(requestId, toolCallId, toolIcon, toolUserMessage);
-                        } catch (startError) {
-                            logger.error(`Error sending tool start message: ${startError.message}`);
-                            // Continue execution even if start message fails
+                        if (!hideExecution) {
+                            try {
+                                await sendToolStart(requestId, toolCallId, toolIcon, toolUserMessage, toolCall.function.name, toolArgs);
+                            } catch (startError) {
+                                logger.error(`Error sending tool start message: ${startError.message}`);
+                                // Continue execution even if start message fails
+                            }
                         }
 
                         const toolResult = await callTool(toolFunction, {
@@ -161,7 +164,8 @@ export default {
                             ...toolArgs,
                             toolFunction,
                             chatHistory: toolMessages,
-                            stream: false
+                            stream: false,
+                            useMemory: false  // Disable memory synthesis for tool calls
                         }, entityTools, pathwayResolver);
 
                         // Tool calls and results need to be paired together in the message history
@@ -294,12 +298,14 @@ export default {
                             }
                         }
                         
-                        // Send tool finish message
-                        try {
-                            await sendToolFinish(requestId, toolCallId, !hasError, errorMessage);
-                        } catch (finishError) {
-                            logger.error(`Error sending tool finish message: ${finishError.message}`);
-                            // Continue execution even if finish message fails
+                        // Send tool finish message (unless execution is hidden)
+                        if (!hideExecution) {
+                            try {
+                                await sendToolFinish(requestId, toolCallId, !hasError, errorMessage, toolCall.function.name);
+                            } catch (finishError) {
+                                logger.error(`Error sending tool finish message: ${finishError.message}`);
+                                // Continue execution even if finish message fails
+                            }
                         }
 
                         return { 
@@ -314,15 +320,19 @@ export default {
                     } catch (error) {
                         logger.error(`Error executing tool ${toolCall?.function?.name || 'unknown'}: ${error.message}`);
                         
-                        // Send tool finish message (error)
+                        // Send tool finish message (error) - unless execution is hidden
                         // Get requestId and toolCallId if not already defined (in case error occurred before they were set)
                         const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
                         const toolCallId = toolCall.id;
-                        try {
-                            await sendToolFinish(requestId, toolCallId, false, error.message);
-                        } catch (finishError) {
-                            logger.error(`Error sending tool finish message: ${finishError.message}`);
-                            // Continue execution even if finish message fails
+                        const errorToolDefinition = entityTools[toolCall?.function?.name?.toLowerCase()]?.definition;
+                        const hideExecution = errorToolDefinition?.hideExecution === true;
+                        if (!hideExecution) {
+                            try {
+                                await sendToolFinish(requestId, toolCallId, false, error.message, toolCall?.function?.name || null);
+                            } catch (finishError) {
+                                logger.error(`Error sending tool finish message: ${finishError.message}`);
+                                // Continue execution even if finish message fails
+                            }
                         }
                         
                         // Create error message history
@@ -474,6 +484,9 @@ export default {
         const legacyFlag = entityConfig?.useContinuityMemory ?? args.useContinuityMemory;
         args.memoryBackend = entityConfig?.memoryBackend ?? paramMemoryBackend ?? (legacyFlag ? 'continuity' : 'continuity');
         
+        // Override model from entity config if defined (use modelOverride for dynamic model switching)
+        const modelOverride = entityConfig?.modelOverride ?? args.modelOverride;
+        
         // Convenience flags for template/code use
         const useLegacyMemory = args.useMemory && args.memoryBackend === 'legacy';
         const useContinuityMemory = args.useMemory && args.memoryBackend === 'continuity';
@@ -562,7 +575,7 @@ export default {
         const instructionTemplates = entityInstructions ? (entityInstructions + '\n\n') : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n{{renderTemplate AI_EXPERTISE}}\n\n`;
 
         const promptMessages = [
-            {"role": "system", "content": `${promptPrefix}${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_SEARCH_SYNTAX}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${memoryTemplates}${continuityContextTemplate}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+            {"role": "system", "content": `${promptPrefix}${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${memoryTemplates}${continuityContextTemplate}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
             "{{chatHistory}}",
         ];
 
@@ -570,8 +583,15 @@ export default {
             new Prompt({ messages: promptMessages }),
         ];
 
-        // Use 'high' reasoning effort in research mode for thorough analysis, 'none' in normal mode for faster responses
-        const reasoningEffort = researchMode ? 'high' : 'low';
+        // Determine reasoning effort: Priority: entityConfig > researchMode > default ('low')
+        // Use 'high' reasoning effort in research mode for thorough analysis, 'low' in normal mode for faster responses
+        let reasoningEffort = entityConfig?.reasoningEffort;
+        if (!reasoningEffort) {
+            reasoningEffort = researchMode ? 'high' : 'low';
+        }
+        if (entityConfig?.reasoningEffort) {
+            logger.debug(`Using entity reasoningEffort: ${entityConfig.reasoningEffort}`);
+        }
 
         // Limit the chat history to 20 messages to speed up processing
         if (args.messages && args.messages.length > 0) {
@@ -627,6 +647,7 @@ export default {
 
             let response = await runAllPrompts({
                 ...args,
+                modelOverride,
                 chatHistory: currentMessages,
                 availableFiles,
                 reasoningEffort,
