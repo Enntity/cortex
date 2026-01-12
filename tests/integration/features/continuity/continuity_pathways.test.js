@@ -273,7 +273,8 @@ test.serial('Tool: store_continuity_memory stores a new memory', async (t) => {
         tags: ['test', 'memory', 'philosophy'],
         emotionalValence: 'curiosity',
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed = JSON.parse(result);
@@ -295,7 +296,8 @@ test.serial('Tool: store_continuity_memory handles empty content', async (t) => 
         content: '',
         memoryType: 'ANCHOR',
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed = JSON.parse(result);
@@ -308,7 +310,8 @@ test.serial('Tool: store_continuity_memory handles invalid type', async (t) => {
         content: 'Test content',
         memoryType: 'INVALID_TYPE',
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed = JSON.parse(result);
@@ -324,7 +327,8 @@ test.serial('Tool: store_continuity_memory with different types', async (t) => {
         importance: 7,
         tags: ['test', 'architecture', 'insight'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const artifactParsed = JSON.parse(artifactResult);
@@ -340,7 +344,8 @@ test.serial('Tool: store_continuity_memory with different types', async (t) => {
         importance: 6,
         tags: ['test', 'learning', 'growth'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const identityParsed = JSON.parse(identityResult);
@@ -363,7 +368,8 @@ test.serial('Deduplication: exact duplicate content is merged', async (t) => {
         importance: 6,
         tags: ['test', 'ai', 'memory', 'philosophy'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed1 = JSON.parse(result1);
@@ -383,7 +389,8 @@ test.serial('Deduplication: exact duplicate content is merged', async (t) => {
         importance: 7, // Different importance shouldn't matter
         tags: ['test', 'ai', 'architecture'], // Different tags shouldn't matter
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed2 = JSON.parse(result2);
@@ -409,7 +416,8 @@ test.serial('Deduplication: similar memories are merged', async (t) => {
         importance: 6,
         tags: ['test', 'ai', 'memory', 'philosophy'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed1 = JSON.parse(result1);
@@ -428,7 +436,8 @@ test.serial('Deduplication: similar memories are merged', async (t) => {
         importance: 7,
         tags: ['test', 'ai', 'architecture'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed2 = JSON.parse(result2);
@@ -458,6 +467,7 @@ test.serial('Deduplication: skipDedup stores without merging', async (t) => {
         importance: 5,
         contextId: TEST_USER_ID,
         aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID,
         skipDedup: true
     });
     

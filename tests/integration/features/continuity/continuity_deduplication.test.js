@@ -78,7 +78,8 @@ test.serial('Exact duplicate content is merged', async (t) => {
         importance: 6,
         tags: ['test', 'ai', 'memory', 'philosophy'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed1 = JSON.parse(result1);
@@ -100,7 +101,8 @@ test.serial('Exact duplicate content is merged', async (t) => {
         importance: 7, // Different importance shouldn't matter
         tags: ['test', 'ai', 'architecture'], // Different tags shouldn't matter
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed2 = JSON.parse(result2);
@@ -127,7 +129,8 @@ test.serial('Very similar memories are merged', async (t) => {
         importance: 6,
         tags: ['test', 'ai', 'memory', 'philosophy'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed1 = JSON.parse(result1);
@@ -148,7 +151,8 @@ test.serial('Very similar memories are merged', async (t) => {
         importance: 7,
         tags: ['test', 'ai', 'architecture'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed2 = JSON.parse(result2);
@@ -178,7 +182,8 @@ test.serial('Different memories are NOT merged', async (t) => {
         importance: 8,
         tags: ['test', 'debugging', 'problem-solving'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed1 = JSON.parse(result1);
@@ -197,7 +202,8 @@ test.serial('Different memories are NOT merged', async (t) => {
         importance: 7,
         tags: ['test', 'communication', 'preferences'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed2 = JSON.parse(result2);
@@ -219,7 +225,8 @@ test.serial('Vector score debugging: check actual scores', async (t) => {
         importance: 6,
         tags: ['test', 'debug'],
         contextId: TEST_USER_ID,
-        aiName: TEST_ENTITY_ID
+        aiName: TEST_ENTITY_ID,
+        entityId: TEST_ENTITY_ID
     });
     
     const parsed1 = JSON.parse(result1);

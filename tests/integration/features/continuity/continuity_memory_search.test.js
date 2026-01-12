@@ -176,14 +176,14 @@ test.after.always('cleanup', async () => {
 async function executeSearch(query, memoryTypes = null, expandGraph = false, limit = 10) {
     const response = await testServer.executeOperation({
         query: `
-            query TestSearch($query: String!, $memoryTypes: [String], $limit: Int, $expandGraph: Boolean, $contextId: String, $aiName: String) {
+            query TestSearch($query: String!, $memoryTypes: [String], $limit: Int, $expandGraph: Boolean, $contextId: String, $entityId: String) {
                 sys_tool_search_continuity_memory(
                     query: $query,
                     memoryTypes: $memoryTypes,
                     limit: $limit,
                     expandGraph: $expandGraph,
                     contextId: $contextId,
-                    aiName: $aiName
+                    entityId: $entityId
                 ) {
                     result
                 }
@@ -195,7 +195,7 @@ async function executeSearch(query, memoryTypes = null, expandGraph = false, lim
             limit,
             expandGraph,
             contextId: TEST_USER_ID,
-            aiName: TEST_ENTITY_ID
+            entityId: TEST_ENTITY_ID
         }
     });
     

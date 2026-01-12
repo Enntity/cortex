@@ -19,7 +19,7 @@ export default {
         limit: { type: 'integer', default: 5 },  // Max results
         expandGraph: { type: 'boolean', default: false },  // Whether to expand to related memories
         contextId: ``,       // User/context identifier
-        aiName: ``,          // Entity identifier
+        entityId: ``,        // Entity UUID (required for memory operations)
     },
     
     // Tool definition for OpenAI format
@@ -66,8 +66,7 @@ This searches your long-term memory beyond the current context window.`,
             memoryTypes, 
             limit = 15, // Increased from 5 to capture more relevant memories, including factual lists
             expandGraph = false,
-            contextId,
-            aiName
+            contextId
         } = args;
         
         try {

@@ -176,8 +176,9 @@ test.serial('MongoDB: memory upsert', async (t) => {
     t.log(`Upserted memory IDs: ${memoryIds.join(', ')}`);
     
     // Wait for vector index sync - Atlas can take several seconds
-    t.log('Waiting 5s for Atlas Vector Search index sync...');
-    await new Promise(r => setTimeout(r, 5000));
+    // Increased to 15s as vector search indexing can be slow under load
+    t.log('Waiting 15s for Atlas Vector Search index sync...');
+    await new Promise(r => setTimeout(r, 15000));
 });
 
 test.serial('MongoDB: semantic search', async (t) => {
