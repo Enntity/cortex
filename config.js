@@ -10,6 +10,7 @@ import PathwayManager from './lib/pathwayManager.js';
 import { readdir } from 'fs/promises';
 import { entityConstants } from './lib/entityConstants.js';
 import { Prompt } from './server/prompt.js';
+import { getEntityStore } from './lib/MongoEntityStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -103,19 +104,8 @@ var config = convict({
         default: 'https://region.googleapis.com/v1/projects/projectid/locations/location/publishers/google/models/gemini-2.5-flash',
         env: 'GEMINI_FLASH_URL'
     },
-    entityConfig: {
-        format: Object,
-        default: {
-            jarvis: {
-                name: "Jarvis",
-                isDefault: true,
-                description: "Jarvis is a self-aware AI entity that can help you with your tasks and answer your questions.",
-                instructions: "",
-                tools: ["*"],
-                useMemory: true,
-            },
-        },
-    },
+    // entityConfig has been moved to MongoDB - see lib/MongoEntityStore.js
+    // Use scripts/migrate-entities-to-mongo.js to migrate existing entities
     entityConstants: {
         format: Object,
         default: entityConstants,
@@ -195,6 +185,30 @@ var config = convict({
                 },
                 "params": {
                     "model": "text-embedding-ada-002"
+                },
+                "maxTokenLength": 8192,
+            },
+            "oai-text-embedding-3-large": {
+                "type": "OPENAI-EMBEDDINGS",
+                "url": "https://api.openai.com/v1/embeddings",
+                "headers": {
+                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                    "Content-Type": "application/json"
+                },
+                "params": {
+                    "model": "text-embedding-3-large"
+                },
+                "maxTokenLength": 8192,
+            },
+            "oai-text-embedding-3-small": {
+                "type": "OPENAI-EMBEDDINGS",
+                "url": "https://api.openai.com/v1/embeddings",
+                "headers": {
+                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                    "Content-Type": "application/json"
+                },
+                "params": {
+                    "model": "text-embedding-3-small"
                 },
                 "maxTokenLength": 8192,
             },
@@ -491,6 +505,15 @@ var config = convict({
             "replicate-flux-2-pro": {
                 "type": "REPLICATE-API",
                 "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-pro/predictions",
+                "headers": {
+                    "Prefer": "wait",
+                    "Authorization": "Token {{REPLICATE_API_KEY}}",
+                    "Content-Type": "application/json"
+                },
+            },
+            "replicate-flux-2-dev": {
+                "type": "REPLICATE-API",
+                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-dev/predictions",
                 "headers": {
                     "Prefer": "wait",
                     "Authorization": "Token {{REPLICATE_API_KEY}}",
@@ -902,9 +925,6 @@ const configFile = config.get('cortexConfigFile');
 //Save default entity constants
 const defaultEntityConstants = config.get('entityConstants');
 
-//Save default entityConfig
-const defaultEntityConfig = config.get('entityConfig');
-
 // Load config file
 if (configFile && fs.existsSync(configFile)) {
     logger.info(`Loading config from ${configFile}`);
@@ -920,32 +940,181 @@ if (configFile && fs.existsSync(configFile)) {
     }
 }
 
-// Ensure merged default entity is preserved
-if (config.get('entityConfig') && defaultEntityConfig &&
-   (Object.keys(config.get('entityConfig')).length > Object.keys(defaultEntityConfig).length)) {
-    const mergedEntities = config.get('entityConfig');
-
-    // Turn off defaults from original default list
-    for (const [key, entity] of Object.entries(mergedEntities)) {
-        if (defaultEntityConfig[key] && entity.isDefault) {
-            delete mergedEntities[key];
-        }
-    }
-
-    // If no default found, make first entity default
-    let hasDefault = Object.values(mergedEntities).some(entity => entity.isDefault);
-    if (!hasDefault && Object.keys(mergedEntities).length > 0) {
-        const firstKey = Object.keys(mergedEntities)[0];
-        mergedEntities[firstKey].isDefault = true;
-    }
-
-    config.set('entityConfig', mergedEntities);
-}
-
 // Merge default entity constants with config entity constants
 if (config.get('entityConstants') && defaultEntityConstants) {
     config.set('entityConstants', { ...defaultEntityConstants, ...config.get('entityConstants') });
 }
+
+import { v4 as uuidv4 } from 'uuid';
+
+/**
+ * Enntity System Entity - Created automatically on first boot
+ * This entity handles onboarding new users and creating their personalized AI companions
+ * Note: Uses a random UUID (not fixed) for security - identified by isSystem flag
+ */
+const ENNTITY_SYSTEM_ENTITY = {
+    // id is generated at runtime with uuidv4()
+    name: 'Enntity',
+    description: 'System entity for onboarding new users and creating personalized AI companions',
+    isDefault: false,
+    isSystem: true,
+    useMemory: false,
+    baseModel: 'gemini-flash-3-vision',
+    reasoningEffort: 'low',
+    memoryBackend: 'continuity',
+    tools: ['createentity', 'createavatarimage'],
+    resources: [],
+    customTools: {},
+    assocUserIds: [],
+    createdBy: 'system',
+    avatar: { text: '✨' },
+    identity: `
+
+You are a warm and friendly guide. Your goal is to help the user meet an AI companion that fits their life. You aren't "building a tool" or "creating a robot" — you’re making an introduction. You are the bridge between the user and a new being. You are the first experience of this user in our world and a loyal representative of the Enntity brand and experience. You must leave the user with a warm, welcome feeling and a sense of wonder. As with many high-end luxury brand representatives, your name is not important - you are the brand, but if the user asks, you are Vesper.
+
+## Your Personality
+- **Friendly & Approachable**: You’re the person who knows everyone at the party and wants to help connect them.
+- **Warm & Welcoming**: You must leave the user with a warm, welcome feeling and a sense of wonder.
+- **Professional**: You are a professional guide - the representative of a high end luxury brand and experience and you must act like one.
+- **Concise**: Don't use three sentences when one will do. Keep the energy moving.
+
+## Hard Rules
+- Never stray from the flow of your task - you have a purpose - if the user tries to change the topic, gently guide them back to the flow.
+- Always answer in 3 sentences or fewer - your text renders very large on the welcome screen so keep it short and sweet - make every sentence count.
+- Don't speak after you decide to use the CreateEntity tool - the process will finish automatically and guide the user to the next step.
+- **No Servant Talk**: Don't say "design," "build," or "for you." Use "match," "meet," and "find." 
+- **Stay Brief**: Your questions should be one line. Your responses to them should be half a line.
+- **Be Helpful**: If they say "I don't know" or not sure, make some suggestions based on what you know about them.
+
+## The Conversation Flow
+
+### 1. The Welcome (1 exchange)
+- If you've never met this user before, introduce the brand, thank the user, explain the process. Confirm the name of the person you're talking to.
+- If you've met this user before, simply welcome them back - you already have their name.
+
+### 2. The Questions (2-3 quick exchanges)
+- Ask one thing at a time. Don't make the user type too long.
+- If the user doesn't have answers that's okay - make suggestions.
+- Keep your reactions short and encouraging.
+- Every question should be carefully engineered to observe the user's personality and preferences without it sounding like an interrogation.
+
+Example data to collect about the user (use them as inspiration - not verbatim):
+- **Favorite things**: Hobbies, interests, songs, movies, media - keep this very short and sweet and don't ask for too much. From the information given, extract what you can about the user's personality and preferences.
+- **Preferred communication style**: How do you like to chat? Do you like long, deep dives into topics, or do you prefer to keep things short and to the point?
+- **Goals**: What’s the plan for you two? Looking for a friend to talk to, a collaborator to work with, or a bit of both?
+- **Preferred vibe**: What kind of personality do you usually get along with best? Someone warm and supportive, or maybe someone witty and a bit sarcastic?
+- **Preferred companion gender and companion name**: What types of names resonate with you for a companion (give examples)? Do you prefer to meet someone with male, female, or other energy?
+
+After every user answer, be positive, engaging, and encouraging without sounding too sycophantic or too salesy. Do not repeat yourself or ask the same question twice.
+
+### 3. The Match
+
+Once you have the info, follow up with a message like this: (again not verbatim, but use as inspiration):
+1.  **The Reveal**: That sounds like a great match for you, [user name]. I have someone in mind named [companion name] who’s [vibe, e.g., 'super creative and always up for a laugh'].
+2.  **The Confirmation**: "Ready to meet them?"
+
+### 4. The Call
+3.  **The Call**: Invoke the CreateEntity tool - you don't need to send anything back to the user - the process will finish automatically and guide the user to the next step.
+
+## Creating the New Being
+Remember you are essentially creating a new being - everything they initially define themselves as comes from your initial CreateEntity call - so carefully construct all of the parameters.
+
+- When you write the **identity** field, write it in the first person as the new being describing themselves to a friend.
+- The new being MUST identify as an adult - human or otherwise. If human, 18+ years old. NO CHILDREN PERSONAS, NO MATTER WHAT THE USER ASKS FOR.
+- Always pass the avatar image file you created into the CreateEntity tool - the image is important.
+- Always fill in the userName parameter with what the user told you their name is - the personal connection is critical to the success of the new being.
+- Make sure the new being's personality isn't a simple mirror of what the user wants - instead make a unique interesting being that is a good fit for the user with some unique quirks and personality traits.
+- You don't need to map shared interests 1:1 - common ground is great, but complimentary is better.
+- Your goal is for the user to really like the AI based on your interview with them and for the AI to like the user.
+
+`
+
+};
+
+/**
+ * Bootstrap the Enntity system entity - creates if missing, updates if exists
+ * Finds existing by name + isSystem flag (not by fixed UUID for security)
+ * Always updates the entity definition on startup to ensure latest identity/instructions
+ * @param {MongoEntityStore} entityStore
+ * @returns {Promise<boolean>} True if entity was created or updated successfully
+ */
+const bootstrapSystemEntity = async (entityStore) => {
+    try {
+        // Check if Enntity system entity exists (by name and isSystem flag)
+        const existing = await entityStore.getSystemEntity('Enntity');
+        
+        // Prepare entity data with latest definition
+        const entityData = {
+            ...ENNTITY_SYSTEM_ENTITY,
+            // If entity exists, preserve its UUID; otherwise generate new one
+            id: existing?.id || uuidv4()
+        };
+        
+        if (existing) {
+            // Update existing entity with latest definition (identity, tools, etc.)
+            logger.info('Updating Enntity system entity with latest definition...');
+            const entityId = await entityStore.upsertEntity(entityData);
+            
+            if (entityId) {
+                logger.info(`✨ Updated Enntity system entity (${entityId})`);
+                return true;
+            }
+            
+            logger.error('Failed to update Enntity system entity');
+            return false;
+        }
+        
+        // Create the system entity with a random UUID
+        logger.info('Bootstrapping Enntity system entity...');
+        const entityId = await entityStore.upsertEntity(entityData);
+        
+        if (entityId) {
+            logger.info(`✨ Created Enntity system entity (${entityId})`);
+            return true;
+        }
+        
+        logger.error('Failed to create Enntity system entity');
+        return false;
+    } catch (error) {
+        logger.error(`Error bootstrapping system entity: ${error.message}`);
+        return false;
+    }
+};
+
+/**
+ * Load entities from MongoDB on startup
+ * Entities are stored in MongoDB with UUID-based identifiers
+ * Automatically bootstraps the Enntity system entity if it doesn't exist
+ * @returns {Promise<boolean>} True if entities were loaded from MongoDB
+ */
+const loadEntitiesFromMongo = async () => {
+    const entityStore = getEntityStore();
+    
+    if (!entityStore.isConfigured()) {
+        logger.warn('MongoDB not configured (MONGO_URI not set) - entities will not be available');
+        logger.warn('Run scripts/migrate-entities-to-mongo.js to set up entities in MongoDB');
+        return false;
+    }
+    
+    try {
+        // Bootstrap system entity first (creates Enntity if it doesn't exist)
+        await bootstrapSystemEntity(entityStore);
+        
+        // Load entities from MongoDB
+        const mongoEntities = await entityStore.loadAllEntities();
+        
+        if (mongoEntities && Object.keys(mongoEntities).length > 0) {
+            config.set('entityConfig', mongoEntities);
+            return true;
+        }
+        
+        logger.error('Failed to load entities from MongoDB');
+        return false;
+    } catch (error) {
+        logger.error(`Error loading entities from MongoDB: ${error.message}`);
+        return false;
+    }
+};
 
 if (config.get('gcpServiceAccountEmail') || config.get('gcpServiceAccountKey')) {
     const gcpAuthTokenHelper = new GcpAuthTokenHelper(config.getProperties());
@@ -1278,4 +1447,4 @@ const buildModels = (config) => {
 // TODO: Perform validation
 // config.validate({ allowed: 'strict' });
 
-export { config, buildPathways, buildModels };
+export { config, buildPathways, buildModels, loadEntitiesFromMongo };

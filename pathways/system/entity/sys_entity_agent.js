@@ -9,6 +9,8 @@ import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
 import { Prompt } from '../../../server/prompt.js';
 import { getToolsForEntity, loadEntityConfig } from './tools/shared/sys_entity_tools.js';
 import CortexResponse from '../../../lib/cortexResponse.js';
+// Continuity Memory Architecture (parallel system)
+import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
 
 // Helper function to generate a smart error response using the agent
 async function generateErrorResponse(error, args, pathwayResolver) {
@@ -79,7 +81,12 @@ export default {
         entityId: ``,
         researchMode: false,
         userInfo: '',
-        model: 'oai-gpt41'
+        model: 'oai-gpt41',
+        // Memory backend selection: "legacy" or "continuity"
+        // - "legacy": Traditional Redis-based memory with sections (memoryUser, memorySelf, etc.)
+        // - "continuity": Narrative memory with relational anchors and identity evolution
+        // Note: useMemory must be true for any memory to work; this just selects which system
+        memoryBackend: 'continuity'
     },
     timeout: 600,
 
@@ -132,21 +139,24 @@ export default {
                         // Create an isolated copy of messages for this tool
                         const toolMessages = JSON.parse(JSON.stringify(preToolCallMessages));
                         
-                        // Get the tool definition to check for icon
+                        // Get the tool definition to check for icon and visibility
                         const toolDefinition = entityTools[toolFunction]?.definition;
                         const toolIcon = toolDefinition?.icon || '🛠️';
+                        const hideExecution = toolDefinition?.hideExecution === true;
                         
                         // Get the user message for the tool
                         const toolUserMessage = toolArgs.userMessage || `Executing tool: ${toolCall.function.name}`;
                         
-                        // Send tool start message
+                        // Send tool start message (unless execution is hidden)
                         const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
                         const toolCallId = toolCall.id;
-                        try {
-                            await sendToolStart(requestId, toolCallId, toolIcon, toolUserMessage);
-                        } catch (startError) {
-                            logger.error(`Error sending tool start message: ${startError.message}`);
-                            // Continue execution even if start message fails
+                        if (!hideExecution) {
+                            try {
+                                await sendToolStart(requestId, toolCallId, toolIcon, toolUserMessage, toolCall.function.name, toolArgs);
+                            } catch (startError) {
+                                logger.error(`Error sending tool start message: ${startError.message}`);
+                                // Continue execution even if start message fails
+                            }
                         }
 
                         const toolResult = await callTool(toolFunction, {
@@ -154,7 +164,8 @@ export default {
                             ...toolArgs,
                             toolFunction,
                             chatHistory: toolMessages,
-                            stream: false
+                            stream: false,
+                            useMemory: false  // Disable memory synthesis for tool calls
                         }, entityTools, pathwayResolver);
 
                         // Tool calls and results need to be paired together in the message history
@@ -287,12 +298,14 @@ export default {
                             }
                         }
                         
-                        // Send tool finish message
-                        try {
-                            await sendToolFinish(requestId, toolCallId, !hasError, errorMessage);
-                        } catch (finishError) {
-                            logger.error(`Error sending tool finish message: ${finishError.message}`);
-                            // Continue execution even if finish message fails
+                        // Send tool finish message (unless execution is hidden)
+                        if (!hideExecution) {
+                            try {
+                                await sendToolFinish(requestId, toolCallId, !hasError, errorMessage, toolCall.function.name);
+                            } catch (finishError) {
+                                logger.error(`Error sending tool finish message: ${finishError.message}`);
+                                // Continue execution even if finish message fails
+                            }
                         }
 
                         return { 
@@ -307,15 +320,19 @@ export default {
                     } catch (error) {
                         logger.error(`Error executing tool ${toolCall?.function?.name || 'unknown'}: ${error.message}`);
                         
-                        // Send tool finish message (error)
+                        // Send tool finish message (error) - unless execution is hidden
                         // Get requestId and toolCallId if not already defined (in case error occurred before they were set)
                         const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
                         const toolCallId = toolCall.id;
-                        try {
-                            await sendToolFinish(requestId, toolCallId, false, error.message);
-                        } catch (finishError) {
-                            logger.error(`Error sending tool finish message: ${finishError.message}`);
-                            // Continue execution even if finish message fails
+                        const errorToolDefinition = entityTools[toolCall?.function?.name?.toLowerCase()]?.definition;
+                        const hideExecution = errorToolDefinition?.hideExecution === true;
+                        if (!hideExecution) {
+                            try {
+                                await sendToolFinish(requestId, toolCallId, false, error.message, toolCall?.function?.name || null);
+                            } catch (finishError) {
+                                logger.error(`Error sending tool finish message: ${finishError.message}`);
+                                // Continue execution even if finish message fails
+                            }
                         }
                         
                         // Create error message history
@@ -449,23 +466,40 @@ export default {
         let pathwayResolver = resolver;
 
         // Load input parameters and information into args
-        const { entityId, voiceResponse, aiMemorySelfModify, chatId, researchMode } = { ...pathwayResolver.pathway.inputParameters, ...args };
+        const { entityId, voiceResponse, aiMemorySelfModify, chatId, researchMode, memoryBackend: paramMemoryBackend } = { ...pathwayResolver.pathway.inputParameters, ...args };
         
         const entityConfig = loadEntityConfig(entityId);
         const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
-        const { name: entityName, instructions: entityInstructions } = entityConfig || {};
+        // Support both new field name (identity) and legacy (instructions)
+        const entityName = entityConfig?.name;
+        const entityInstructions = entityConfig?.identity || entityConfig?.instructions || '';
         
-        // Determine useMemory: entityConfig.useMemory === false is a hard disable (entity can't use memory)
-        // Otherwise args.useMemory can disable it, default true
+        // Determine useMemory: Master switch for any memory system
+        // entityConfig.useMemory === false is a hard disable, otherwise args.useMemory can disable it, default true
         args.useMemory = entityConfig?.useMemory === false ? false : (args.useMemory ?? true);
+        
+        // Determine memoryBackend: Which memory system to use ("legacy" or "continuity")
+        // Priority: entityConfig > args > default ("continuity")
+        // Legacy support: useContinuityMemory=true maps to memoryBackend="continuity"
+        const legacyFlag = entityConfig?.useContinuityMemory ?? args.useContinuityMemory;
+        args.memoryBackend = entityConfig?.memoryBackend ?? paramMemoryBackend ?? (legacyFlag ? 'continuity' : 'continuity');
+        
+        // Override model from entity config if defined (use modelOverride for dynamic model switching)
+        const modelOverride = entityConfig?.modelOverride ?? args.modelOverride;
+        
+        // Convenience flags for template/code use
+        const useLegacyMemory = args.useMemory && args.memoryBackend === 'legacy';
+        const useContinuityMemory = args.useMemory && args.memoryBackend === 'continuity';
 
         // Initialize chat history if needed
         if (!args.chatHistory || args.chatHistory.length === 0) {
             args.chatHistory = [];
         }
 
-        if(entityConfig?.files && entityConfig?.files.length > 0) {
-            //get last user message if not create one to add files to
+        // Support both new field name (resources) and legacy (files)
+        const entityResources = entityConfig?.resources || entityConfig?.files || [];
+        if(entityResources.length > 0) {
+            //get last user message if not create one to add resources to
             let lastUserMessage = args.chatHistory.filter(message => message.role === "user").slice(-1)[0];
             if(!lastUserMessage) {
                 lastUserMessage = {
@@ -480,20 +514,20 @@ export default {
                 lastUserMessage.content = lastUserMessage.content ? [lastUserMessage.content] : [];
             }
 
-            //add files to the last user message content
-            lastUserMessage.content.push(...entityConfig?.files.map(file => ({
+            //add resources to the last user message content
+            lastUserMessage.content.push(...entityResources.map(resource => ({
                     type: "image_url",
-                    gcs: file?.gcs,
-                    url: file?.url,
-                    image_url: { url: file?.url },
-                    originalFilename: file?.name
+                    gcs: resource?.gcs,
+                    url: resource?.url,
+                    image_url: { url: resource?.url },
+                    originalFilename: resource?.name
                 })
             ));
         }
 
-        // Kick off the memory lookup required pathway in parallel - this takes like 500ms so we want to start it early
+        // Kick off the legacy memory lookup in parallel - only for legacy memory backend
         let memoryLookupRequiredPromise = null;
-        if (args.useMemory) {
+        if (useLegacyMemory) {
             const chatHistoryLastTurn = args.chatHistory.slice(-2);
             const chatHistorySizeOk = (JSON.stringify(chatHistoryLastTurn).length < 5000);
             if (chatHistorySizeOk) {
@@ -521,20 +555,27 @@ export default {
             voiceResponse,
             aiMemorySelfModify,
             chatId,
-            researchMode
+            researchMode,
+            memoryBackend: args.memoryBackend,
+            useContinuityMemory  // Keep for backward compatibility with pathwayResolver
         };
 
         pathwayResolver.args = {...args};
 
         const promptPrefix = '';
 
-        const memoryTemplates = args.useMemory ? 
+        // Legacy memory templates - only when using legacy backend
+        const memoryTemplates = useLegacyMemory ? 
             `{{renderTemplate AI_MEMORY_INSTRUCTIONS}}\n\n{{renderTemplate AI_MEMORY}}\n\n{{renderTemplate AI_MEMORY_CONTEXT}}\n\n` : '';
+
+        // Continuity Memory context injection - only when using continuity backend
+        const continuityContextTemplate = useContinuityMemory ? 
+            `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n` : '';
 
         const instructionTemplates = entityInstructions ? (entityInstructions + '\n\n') : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n{{renderTemplate AI_EXPERTISE}}\n\n`;
 
         const promptMessages = [
-            {"role": "system", "content": `${promptPrefix}${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_SEARCH_SYNTAX}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${memoryTemplates}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+            {"role": "system", "content": `${promptPrefix}${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${memoryTemplates}${continuityContextTemplate}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
             "{{chatHistory}}",
         ];
 
@@ -542,8 +583,15 @@ export default {
             new Prompt({ messages: promptMessages }),
         ];
 
-        // Use 'high' reasoning effort in research mode for thorough analysis, 'none' in normal mode for faster responses
-        const reasoningEffort = researchMode ? 'high' : 'low';
+        // Determine reasoning effort: Priority: entityConfig > researchMode > default ('low')
+        // Use 'high' reasoning effort in research mode for thorough analysis, 'low' in normal mode for faster responses
+        let reasoningEffort = entityConfig?.reasoningEffort;
+        if (!reasoningEffort) {
+            reasoningEffort = researchMode ? 'high' : 'low';
+        }
+        if (entityConfig?.reasoningEffort) {
+            logger.debug(`Using entity reasoningEffort: ${entityConfig.reasoningEffort}`);
+        }
 
         // Limit the chat history to 20 messages to speed up processing
         if (args.messages && args.messages.length > 0) {
@@ -563,8 +611,8 @@ export default {
         // truncate the chat history in case there is really long content
         const truncatedChatHistory = resolver.modelExecutor.plugin.truncateMessagesToTargetLength(args.chatHistory, null, 1000);
       
-        // Asynchronously manage memory for this context
-        if (args.aiMemorySelfModify && args.useMemory) {
+        // Asynchronously manage legacy memory for this context (only for legacy backend)
+        if (args.aiMemorySelfModify && useLegacyMemory) {
             callPathway('sys_memory_manager', {  ...args, chatHistory: truncatedChatHistory, stream: false })    
             .catch(error => logger.error(error?.message || "Error in sys_memory_manager pathway"));
         }
@@ -599,6 +647,7 @@ export default {
 
             let response = await runAllPrompts({
                 ...args,
+                modelOverride,
                 chatHistory: currentMessages,
                 availableFiles,
                 reasoningEffort,

@@ -46,6 +46,7 @@ export default {
     timeout: 600,
     toolDefinition: [{
         type: "function",
+        enabled: false,
         icon: "🤖",
         handoff: true, // This tool hands off to an async agent, so skip task completion check
         function: {

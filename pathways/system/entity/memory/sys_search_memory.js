@@ -60,7 +60,7 @@ export default {
         }
 
         if (args.updateContext) {
-            await setvWithDoubleEncryption(`${args.contextId}-memoryContext`, result, args.contextKey);
+            await setvWithDoubleEncryption(`${args.contextId}-memoryContext`, result, args.contextId);
         }   
 
         return result;

@@ -3,12 +3,14 @@
 
 import test from 'ava';
 import { setvWithDoubleEncryption, getvWithDoubleDecryption, setv, getv } from '../../../lib/keyValueStorageClient.js';
+import { registerContextKey, clearAllContextKeys } from '../../../lib/contextKeyRegistry.js';
 import { encrypt, decrypt } from '../../../lib/crypto.js';
 
 // Test data
 const testData = { message: 'Hello, this is test data!', number: 42, array: [1, 2, 3] };
 const systemKey = '1234567890123456789012345678901234567890123456789012345678901234'; // 64 hex chars
 const userKey = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890'; // 64 hex chars
+const testUserId = 'test-user-1';
 
 // Mock the config to provide test keys
 import { config } from '../../../config.js';
@@ -29,9 +31,10 @@ config.get = mockGet;
 
 // Helper function to clear storage between tests
 async function clearStorage() {
+    // Clear context key registry
+    clearAllContextKeys();
     // Clear any existing test data
     try {
-        await setvWithDoubleEncryption('test-key', null, userKey);
         await setv('test-key', null);
     } catch (error) {
         // Ignore errors when clearing
@@ -46,11 +49,14 @@ test.beforeEach(async t => {
 test('should store and retrieve data with double encryption when both keys provided', async t => {
     const key = 'test-double-encryption';
     
+    // Register the user's contextKey
+    registerContextKey(testUserId, userKey);
+    
     // Store with double encryption
-    await setvWithDoubleEncryption(key, testData, userKey);
+    await setvWithDoubleEncryption(key, testData, testUserId);
     
     // Retrieve with double decryption
-    const retrieved = await getvWithDoubleDecryption(key, userKey);
+    const retrieved = await getvWithDoubleDecryption(key, testUserId);
     
     t.deepEqual(retrieved, testData);
 });
@@ -59,7 +65,7 @@ test('should store and retrieve data with double encryption when both keys provi
 test('should store and retrieve data with single encryption when no contextKey provided', async t => {
     const key = 'test-single-encryption';
     
-    // Store with single encryption (no contextKey)
+    // Store with single encryption (no contextKey registered)
     await setvWithDoubleEncryption(key, testData, null);
     
     // Retrieve with single decryption
@@ -72,11 +78,14 @@ test('should store and retrieve data with single encryption when no contextKey p
 test('should read single-encrypted data from keyValueStorageClient with doubleDecryption', async t => {
     const key = 'test-single-to-double';
     
+    // Register the user's contextKey
+    registerContextKey(testUserId, userKey);
+    
     // Store using keyValueStorageClient (single encryption)
     await setv(key, testData);
     
     // Read using doubleEncryptionStorageClient (should handle single-encrypted data)
-    const retrieved = await getvWithDoubleDecryption(key, userKey);
+    const retrieved = await getvWithDoubleDecryption(key, testUserId);
     
     t.deepEqual(retrieved, testData);
 });
@@ -97,6 +106,9 @@ test('should read single-encrypted data from keyValueStorageClient without conte
 // Test 5: Reading unencrypted data with doubleDecryption
 test('should read unencrypted data with doubleDecryption', async t => {
     const key = 'test-unencrypted';
+    
+    // Register the user's contextKey
+    registerContextKey(testUserId, userKey);
     
     // Store unencrypted data using keyValueStorageClient with no encryption key
     const originalRedisKey = config.get('redisEncryptionKey');
@@ -120,7 +132,7 @@ test('should read unencrypted data with doubleDecryption', async t => {
     config.get = mockGet;
     
     // Read using doubleEncryptionStorageClient (should handle unencrypted data)
-    const retrieved = await getvWithDoubleDecryption(key, userKey);
+    const retrieved = await getvWithDoubleDecryption(key, testUserId);
     
     t.deepEqual(retrieved, testData);
 });
@@ -161,13 +173,16 @@ test('should handle mixed encryption states in storage', async t => {
     const doubleKey = 'test-mixed-double';
     const singleKey = 'test-mixed-single';
     
+    // Register the user's contextKey
+    registerContextKey(testUserId, userKey);
+    
     // Store with different encryption methods
-    await setvWithDoubleEncryption(doubleKey, testData, userKey); // Double encrypted
+    await setvWithDoubleEncryption(doubleKey, testData, testUserId); // Double encrypted
     await setv(singleKey, testData); // Single encrypted
     
     // Both should be readable with doubleDecryption
-    const doubleRetrieved = await getvWithDoubleDecryption(doubleKey, userKey);
-    const singleRetrieved = await getvWithDoubleDecryption(singleKey, userKey);
+    const doubleRetrieved = await getvWithDoubleDecryption(doubleKey, testUserId);
+    const singleRetrieved = await getvWithDoubleDecryption(singleKey, testUserId);
     
     t.deepEqual(doubleRetrieved, testData, 'Double-encrypted data should be readable');
     t.deepEqual(singleRetrieved, testData, 'Single-encrypted data should be readable');
@@ -178,15 +193,18 @@ test('should handle null and undefined data gracefully', async t => {
     const key1 = 'test-null-data';
     const key2 = 'test-undefined-data';
     
+    // Register the user's contextKey
+    registerContextKey(testUserId, userKey);
+    
     // Store null data
-    await setvWithDoubleEncryption(key1, null, userKey);
-    const retrieved1 = await getvWithDoubleDecryption(key1, userKey);
+    await setvWithDoubleEncryption(key1, null, testUserId);
+    const retrieved1 = await getvWithDoubleDecryption(key1, testUserId);
     t.is(retrieved1, null);
     
     // Store undefined data
-    await setvWithDoubleEncryption(key2, undefined, userKey);
-    const retrieved2 = await getvWithDoubleDecryption(key2, userKey);
-    t.is(retrieved2, undefined);
+    await setvWithDoubleEncryption(key2, undefined, testUserId);
+    const retrieved2 = await getvWithDoubleDecryption(key2, testUserId);
+    t.is(retrieved2, null); // undefined becomes null when stored
 });
 
 // Test 9: Edge case - empty object handling
@@ -194,8 +212,11 @@ test('should handle empty objects', async t => {
     const key = 'test-empty-object';
     const emptyData = {};
     
-    await setvWithDoubleEncryption(key, emptyData, userKey);
-    const retrieved = await getvWithDoubleDecryption(key, userKey);
+    // Register the user's contextKey
+    registerContextKey(testUserId, userKey);
+    
+    await setvWithDoubleEncryption(key, emptyData, testUserId);
+    const retrieved = await getvWithDoubleDecryption(key, testUserId);
     
     t.deepEqual(retrieved, emptyData);
 });
@@ -205,23 +226,30 @@ test('should handle context key changes between operations', async t => {
     const key1 = 'test-context-change-1';
     const key2 = 'test-context-change-2';
     const newUserKey = '1111111111111111111111111111111111111111111111111111111111111111';
+    const testUserId2 = 'test-user-2';
+    
+    // Register first user's contextKey
+    registerContextKey(testUserId, userKey);
     
     // Store with first context key
-    await setvWithDoubleEncryption(key1, testData, userKey);
+    await setvWithDoubleEncryption(key1, testData, testUserId);
     
     // Retrieve with same context key
-    const retrieved1 = await getvWithDoubleDecryption(key1, userKey);
+    const retrieved1 = await getvWithDoubleDecryption(key1, testUserId);
     t.deepEqual(retrieved1, testData);
     
+    // Register second user's contextKey
+    registerContextKey(testUserId2, newUserKey);
+    
     // Store with different context key (different key to avoid conflicts)
-    await setvWithDoubleEncryption(key2, testData, newUserKey);
+    await setvWithDoubleEncryption(key2, testData, testUserId2);
     
     // Retrieve with new context key
-    const retrieved2 = await getvWithDoubleDecryption(key2, newUserKey);
+    const retrieved2 = await getvWithDoubleDecryption(key2, testUserId2);
     t.deepEqual(retrieved2, testData);
     
     // Verify that data encrypted with one key cannot be decrypted with another
-    const wrongKeyRetrieved = await getvWithDoubleDecryption(key1, newUserKey);
+    const wrongKeyRetrieved = await getvWithDoubleDecryption(key1, testUserId2);
     t.notDeepEqual(wrongKeyRetrieved, testData, 'Data encrypted with one key should not be readable with different key');
 });
 
@@ -240,8 +268,11 @@ test('should handle large data objects', async t => {
         }
     };
     
-    await setvWithDoubleEncryption(key, largeData, userKey);
-    const retrieved = await getvWithDoubleDecryption(key, userKey);
+    // Register the user's contextKey
+    registerContextKey(testUserId, userKey);
+    
+    await setvWithDoubleEncryption(key, largeData, testUserId);
+    const retrieved = await getvWithDoubleDecryption(key, testUserId);
     
     t.deepEqual(retrieved, largeData);
 });
@@ -255,8 +286,11 @@ test('should handle special characters and unicode', async t => {
         emoji: '😀😁😂🤣😃😄😅😆😉😊'
     };
     
-    await setvWithDoubleEncryption(key, specialData, userKey);
-    const retrieved = await getvWithDoubleDecryption(key, userKey);
+    // Register the user's contextKey
+    registerContextKey(testUserId, userKey);
+    
+    await setvWithDoubleEncryption(key, specialData, testUserId);
+    const retrieved = await getvWithDoubleDecryption(key, testUserId);
     
     t.deepEqual(retrieved, specialData);
 });

@@ -9,6 +9,7 @@ export default {
 
     toolDefinition: [{
         type: "function",
+        enabled: false,
         icon: "🧩",
         function: {
             name: "SearchMemory",

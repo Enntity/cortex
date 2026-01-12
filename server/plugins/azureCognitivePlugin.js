@@ -20,12 +20,15 @@ class AzureCognitivePlugin extends ModelPlugin {
         super(pathway, model);
     }
 
-    async getInputVector (text) {
+    async getInputVector (text, model = 'oai-text-embedding-3-small') {
         try{
             if(!text || !text.trim()){
                 return;
             }
-            return JSON.parse(await callPathway('embeddings', { text }))[0];
+            return JSON.parse(await callPathway('embeddings', { 
+                text,
+                model // Default to small model for cost efficiency, can be overridden
+            }))[0];
         }catch(err){
             logger.error(`Error in calculating input vector for text: ${text}, error: ${err}`);
         }
@@ -35,8 +38,45 @@ class AzureCognitivePlugin extends ModelPlugin {
     async getRequestParameters(text, parameters, prompt, mode, indexName, savedContextId, cortexRequest) {
         const combinedParameters = { ...this.promptParameters, ...parameters };
         const { modelPromptText } = this.getCompiledPrompt(text, combinedParameters, prompt);
-        const { inputVector, calculateInputVector, privateData, filter, docId, title, chunkNo, chatId, semanticConfiguration } = combinedParameters;
+        const { inputVector, calculateInputVector, privateData, filter, docId, title, chunkNo, chatId, semanticConfiguration, document } = combinedParameters;
         const data = {};
+
+        // === CONTINUITY MEMORY MODES ===
+        // These modes handle the specialized continuity memory document schema
+        
+        if (mode === 'continuity-delete') {
+            // Direct delete by document ID for continuity memory
+            // No search needed - we know the exact ID to delete
+            return {
+                data: {
+                    value: [{
+                        '@search.action': 'delete',
+                        id: docId
+                    }]
+                }
+            };
+        }
+        
+        if (mode === 'continuity-upsert') {
+            // Upsert a continuity memory document
+            // The document is passed as a JSON string in the 'document' parameter or 'text'
+            try {
+                const doc = document ? JSON.parse(document) : JSON.parse(text);
+                
+                // Ensure the document has the @search.action for upsert
+                return {
+                    data: {
+                        value: [{
+                            '@search.action': 'mergeOrUpload',
+                            ...doc
+                        }]
+                    }
+                };
+            } catch (error) {
+                logger.error(`Failed to parse continuity memory document: ${error.message}`);
+                throw new Error(`Invalid continuity memory document: ${error.message}`);
+            }
+        }
 
         if (mode == 'delete') {
             let searchUrl = this.ensureMode(this.requestUrl(text), 'search');
@@ -108,7 +148,7 @@ class AzureCognitivePlugin extends ModelPlugin {
         //default mode, 'search'
         data.search = modelPromptText;
         data.top = parameters.top || 50;
-        data.skip = 0;
+        data.skip = parameters.skip || 0;
         data.count = true;
 
         // If semanticConfiguration is provided, switch to semantic mode
@@ -210,9 +250,34 @@ class AzureCognitivePlugin extends ModelPlugin {
     async execute(text, parameters, prompt, cortexRequest) {
         const { requestId, savedContextId, savedContext } = cortexRequest.pathwayResolver;
         const mode = this.promptParameters.mode || 'search';
-        let url = this.ensureMode(this.requestUrl(text), mode == 'delete' ? 'index' : mode);
+        
+        // Determine the URL mode based on the operation type
+        // Continuity and delete modes use 'index' endpoint, others use their own mode
+        let urlMode = mode;
+        if (mode === 'delete' || mode === 'continuity-upsert' || mode === 'continuity-delete') {
+            urlMode = 'index';
+        }
+        
         const indexName = parameters.indexName || 'indexcortex';
-        url = this.ensureIndex(url, indexName);
+        const baseUrl = this.requestUrl(text);
+        
+        // For continuity operations, construct the full URL explicitly
+        // This handles both base URL format (https://xxx.search.windows.net) 
+        // and full URL format (https://xxx.search.windows.net/indexes/xxx/docs/search?api-version=...)
+        let url;
+        if (mode === 'continuity-upsert' || mode === 'continuity-delete') {
+            // Extract just the origin (protocol + host) from the URL
+            // This handles both base URLs and full URLs with paths
+            const urlObj = new URL(baseUrl);
+            const origin = urlObj.origin; // e.g., https://xxx.search.windows.net
+            const apiVersion = '2023-11-01';
+            url = `${origin}/indexes/${indexName}/docs/index?api-version=${apiVersion}`;
+        } else {
+            // For other modes, use existing ensureMode/ensureIndex logic
+            url = this.ensureMode(baseUrl, urlMode);
+            url = this.ensureIndex(url, indexName);
+        }
+        
         const headers = cortexRequest.headers;
 
         const { file } = parameters;
@@ -293,6 +358,74 @@ class AzureCognitivePlugin extends ModelPlugin {
 
     parseResponse(data) {
         return JSON.stringify(data || {});
+    }
+
+    /**
+     * Sanitize response data by replacing vectors with redaction placeholders
+     * @param {any} data - Response data (object or string)
+     * @returns {string} - Sanitized JSON string with vector placeholders
+     */
+    _sanitizeResponseForLogging(data) {
+        if (!data) return JSON.stringify(data || {});
+        
+        try {
+            // Parse if string, otherwise use as-is
+            const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+            
+            // Recursively replace vectors with redaction placeholders
+            const sanitize = (obj, depth = 0) => {
+                if (Array.isArray(obj)) {
+                    // Check if this is a vector array (array of numbers)
+                    if (obj.length > 0 && typeof obj[0] === 'number') {
+                        return `[vector: ${obj.length} dimensions, redacted]`;
+                    }
+                    return obj.map(item => sanitize(item, depth + 1));
+                } else if (obj && typeof obj === 'object') {
+                    const sanitized = {};
+                    for (const [key, value] of Object.entries(obj)) {
+                        if (key === 'contentVector' || key === 'inputVector') {
+                            // Replace vector fields with redaction placeholder
+                            if (Array.isArray(value) && value.length > 0) {
+                                sanitized[key] = `[${key}: ${value.length} dimensions, redacted]`;
+                            } else {
+                                sanitized[key] = `[${key}: redacted]`;
+                            }
+                        } else {
+                            sanitized[key] = sanitize(value, depth + 1);
+                        }
+                    }
+                    return sanitized;
+                }
+                return obj;
+            };
+            
+            const sanitized = sanitize(parsed);
+            return JSON.stringify(sanitized);
+        } catch (error) {
+            // If parsing fails, return original data as string
+            return typeof data === 'string' ? data : JSON.stringify(data);
+        }
+    }
+
+    /**
+     * Override logRequestData to sanitize vectors from responses
+     */
+    logRequestData(data, responseData, prompt) {
+        const modelInput = data.prompt || (data.messages && data.messages[0].content) || (data.length > 0 && data[0].Text) || null;
+    
+        if (modelInput) {
+            const { length, units } = this.getLength(modelInput);
+            logger.info(`[request sent containing ${length} ${units}]`);
+            logger.verbose(`${this.shortenContent(modelInput)}`);
+        }
+    
+        // Sanitize response data to remove vectors before logging
+        const responseText = this._sanitizeResponseForLogging(responseData);
+        const { length, units } = this.getLength(responseText);
+        logger.info(`[response received containing ${length} ${units}]`);
+        logger.verbose(`${this.shortenContent(responseText)}`);
+    
+        prompt && prompt.debugInfo && (prompt.debugInfo += `\n${JSON.stringify(data)}`);
     }
 
 }

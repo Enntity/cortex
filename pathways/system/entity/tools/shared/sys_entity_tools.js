@@ -68,41 +68,39 @@ export const getToolsForEntity = (entityConfig) => {
     };
 };
 
-// Load entity configurations
+// Load entity configuration by UUID
+// Entities are stored in MongoDB with UUID identifiers
+// Strict matching: only exact UUID matches are returned
 export const loadEntityConfig = (entityId) => {
     try {
-        entityId = entityId.toLowerCase();
-        
         const entityConfig = config.get('entityConfig');
         if (!entityConfig) {
-            logger.warn('No entity config found in config');
+            logger.warn('No entity config found - ensure MongoDB is configured and entities are loaded');
             return null;
         }
 
-        // Handle both array and object formats
-        const configArray = Array.isArray(entityConfig) ? entityConfig : Object.entries(entityConfig).map(([id, config]) => ({
-            id,
-            ...config
-        }));
+        // Convert to array format for consistent processing
+        const entities = Object.values(entityConfig);
 
-        // If entityId is provided, look for that specific entity
+        // If entityId is provided, look for exact UUID match only
         if (entityId) {
-            const entity = configArray.find(e => e.id === entityId);
+            const entity = entities.find(e => e.id === entityId);
+            
             if (entity) {
                 return entity;
             }
-            logger.warn(`Entity ${entityId} not found in config`);
+            logger.warn(`Entity with UUID ${entityId} not found`);
         }
 
-        // If no entityId or entity not found, look for default entity
-        const defaultEntity = configArray.find(e => e.isDefault === true);
+        // If no entityId provided or not found, return default entity
+        const defaultEntity = entities.find(e => e.isDefault === true);
         if (defaultEntity) {
             return defaultEntity;
         }
 
-        // If no default entity found, return the first entity
-        if (configArray.length > 0) {
-            return configArray[0];
+        // If no default entity, return first entity
+        if (entities.length > 0) {
+            return entities[0];
         }
 
         return null;
@@ -114,37 +112,100 @@ export const loadEntityConfig = (entityId) => {
 
 /**
  * Fetches the list of available entities with their descriptions and active tools
- * @returns {Array} Array of objects containing entity information and their active tools
+ * Returns entities with their UUID identifiers for client use
+ * @param {Object} [options]
+ * @param {boolean} [options.includeSystem=false] - Include system entities (like Enntity)
+ * @param {string} options.userId - User ID (required) - Filter to entities associated with this user
+ * @returns {Array|Error} Array of objects containing entity information and their active tools, or Error if userId is missing
  */
-export const getAvailableEntities = () => {
+export const getAvailableEntities = (options = {}) => {
+    const { includeSystem = false, userId } = options;
+    
+    // Require userId - return error if not provided
+    if (!userId || userId.trim() === '') {
+        logger.warn('getAvailableEntities called without userId - userId is required');
+        throw new Error('userId is required to get available entities');
+    }
+    
     try {
         const entityConfig = config.get('entityConfig');
         if (!entityConfig) {
-            logger.warn('No entity config found in config');
+            logger.warn('No entity config found - ensure MongoDB is configured and entities are loaded');
             return [];
         }
 
-        // Handle both array and object formats
-        const configArray = Array.isArray(entityConfig) ? entityConfig : Object.entries(entityConfig).map(([id, config]) => ({
-            id,
-            ...config
-        }));
+        let entities = Object.values(entityConfig);
+        
+        // Filter out system entities unless explicitly requested
+        if (!includeSystem) {
+            entities = entities.filter(e => !e.isSystem);
+        }
+        
+        // Filter by userId
+        // System entities: always included (no assocUserIds check)
+        // Non-system entities: must have userId in assocUserIds array
+        entities = entities.filter(e => {
+            // System entities are always accessible
+            if (e.isSystem) {
+                return true;
+            }
+            
+            // Non-system entities: must have userId in assocUserIds array
+            // Empty, missing, or null assocUserIds means the entity is not accessible
+            const hasValidAssocUserIds = e.assocUserIds && 
+                                        Array.isArray(e.assocUserIds) && 
+                                        e.assocUserIds.length > 0;
+            
+            if (!hasValidAssocUserIds) {
+                // No valid assocUserIds array - exclude this entity
+                return false;
+            }
+            
+            // Must have userId in the array
+            return e.assocUserIds.includes(userId);
+        });
 
-        return configArray.map(entity => {
+        return entities.map(entity => {
             const { entityTools } = getToolsForEntity(entity);
             return {
                 id: entity.id,
-                name: entity.name || entity.id,
+                name: entity.name,
                 description: entity.description || '',
                 isDefault: entity.isDefault || false,
-                activeTools: Object.keys(entityTools).map(toolName => ({
-                    name: toolName,
-                    description: entityTools[toolName].definition?.function?.description || ''
-                }))
+                isSystem: entity.isSystem || false,
+                useMemory: entity.useMemory ?? true,
+                memoryBackend: entity.memoryBackend || 'continuity',
+                avatar: entity.avatar || null,
+                createdAt: entity.createdAt ? (entity.createdAt instanceof Date ? entity.createdAt.toISOString() : entity.createdAt) : null,
+                updatedAt: entity.updatedAt ? (entity.updatedAt instanceof Date ? entity.updatedAt.toISOString() : entity.updatedAt) : null,
+                activeTools: Object.keys(entityTools) // Just return array of tool names
             };
         });
     } catch (error) {
         logger.error(`Error fetching available entities: ${error.message}`);
         return [];
+    }
+};
+
+/**
+ * Get the system entity by name (e.g., "Enntity")
+ * @param {string} name - System entity name
+ * @returns {Object|null} Entity config or null
+ */
+export const getSystemEntity = (name) => {
+    try {
+        const entityConfig = config.get('entityConfig');
+        if (!entityConfig) {
+            return null;
+        }
+
+        const entities = Object.values(entityConfig);
+        return entities.find(e => 
+            e.isSystem && 
+            e.name.toLowerCase() === name.toLowerCase()
+        ) || null;
+    } catch (error) {
+        logger.error(`Error getting system entity: ${error.message}`);
+        return null;
     }
 };

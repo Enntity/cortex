@@ -14,6 +14,10 @@ import { publishRequestProgress } from '../lib/redisSubscription.js';
 // eslint-disable-next-line import/no-extraneous-dependencies
 import { createParser } from 'eventsource-parser';
 import CortexResponse from '../lib/cortexResponse.js';
+// Continuity Memory Architecture (parallel system)
+import { getContinuityMemoryService } from '../lib/continuity/index.js';
+// Shared context key registry for user-level encryption
+import { registerContextKey } from '../lib/contextKeyRegistry.js';
 
 const modelTypesExcludedFromProgressUpdates = ['OPENAI-DALLE2', 'OPENAI-DALLE3'];
 
@@ -367,10 +371,23 @@ class PathwayResolver {
     }
 
     async executePathway(args) {
+        // Set rootRequestId from args if provided (for tool pathways called from sys_entity_agent)
+        // This ensures tool pathways inherit the rootRequestId from the parent resolver
+        if (args.rootRequestId) {
+            this.rootRequestId = args.rootRequestId;
+        }
+        
         // Bidirectional context transformation for backward compatibility:
         // 1. If agentContext provided: extract contextId/contextKey for legacy pathways
         // 2. If contextId provided without agentContext: create agentContext for new pathways
         if (args.agentContext && Array.isArray(args.agentContext) && args.agentContext.length > 0) {
+            // Register ALL contextId/contextKey pairs for encryption lookup
+            for (const ctx of args.agentContext) {
+                if (ctx.contextId && ctx.contextKey) {
+                    registerContextKey(ctx.contextId, ctx.contextKey);
+                }
+            }
+            
             const defaultCtx = args.agentContext.find(ctx => ctx.default) || args.agentContext[0];
             if (defaultCtx) {
                 args.contextId = defaultCtx.contextId;
@@ -383,6 +400,10 @@ class PathwayResolver {
                 contextKey: args.contextKey || null, 
                 default: true 
             }];
+            // Register this single pair
+            if (args.contextId && args.contextKey) {
+                registerContextKey(args.contextId, args.contextKey);
+            }
         }
         
         if (this.pathway.executePathway && typeof this.pathway.executePathway === 'function') {
@@ -413,17 +434,17 @@ class PathwayResolver {
         const loadMemory = async () => {
             try {
                 // Always load savedContext (legacy feature)
-                this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.args?.contextKey)) || {};
+                this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.savedContextId)) || {};
                 this.initialState = { savedContext: this.savedContext };
                 
                 // Only load memory* sections if memory is enabled
                 if (memoryEnabled) {
                     const [memorySelf, memoryDirectives, memoryTopics, memoryUser, memoryContext] = await Promise.all([
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memorySelf', priority: 1, stripMetadata: true, contextKey: this.args?.contextKey }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryDirectives', priority: 1, stripMetadata: true, contextKey: this.args?.contextKey }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryTopics', priority: 0, numResults: 10, contextKey: this.args?.contextKey }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryUser', priority: 1, stripMetadata: true, contextKey: this.args?.contextKey }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryContext', priority: 0, contextKey: this.args?.contextKey }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memorySelf', priority: 1, stripMetadata: true }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryDirectives', priority: 1, stripMetadata: true }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryTopics', priority: 0, numResults: 10 }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryUser', priority: 1, stripMetadata: true }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryContext', priority: 0 }),
                     ]).catch(error => {
                         this.logError(`Failed to load memory: ${error.message}`);
                         return ['','','','',''];
@@ -441,6 +462,98 @@ class PathwayResolver {
                     this.memoryUser = '';
                     this.memoryContext = '';
                 }
+                
+                // === CONTINUITY MEMORY INTEGRATION ===
+                // Load narrative context from the Continuity Architecture if enabled
+                // Only enabled when explicitly configured (not default for all pathways)
+                const memoryBackend = args.memoryBackend || this.pathway.memoryBackend;
+                const useMemory = args.useMemory !== false;
+                const useContinuityMemory = useMemory && memoryBackend === 'continuity';
+                if (useContinuityMemory) {
+                    try {
+                        const continuityService = getContinuityMemoryService();
+                        if (continuityService.isAvailable() && args.entityId) {
+                            // Extract entity and user identifiers
+                            // Use args.entityId (UUID) for memory operations, not args.aiName (display name)
+                            // If no entityId is provided, skip continuity memory entirely
+                            const entityId = args.entityId;
+                            const userId = this.savedContextId;
+                            
+                            // Extract current query from args.text or last USER message in chatHistory
+                            // Prefer user messages over assistant/tool responses for semantic search
+                            let currentQuery = args.text || '';
+                            if (!currentQuery && args.chatHistory?.length > 0) {
+                                // Find the last user message (not assistant/tool response)
+                                let lastUserMessage = null;
+                                for (let i = args.chatHistory.length - 1; i >= 0; i--) {
+                                    const msg = args.chatHistory[i];
+                                    if (msg?.role === 'user' || msg?.role === 'human') {
+                                        lastUserMessage = msg;
+                                        break;
+                                    }
+                                }
+                                
+                                // Fallback to last message if no user message found
+                                const messageToUse = lastUserMessage || args.chatHistory.slice(-1)[0];
+                                const content = messageToUse?.content;
+                                
+                                if (typeof content === 'string') {
+                                    // Skip if it looks like a tool response JSON
+                                    if (!content.trim().startsWith('{') || !content.includes('"success"')) {
+                                        currentQuery = content;
+                                    }
+                                } else if (Array.isArray(content)) {
+                                    // Content is array - could be strings or objects
+                                    const firstItem = content[0];
+                                    if (typeof firstItem === 'string') {
+                                        // Skip if it looks like a tool response JSON
+                                        if (!firstItem.trim().startsWith('{') || !firstItem.includes('"success"')) {
+                                            // Try to parse as JSON (stringified content block)
+                                            try {
+                                                const parsed = JSON.parse(firstItem);
+                                                currentQuery = parsed.text || parsed.content || firstItem;
+                                            } catch {
+                                                currentQuery = firstItem;
+                                            }
+                                        }
+                                    } else if (firstItem?.text) {
+                                        currentQuery = firstItem.text;
+                                    } else if (firstItem?.content) {
+                                        currentQuery = firstItem.content;
+                                    }
+                                }
+                            }
+                            currentQuery = typeof currentQuery === 'string' ? currentQuery : '';
+                            
+                            // Initialize session
+                            await continuityService.initSession(entityId, userId);
+                            
+                            // Get narrative context window (layered: bootstrap + topic)
+                            const continuityContext = await continuityService.getContextWindow({
+                                entityId,
+                                userId,
+                                query: currentQuery,
+                                options: {
+                                    episodicLimit: 20,
+                                    topicMemoryLimit: 10,         // Topic-specific semantic search
+                                    bootstrapRelationalLimit: 10, // Top relationship anchors (always included)
+                                    bootstrapMinImportance: 5,    // Minimum importance for relational base
+                                    expandGraph: true
+                                }
+                            });
+                            
+                            // Store for injection into prompts
+                            this.continuityContext = continuityContext || '';
+                            this.continuityEntityId = entityId;
+                            this.continuityUserId = userId;
+                            
+                            logger.debug(`Loaded continuity context (${continuityContext?.length || 0} chars)`);
+                        }
+                    } catch (error) {
+                        logger.warn(`Continuity memory load failed (non-fatal): ${error.message}`);
+                        this.continuityContext = '';
+                    }
+                }
             } catch (error) {
                 this.logError(`Error in loadMemory: ${error.message}`);
                 this.savedContext = {};
@@ -449,6 +562,7 @@ class PathwayResolver {
                 this.memoryTopics = '';
                 this.memoryUser = '';
                 this.memoryContext = '';
+                this.continuityContext = '';
                 this.initialState = { savedContext: {} };
             }
         };
@@ -462,7 +576,7 @@ class PathwayResolver {
             };
 
             if (currentState.savedContext !== this.initialState.savedContext) {
-                setvWithDoubleEncryption && await setvWithDoubleEncryption(this.savedContextId, this.savedContext, this.args?.contextKey);
+                setvWithDoubleEncryption && await setvWithDoubleEncryption(this.savedContextId, this.savedContext, this.savedContextId);
             }
         };
 
@@ -493,6 +607,57 @@ class PathwayResolver {
 
         if (data !== null) {
             await saveChangedMemory();
+            
+            // === CONTINUITY MEMORY SYNTHESIS (Post-Response Hook) ===
+            // Trigger async synthesis after response - fire and forget
+            const memoryBackendPost = args.memoryBackend || this.pathway.memoryBackend;
+            const useMemoryPost = args.useMemory !== false;
+            const useContinuityMemoryPost = useMemoryPost && memoryBackendPost === 'continuity';
+            if (useContinuityMemoryPost && this.continuityEntityId && this.continuityUserId) {
+                try {
+                    const continuityService = getContinuityMemoryService();
+                    if (continuityService.isAvailable()) {
+                        // Record the user turn
+                        const userMessage = args.text || args.chatHistory?.slice(-1)?.[0]?.content || '';
+                        if (userMessage) {
+                            await continuityService.recordTurn(
+                                this.continuityEntityId,
+                                this.continuityUserId,
+                                {
+                                    role: 'user',
+                                    content: userMessage,
+                                    timestamp: new Date().toISOString()
+                                }
+                            );
+                        }
+                        
+                        // Record the assistant response
+                        const assistantResponse = typeof data === 'string' ? data : 
+                            (data?.output_text || data?.content || JSON.stringify(data));
+                        await continuityService.recordTurn(
+                            this.continuityEntityId,
+                            this.continuityUserId,
+                            {
+                                role: 'assistant',
+                                content: assistantResponse?.substring(0, 5000) || '', // Limit stored length
+                                timestamp: new Date().toISOString()
+                            }
+                        );
+                        
+                        // Trigger background synthesis (fire and forget)
+                        continuityService.triggerSynthesis(
+                            this.continuityEntityId,
+                            this.continuityUserId,
+                            {
+                                aiName: args.aiName || 'Entity',
+                                entityContext: this.memorySelf || ''
+                            }
+                        );
+                    }
+                } catch (error) {
+                    logger.warn(`Continuity synthesis trigger failed (non-fatal): ${error.message}`);
+                }
+            }
         }
 
         addCitationsToResolver(this, data);
@@ -704,7 +869,9 @@ class PathwayResolver {
             memoryDirectives: this.memoryDirectives,
             memoryTopics: this.memoryTopics,
             memoryUser: this.memoryUser,
-            memoryContext: this.memoryContext
+            memoryContext: this.memoryContext,
+            // Continuity Memory context (narrative layer)
+            continuityContext: this.continuityContext || ''
         }, prompt, this);
         
         requestState[this.requestId].completedCount++;

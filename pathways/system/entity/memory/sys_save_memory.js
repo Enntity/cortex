@@ -1,17 +1,16 @@
-import { getv } from '../../../../lib/keyValueStorageClient.js';
-import { setvWithDoubleEncryption } from '../../../../lib/keyValueStorageClient.js';
+import { getv, setvWithDoubleEncryption } from '../../../../lib/keyValueStorageClient.js';
 
 export default {
     inputParameters: {
         contextId: ``,
         aiMemory: ``,
         section: `memoryAll`,
-        contextKey: ``
+        contextKey: `` // Kept for backward compat, but now uses registry lookup by contextId
     },
     model: 'oai-gpt4o',
     isMutation: true, // Declaratively mark this as a Mutation
     resolver: async (_parent, args, _contextValue, _info) => {
-        const { contextId, aiMemory, section = 'memoryAll', contextKey } = args;
+        const { contextId, aiMemory, section = 'memoryAll' } = args;
 
         // Validate that contextId is provided
         if (!contextId) {
@@ -26,7 +25,7 @@ export default {
                 savedContext = {};
             }
             savedContext.memoryContext = aiMemory;
-            await setvWithDoubleEncryption(`${contextId}`, savedContext, contextKey);
+            await setvWithDoubleEncryption(`${contextId}`, savedContext, contextId);
             return aiMemory;
         }
 
@@ -36,7 +35,7 @@ export default {
         // Handle single section save
         if (section !== 'memoryAll') {
             if (validSections.includes(section)) {
-                await setvWithDoubleEncryption(`${contextId}-${section}`, aiMemory, contextKey);
+                await setvWithDoubleEncryption(`${contextId}-${section}`, aiMemory, contextId);
             }
             return aiMemory;
         }
@@ -44,7 +43,7 @@ export default {
         // if the aiMemory is an empty string, set all sections to empty strings
         if (aiMemory.trim() === "") {
             for (const section of allSections) {
-                await setvWithDoubleEncryption(`${contextId}-${section}`, "", contextKey);
+                await setvWithDoubleEncryption(`${contextId}-${section}`, "", contextId);
             }
             return "";
         }
@@ -54,14 +53,14 @@ export default {
             const memoryObject = JSON.parse(aiMemory);
             for (const section of allSections) {
                 if (section in memoryObject) {
-                    await setvWithDoubleEncryption(`${contextId}-${section}`, memoryObject[section], contextKey);
+                    await setvWithDoubleEncryption(`${contextId}-${section}`, memoryObject[section], contextId);
                 }
             }
         } catch {
             for (const section of allSections) {
-                await setvWithDoubleEncryption(`${contextId}-${section}`, "", contextKey);
+                await setvWithDoubleEncryption(`${contextId}-${section}`, "", contextId);
             }
-            await setvWithDoubleEncryption(`${contextId}-memoryUser`, aiMemory, contextKey);
+            await setvWithDoubleEncryption(`${contextId}-memoryUser`, aiMemory, contextId);
         }
 
         return aiMemory;
