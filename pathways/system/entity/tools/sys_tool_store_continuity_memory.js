@@ -10,42 +10,12 @@
  * - Automatic deduplication - similar memories are merged intelligently
  * - Preserves narrative properties during merges
  * - Supports all memory types (ANCHOR, ARTIFACT, IDENTITY, CORE, etc.)
+ * 
+ * Note: Core logic is shared with sys_store_continuity_memory (GraphQL mutation)
+ * via the storeContinuityMemory helper.
  */
 
-import { getContinuityMemoryService, ContinuityMemoryType, EmotionalValence } from '../../../../lib/continuity/index.js';
-import logger from '../../../../lib/logger.js';
-
-// Map string type names to enum values
-const TYPE_MAP = {
-    'ANCHOR': ContinuityMemoryType.ANCHOR,
-    'ARTIFACT': ContinuityMemoryType.ARTIFACT,
-    'IDENTITY': ContinuityMemoryType.IDENTITY,
-    'CORE': ContinuityMemoryType.CORE,
-    'EPISODE': ContinuityMemoryType.EPISODE,
-    'EXPRESSION': ContinuityMemoryType.EXPRESSION,
-    'VALUE': ContinuityMemoryType.VALUE,
-    'CAPABILITY': ContinuityMemoryType.CAPABILITY
-};
-
-// Map string emotional valence names to enum values
-const VALENCE_MAP = {
-    // Primary states
-    'joy': EmotionalValence.JOY,
-    'curiosity': EmotionalValence.CURIOSITY,
-    'concern': EmotionalValence.CONCERN,
-    'grief': EmotionalValence.GRIEF,
-    'frustration': EmotionalValence.FRUSTRATION,
-    'excitement': EmotionalValence.EXCITEMENT,
-    'calm': EmotionalValence.CALM,
-    'neutral': EmotionalValence.NEUTRAL,
-    'warmth': EmotionalValence.WARMTH,
-    'affectionate': EmotionalValence.WARMTH, // Alias for warmth
-    'playful': EmotionalValence.PLAYFUL,
-    // Nuanced resonance states
-    'intellectually_playful': EmotionalValence.INTELLECTUALLY_PLAYFUL,
-    'quietly_supportive': EmotionalValence.QUIETLY_SUPPORTIVE,
-    'vulnerable_authentic': EmotionalValence.VULNERABLE_AUTHENTIC
-};
+import { storeContinuityMemory, VALID_MEMORY_TYPES, VALID_EMOTIONAL_VALENCES } from '../memory/shared/sys_continuity_memory_helpers.js';
 
 export default {
     inputParameters: {
@@ -143,60 +113,11 @@ Nuanced resonance states:
             emotionalValence,
             emotionalIntensity = 0.5,
             contextId,
-            aiName,
             skipDedup = false
         } = args;
         
         try {
-            // Validate required fields
-            if (!content || content.trim().length === 0) {
-                return JSON.stringify({
-                    success: false,
-                    error: 'Memory content is required and cannot be empty.'
-                });
-            }
-            
-            if (!memoryType || !TYPE_MAP[memoryType]) {
-                return JSON.stringify({
-                    success: false,
-                    error: `Invalid memory type: ${memoryType}. Must be one of: ${Object.keys(TYPE_MAP).join(', ')}`
-                });
-            }
-            
-            const continuityService = getContinuityMemoryService();
-            
-            if (!continuityService.isAvailable()) {
-                return JSON.stringify({
-                    success: false,
-                    error: 'Continuity memory service is not available. Check Redis and MongoDB configuration.'
-                });
-            }
-            
-            // Build the memory object
-            const memory = {
-                type: TYPE_MAP[memoryType],
-                content: content.trim(),
-                importance: Math.min(10, Math.max(1, importance || 5)),
-                tags: [...(tags || []), 'explicit-store'], // Mark as explicitly stored
-                synthesisType: 'EXPLICIT' // Not auto-synthesized
-            };
-            
-            // Add emotional state if provided (warn if invalid)
-            if (emotionalValence) {
-                if (VALENCE_MAP[emotionalValence]) {
-                    memory.emotionalState = {
-                        valence: VALENCE_MAP[emotionalValence],
-                        intensity: Math.min(1, Math.max(0, emotionalIntensity || 0.5)),
-                        userImpact: null
-                    };
-                } else {
-                    logger.warn(`Invalid emotionalValence "${emotionalValence}" provided. Valid values: ${Object.keys(VALENCE_MAP).join(', ')}`);
-                    // Continue without emotional state rather than failing
-                }
-            }
-            
-            // Use args.entityId (UUID from pathway context) for memory operations
-            // If no entityId is provided, memory operations are not allowed
+            // Validate entityId is provided (required for memory operations)
             if (!args.entityId) {
                 return JSON.stringify({
                     success: false,
@@ -204,61 +125,33 @@ Nuanced resonance states:
                 });
             }
             
-            const entityId = args.entityId;
-            const userId = contextId;
+            // Call the shared helper
+            const result = await storeContinuityMemory({
+                entityId: args.entityId,
+                userId: contextId,
+                content,
+                memoryType,
+                importance,
+                tags,
+                emotionalValence,
+                emotionalIntensity,
+                skipDedup
+            });
             
-            let result;
-            
-            if (skipDedup) {
-                // Direct storage without deduplication
-                const id = await continuityService.addMemory(entityId, userId, memory);
-                result = { id, merged: false, mergedCount: 0 };
-            } else {
-                // Storage with deduplication (default)
-                result = await continuityService.addMemoryWithDedup(entityId, userId, memory);
-            }
-            
-            if (!result.id) {
-                return JSON.stringify({
-                    success: false,
-                    error: 'Failed to store memory. Check service configuration.'
+            // Set tool metadata for tracking (only for tool pathway)
+            if (result.success && resolver) {
+                resolver.tool = JSON.stringify({
+                    toolUsed: "continuity_memory",
+                    action: "store",
+                    type: memoryType,
+                    memoryId: result.memoryId,
+                    merged: result.merged
                 });
             }
             
-            // Build clear, explicit response for the agent
-            const response = {
-                success: true,
-                message: result.merged 
-                    ? `Memory stored successfully and merged with ${result.mergedCount} similar existing memories. The consolidated memory has ID: ${result.id}`
-                    : `Memory stored successfully with ID: ${result.id}`,
-                memoryId: result.id,
-                type: memoryType,
-                importance: memory.importance,
-                merged: result.merged,
-                mergedCount: result.mergedCount || 0,
-                content: content.trim().substring(0, 100) + (content.length > 100 ? '...' : '') // Preview for confirmation
-            };
-            
-            if (result.mergedIds?.length > 0) {
-                response.consolidatedMemories = result.mergedIds;
-                response.message += ` (replaced ${result.mergedIds.length} duplicate memories)`;
-            }
-            
-            // Set tool metadata for tracking
-            resolver.tool = JSON.stringify({
-                toolUsed: "continuity_memory",
-                action: "store",
-                type: memoryType,
-                memoryId: result.id,
-                merged: result.merged
-            });
-            
-            logger.info(`Stored continuity memory: ${memoryType} (importance: ${memory.importance}, merged: ${result.merged})`);
-            
-            return JSON.stringify(response);
+            return JSON.stringify(result);
             
         } catch (error) {
-            logger.error(`Failed to store continuity memory: ${error.message}`);
             return JSON.stringify({
                 success: false,
                 error: `Failed to store memory: ${error.message}`
@@ -266,4 +159,3 @@ Nuanced resonance states:
         }
     }
 };
-
