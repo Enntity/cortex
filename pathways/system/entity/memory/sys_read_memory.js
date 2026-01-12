@@ -1,8 +1,7 @@
 // this is a low-level system pathway that reads memory from the key-value store
 // it should never try to call other pathways
 
-import { getv } from '../../../../lib/keyValueStorageClient.js';
-import { getvWithDoubleDecryption } from '../../../../lib/keyValueStorageClient.js';
+import { getv, getvWithDoubleDecryption } from '../../../../lib/keyValueStorageClient.js';
 
 const isValidISOTimestamp = (timestamp) => {
     if (!timestamp) return false;
@@ -79,12 +78,12 @@ export default {
         recentHours: 0,
         numResults: 0,
         stripMetadata: false,
-        contextKey: ``
+        contextKey: `` // Kept for backward compat, but now uses registry lookup by contextId
     },
     model: 'oai-gpt4o',
 
     resolver: async (_parent, args, _contextValue, _info) => {
-        const { contextId, section = 'memoryAll', priority = 0, recentHours = 0, numResults = 0, stripMetadata = false, contextKey } = args;
+        const { contextId, section = 'memoryAll', priority = 0, recentHours = 0, numResults = 0, stripMetadata = false } = args;
         
         // Validate that contextId is provided
         if (!contextId) {
@@ -104,7 +103,7 @@ export default {
 
         if (section !== 'memoryAll') {
             if (validSections.includes(section)) {
-                const content = (getvWithDoubleDecryption && (await getvWithDoubleDecryption(`${contextId}-${section}`, contextKey))) || "";
+                const content = (getvWithDoubleDecryption && (await getvWithDoubleDecryption(`${contextId}-${section}`, contextId))) || "";
                 return processMemoryContent(content, options);
             }
             return "";
@@ -115,7 +114,7 @@ export default {
         for (const section of allSections) {
             if (section === 'memoryContext') continue;
 
-            const content = (getvWithDoubleDecryption && (await getvWithDoubleDecryption(`${contextId}-${section}`, contextKey))) || "";
+            const content = (getvWithDoubleDecryption && (await getvWithDoubleDecryption(`${contextId}-${section}`, contextId))) || "";
             memoryContents[section] = processMemoryContent(content, options);
         }
         

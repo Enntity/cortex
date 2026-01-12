@@ -1086,7 +1086,7 @@ test('File collection: syncAndStripFilesFromChatHistory only strips collection f
         ];
         
         // Process chat history
-        const { chatHistory: processed } = await syncAndStripFilesFromChatHistory(chatHistory, createAgentContext(contextId));
+        const { chatHistory: processed, availableFiles } = await syncAndStripFilesFromChatHistory(chatHistory, createAgentContext(contextId));
         
         // Verify only collection file was stripped
         const content = processed[0].content;
@@ -2260,9 +2260,10 @@ test('Analyzer tool: Works with legacy contextId/contextKey parameters (backward
     
     try {
         // First add a file to the collection
+        // Use a publicly accessible PDF that allows bot/crawler access (required for Vertex AI)
         await callPathway('sys_tool_file_collection', {
             agentContext: [{ contextId, contextKey: null, default: true }],
-            url: 'https://example.com/test-document.pdf',
+            url: 'https://www.rd.usda.gov/sites/default/files/pdf-sample_0.pdf',
             filename: 'test-document.pdf',
             userMessage: 'Add test file for analyzer'
         });
@@ -2306,9 +2307,10 @@ test('Analyzer tool: File resolution works with agentContext', async t => {
     
     try {
         // Add a file to the collection
+        // Use a publicly accessible PDF that allows bot/crawler access (required for Vertex AI)
         await callPathway('sys_tool_file_collection', {
             agentContext: [{ contextId, contextKey: null, default: true }],
-            url: 'https://example.com/test-file.pdf',
+            url: 'https://www.rd.usda.gov/sites/default/files/pdf-sample_0.pdf',
             filename: 'test-file.pdf',
             userMessage: 'Add test file'
         });

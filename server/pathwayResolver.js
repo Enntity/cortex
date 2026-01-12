@@ -16,6 +16,8 @@ import { createParser } from 'eventsource-parser';
 import CortexResponse from '../lib/cortexResponse.js';
 // Continuity Memory Architecture (parallel system)
 import { getContinuityMemoryService } from '../lib/continuity/index.js';
+// Shared context key registry for user-level encryption
+import { registerContextKey } from '../lib/contextKeyRegistry.js';
 
 const modelTypesExcludedFromProgressUpdates = ['OPENAI-DALLE2', 'OPENAI-DALLE3'];
 
@@ -379,6 +381,13 @@ class PathwayResolver {
         // 1. If agentContext provided: extract contextId/contextKey for legacy pathways
         // 2. If contextId provided without agentContext: create agentContext for new pathways
         if (args.agentContext && Array.isArray(args.agentContext) && args.agentContext.length > 0) {
+            // Register ALL contextId/contextKey pairs for encryption lookup
+            for (const ctx of args.agentContext) {
+                if (ctx.contextId && ctx.contextKey) {
+                    registerContextKey(ctx.contextId, ctx.contextKey);
+                }
+            }
+            
             const defaultCtx = args.agentContext.find(ctx => ctx.default) || args.agentContext[0];
             if (defaultCtx) {
                 args.contextId = defaultCtx.contextId;
@@ -391,6 +400,10 @@ class PathwayResolver {
                 contextKey: args.contextKey || null, 
                 default: true 
             }];
+            // Register this single pair
+            if (args.contextId && args.contextKey) {
+                registerContextKey(args.contextId, args.contextKey);
+            }
         }
         
         if (this.pathway.executePathway && typeof this.pathway.executePathway === 'function') {
@@ -421,17 +434,17 @@ class PathwayResolver {
         const loadMemory = async () => {
             try {
                 // Always load savedContext (legacy feature)
-                this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.args?.contextKey)) || {};
+                this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.savedContextId)) || {};
                 this.initialState = { savedContext: this.savedContext };
                 
                 // Only load memory* sections if memory is enabled
                 if (memoryEnabled) {
                     const [memorySelf, memoryDirectives, memoryTopics, memoryUser, memoryContext] = await Promise.all([
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memorySelf', priority: 1, stripMetadata: true, contextKey: this.args?.contextKey }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryDirectives', priority: 1, stripMetadata: true, contextKey: this.args?.contextKey }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryTopics', priority: 0, numResults: 10, contextKey: this.args?.contextKey }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryUser', priority: 1, stripMetadata: true, contextKey: this.args?.contextKey }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryContext', priority: 0, contextKey: this.args?.contextKey }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memorySelf', priority: 1, stripMetadata: true }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryDirectives', priority: 1, stripMetadata: true }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryTopics', priority: 0, numResults: 10 }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryUser', priority: 1, stripMetadata: true }),
+                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryContext', priority: 0 }),
                     ]).catch(error => {
                         this.logError(`Failed to load memory: ${error.message}`);
                         return ['','','','',''];
@@ -563,7 +576,7 @@ class PathwayResolver {
             };
 
             if (currentState.savedContext !== this.initialState.savedContext) {
-                setvWithDoubleEncryption && await setvWithDoubleEncryption(this.savedContextId, this.savedContext, this.args?.contextKey);
+                setvWithDoubleEncryption && await setvWithDoubleEncryption(this.savedContextId, this.savedContext, this.savedContextId);
             }
         };
 
