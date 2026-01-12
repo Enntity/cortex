@@ -1,10 +1,10 @@
-FROM ubuntu:20.04 AS base
+FROM ubuntu:22.04 AS base
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install Node.js 18
-RUN apt-get update && apt-get install -y curl \
+RUN apt-get update && apt-get install -y curl ca-certificates \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -36,11 +36,12 @@ RUN groupadd --system --gid 1001 nodejs \
 
 # Install mongo_crypt_shared library for CSFLE
 # This is required for Client-Side Field Level Encryption to work
-RUN apt-get update && apt-get install -y curl libssl1.1 \
-    && curl -O https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2004-7.0.12.tgz \
+# Updated for Ubuntu 22.04 with OpenSSL 3.0 for better TLS support
+RUN apt-get update && apt-get install -y curl ca-certificates libssl3 \
+    && curl -O https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2204-7.0.12.tgz \
     && mkdir -p /app/mongo_crypt_lib \
-    && tar -xvf mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2004-7.0.12.tgz -C /app/mongo_crypt_lib --strip-components=1 \
-    && rm mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2004-7.0.12.tgz \
+    && tar -xvf mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2204-7.0.12.tgz -C /app/mongo_crypt_lib --strip-components=1 \
+    && rm mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2204-7.0.12.tgz \
     && chown -R cortex:nodejs /app/mongo_crypt_lib \
     && chmod 755 /app/mongo_crypt_lib/mongo_crypt_v1.so \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
