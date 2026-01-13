@@ -18,6 +18,11 @@ const isValidPriority = (priority) => {
 
 export const processMemoryContent = (content, { priority = 0, recentHours = 0, numResults = 0, stripMetadata = false }) => {
     if (!content) return content;
+    // Ensure content is a string before processing
+    if (typeof content !== 'string') {
+        // If it's an object (from JSON parse), try to convert or return empty
+        return typeof content === 'object' ? JSON.stringify(content) : String(content);
+    }
     if (!priority && !recentHours && !numResults && !stripMetadata) return content;
 
     const lines = content.split('\n');

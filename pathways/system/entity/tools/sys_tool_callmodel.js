@@ -56,7 +56,7 @@ export default {
             const result = await runAllPrompts({ ...args });
             return result;
         } catch (error) {
-            logger.error(error);
+            logger.error(`Error calling model: ${error.message}`);
             return "Error calling model: " + error.message;
         }
     }

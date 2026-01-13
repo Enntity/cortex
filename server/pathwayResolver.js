@@ -431,14 +431,26 @@ class PathwayResolver {
         // Check if memory is enabled (default true for backward compatibility)
         const memoryEnabled = useMemory !== false;
         
+        // Determine memory backend early so we can skip legacy loading if using continuity
+        const memoryBackend = args.memoryBackend || this.pathway.memoryBackend;
+        const useContinuityMemory = memoryEnabled && memoryBackend === 'continuity';
+        
         const loadMemory = async () => {
             try {
-                // Always load savedContext (legacy feature)
+                // Always load savedContext (legacy feature, used for non-memory state)
                 this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.savedContextId)) || {};
                 this.initialState = { savedContext: this.savedContext };
                 
-                // Only load memory* sections if memory is enabled
-                if (memoryEnabled) {
+                // Initialize memory properties
+                this.memorySelf = '';
+                this.memoryDirectives = '';
+                this.memoryTopics = '';
+                this.memoryUser = '';
+                this.memoryContext = '';
+                
+                // Only load legacy memory* sections if memory is enabled AND NOT using continuity
+                // When continuity is enabled, it replaces the legacy memory system entirely
+                if (memoryEnabled && !useContinuityMemory) {
                     const [memorySelf, memoryDirectives, memoryTopics, memoryUser, memoryContext] = await Promise.all([
                         callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memorySelf', priority: 1, stripMetadata: true }),
                         callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryDirectives', priority: 1, stripMetadata: true }),
@@ -455,20 +467,11 @@ class PathwayResolver {
                     this.memoryTopics = memoryTopics || '';
                     this.memoryUser = memoryUser || '';
                     this.memoryContext = memoryContext || '';
-                } else {
-                    this.memorySelf = '';
-                    this.memoryDirectives = '';
-                    this.memoryTopics = '';
-                    this.memoryUser = '';
-                    this.memoryContext = '';
                 }
                 
                 // === CONTINUITY MEMORY INTEGRATION ===
                 // Load narrative context from the Continuity Architecture if enabled
-                // Only enabled when explicitly configured (not default for all pathways)
-                const memoryBackend = args.memoryBackend || this.pathway.memoryBackend;
-                const useMemory = args.useMemory !== false;
-                const useContinuityMemory = useMemory && memoryBackend === 'continuity';
+                // When enabled, this replaces the legacy memory system
                 if (useContinuityMemory) {
                     try {
                         const continuityService = getContinuityMemoryService();
@@ -673,8 +676,12 @@ class PathwayResolver {
 
     // Add an error and log it
     logError(error) {
-        this.errors.push(error);
-        logger.error(error);
+        // Extract message from error object, handle strings and undefined
+        const errorMessage = error instanceof Error 
+            ? error.message 
+            : (typeof error === 'string' ? error : String(error ?? 'Unknown error'));
+        this.errors.push(errorMessage);
+        logger.error(errorMessage);
     }
 
     // Here we choose how to handle long input - either summarize or chunk

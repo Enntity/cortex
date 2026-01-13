@@ -231,7 +231,7 @@ export default {
 
             return result;
         } catch (e) {
-            logger.error(e);
+            logger.error(`RAG Jarvis error: ${e.message}`);
             return await fetchJarvisResponse(args);
         }
     }

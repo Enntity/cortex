@@ -5,6 +5,10 @@ import logger from '../../../../../lib/logger.js';
 
 const normalizeMemoryFormat = async (args, content) => {
     if (!content) return '';
+    // Ensure content is a string
+    if (typeof content !== 'string') {
+        content = typeof content === 'object' ? JSON.stringify(content) : String(content);
+    }
 
     const lines = content.split('\n').map(line => line.trim()).filter(line => line);
     const validLines = [];
@@ -51,6 +55,10 @@ const normalizeMemoryFormat = async (args, content) => {
 
 const enforceTokenLimit = (text, maxTokens = 1000, isTopicsSection = false) => {
     if (!text) return text;
+    // Ensure text is a string
+    if (typeof text !== 'string') {
+        text = typeof text === 'object' ? JSON.stringify(text) : String(text);
+    }
     
     // Parse lines and remove duplicates
     const seen = new Map();
