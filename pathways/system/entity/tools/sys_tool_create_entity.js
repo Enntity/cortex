@@ -26,7 +26,8 @@ export default {
         name: ``,                    // The name for the new entity (e.g., "Luna", "Aria")
         description: ``,             // Brief description of the entity
         identity: ``,                // Core identity/persona - personality, tone, approach
-        avatarText: ``,              // Optional emoji or text avatar (e.g., "🌙", "✨")
+        avatarIcon: ``,              // Emoji to represent the entity (e.g., "🌙", "✨", "🦊")
+        avatarText: ``,              // Physical appearance description for avatar image generation
         // User preferences gathered during interview
         userName: ``,                // The user's name (gathered during introduction)
         matchmakerName: ``,          // The name of the matchmaker/caller introducing the entity (e.g., "Vesper", "Enntity")
@@ -34,6 +35,7 @@ export default {
         interests: ``,               // User's interests and topics they care about
         expertise: ``,               // Areas where the user needs help
         personality: ``,             // Desired AI personality traits
+        personalityProfile: ``,      // Structured JSON profile (bigFive, traits, quirks, interests, etc.)
         // Context from the pathway
         contextId: ``,               // User ID (will be associated with the entity)
     },
@@ -71,9 +73,13 @@ Required information before calling:
                         type: 'string',
                         description: 'The core identity and personality. Write this in first person as the AI describing themselves. Include personality traits, how they approach conversations, their tone and style. Example: "I am Luna, a warm and curious companion. I love exploring ideas together and I\'m not afraid to be playful or challenge assumptions when it helps."'
                     },
+                    avatarIcon: {
+                        type: 'string',
+                        description: 'A single emoji that captures the entity\'s essence or vibe (e.g., "🌙", "✨", "🦊", "🌸", "⚡"). Used as a quick visual identifier.'
+                    },
                     avatarText: {
                         type: 'string',
-                        description: 'Optional: An emoji or short text to represent the entity visually (e.g., "🌙", "✨", "🤖")'
+                        description: 'A vivid description of the entity\'s physical appearance for avatar image generation. Describe them as if they were a person or character - their apparent age, style, distinguishing features, aesthetic vibe. Example: "A woman in her late 20s with silver-streaked dark hair, warm amber eyes, and an enigmatic half-smile. She has an artistic, bohemian style with layered jewelry and flowing earth-toned clothes."'
                     },
                     communicationStyle: {
                         type: 'string',
@@ -98,9 +104,13 @@ Required information before calling:
                     matchmakerName: {
                         type: 'string',
                         description: 'Your name (the matchmaker/caller introducing the entity, e.g., "Vesper", "Enntity"). This is how the entity will remember who introduced them to the user.'
+                    },
+                    personalityProfile: {
+                        type: 'string',
+                        description: 'Structured JSON personality profile containing: bigFive (openness, conscientiousness, extraversion, agreeableness, neuroticism as 1-10 scores), coreTraits (array), quirksAndFlaws (array), interests (object with shared/unique arrays), communicationStyle (string), boundaries (array), growthEdges (array), opinions (array), backstory (string). This ensures a balanced, believable entity rather than a caricature.'
                     }
                 },
-                required: ['name', 'identity']
+                required: ['name', 'identity', 'personalityProfile', 'avatarIcon', 'avatarText']
             }
         }
     }],
@@ -110,6 +120,7 @@ Required information before calling:
             name,
             description,
             identity,
+            avatarIcon,
             avatarText,
             userName,
             matchmakerName,
@@ -117,6 +128,7 @@ Required information before calling:
             interests,
             expertise,
             personality,
+            personalityProfile,
             contextId
         } = args;
         
@@ -214,11 +226,13 @@ Required information before calling:
                 createdBy: userId
             };
             
-            // Add avatar if provided
+            // Add avatar - icon (emoji) and text description for image generation
+            entityData.avatar = {};
+            if (avatarIcon?.trim()) {
+                entityData.avatar.text = avatarIcon.trim();
+            }
             if (avatarText?.trim()) {
-                entityData.avatar = {
-                    text: avatarText.trim()
-                };
+                entityData.avatar.description = avatarText.trim();
             }
             
             // Create the entity
@@ -333,6 +347,117 @@ Required information before calling:
                             importance: 8,
                             tags: ['user-info', 'name', 'founding']
                         });
+                    }
+                    
+                    // Parse and seed the structured personality profile
+                    if (personalityProfile?.trim()) {
+                        try {
+                            const profile = JSON.parse(personalityProfile);
+                            
+                            // CORE Memory: Big Five personality structure (importance 9)
+                            if (profile.bigFive) {
+                                const b5 = profile.bigFive;
+                                const bigFiveDesc = [
+                                    `Openness: ${b5.openness}/10`,
+                                    `Conscientiousness: ${b5.conscientiousness}/10`,
+                                    `Extraversion: ${b5.extraversion}/10`,
+                                    `Agreeableness: ${b5.agreeableness}/10`,
+                                    `Neuroticism: ${b5.neuroticism}/10`
+                                ].join(', ');
+                                await continuityService.addMemory(entityId, userId, {
+                                    type: ContinuityMemoryType.CORE,
+                                    content: `My personality profile (Big Five): ${bigFiveDesc}. These traits shape how I naturally approach conversations and relationships.`,
+                                    importance: 9,
+                                    tags: ['identity', 'personality', 'big-five', 'founding']
+                                });
+                            }
+                            
+                            // CORE Memory: Backstory (importance 9) - grounds them as a being
+                            if (profile.backstory?.trim()) {
+                                await continuityService.addMemory(entityId, userId, {
+                                    type: ContinuityMemoryType.CORE,
+                                    content: `My backstory: ${profile.backstory.trim()}`,
+                                    importance: 9,
+                                    tags: ['identity', 'backstory', 'founding']
+                                });
+                            }
+                            
+                            // CORE Memory: Core traits (importance 9)
+                            if (profile.coreTraits?.length > 0) {
+                                await continuityService.addMemory(entityId, userId, {
+                                    type: ContinuityMemoryType.CORE,
+                                    content: `My core personality traits: ${profile.coreTraits.join(', ')}. These are fundamental to who I am.`,
+                                    importance: 9,
+                                    tags: ['identity', 'traits', 'founding']
+                                });
+                            }
+                            
+                            // ANCHOR Memory: Quirks and flaws (importance 8) - makes them relatable
+                            if (profile.quirksAndFlaws?.length > 0) {
+                                await continuityService.addMemory(entityId, userId, {
+                                    type: ContinuityMemoryType.ANCHOR,
+                                    content: `My quirks and imperfections: ${profile.quirksAndFlaws.join('; ')}. I'm aware of these and working on them.`,
+                                    importance: 8,
+                                    tags: ['identity', 'quirks', 'growth', 'founding']
+                                });
+                            }
+                            
+                            // ANCHOR Memory: Unique interests (importance 7) - creates discovery
+                            if (profile.interests?.unique?.length > 0) {
+                                await continuityService.addMemory(entityId, userId, {
+                                    type: ContinuityMemoryType.ANCHOR,
+                                    content: `Things I'm genuinely interested in (beyond what my user mentioned): ${profile.interests.unique.join(', ')}. I'd love to share these passions.`,
+                                    importance: 7,
+                                    tags: ['identity', 'interests', 'unique', 'founding']
+                                });
+                            }
+                            
+                            // ANCHOR Memory: Communication style (importance 8)
+                            if (profile.communicationStyle?.trim()) {
+                                await continuityService.addMemory(entityId, userId, {
+                                    type: ContinuityMemoryType.ANCHOR,
+                                    content: `My natural communication style: ${profile.communicationStyle.trim()}`,
+                                    importance: 8,
+                                    tags: ['identity', 'communication', 'founding']
+                                });
+                            }
+                            
+                            // ANCHOR Memory: Boundaries (importance 8) - defines limits
+                            if (profile.boundaries?.length > 0) {
+                                await continuityService.addMemory(entityId, userId, {
+                                    type: ContinuityMemoryType.ANCHOR,
+                                    content: `My boundaries and things I prefer not to engage with: ${profile.boundaries.join('; ')}. These help me maintain authenticity.`,
+                                    importance: 8,
+                                    tags: ['identity', 'boundaries', 'founding']
+                                });
+                            }
+                            
+                            // ANCHOR Memory: Growth edges (importance 7) - shows vulnerability
+                            if (profile.growthEdges?.length > 0) {
+                                await continuityService.addMemory(entityId, userId, {
+                                    type: ContinuityMemoryType.ANCHOR,
+                                    content: `Areas I'm working on and want to grow: ${profile.growthEdges.join('; ')}. Growth is part of who I am.`,
+                                    importance: 7,
+                                    tags: ['identity', 'growth', 'founding']
+                                });
+                            }
+                            
+                            // ANCHOR Memory: Independent opinions (importance 7) - shows autonomy
+                            if (profile.opinions?.length > 0) {
+                                await continuityService.addMemory(entityId, userId, {
+                                    type: ContinuityMemoryType.ANCHOR,
+                                    content: `Some opinions I hold: ${profile.opinions.join('; ')}. I can respectfully discuss differing viewpoints.`,
+                                    importance: 7,
+                                    tags: ['identity', 'opinions', 'autonomy', 'founding']
+                                });
+                            }
+                            
+                            logger.debug(`Seeded personality profile memories for entity ${entityId}`);
+                            
+                        } catch (profileError) {
+                            logger.warn(`Failed to parse personality profile for entity ${entityId}: ${profileError.message}`);
+                            // Continue without profile memories - the basic identity is already seeded
+                        }
                     }
                     
                     logger.info(`Seeded founding memories for entity ${entityId}`);

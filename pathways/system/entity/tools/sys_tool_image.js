@@ -152,15 +152,6 @@ export default {
             let model = "replicate-seedream-4";
             let prompt = args.detailedInstructions || "";
 
-            // Check if this is CreateAvatarImage tool call (fastest flux-2-dev config)
-            if (args.toolFunction === "createavatarimage" || args.toolFunction === "CreateAvatarImage") {
-                model = "replicate-flux-2-dev";
-            }
-            // If we have input images, use the qwen-image-edit-2511 model
-            else if (args.inputImages && Array.isArray(args.inputImages) && args.inputImages.length > 0) {
-                model = "replicate-qwen-image-edit-2511";
-            }
-
             pathwayResolver.tool = JSON.stringify({ toolUsed: "image" });
             
             // Get base avatar image from entity record (for CreateAvatarImage)
@@ -181,15 +172,22 @@ export default {
                     throw new Error(`Entity not found: ${entityIdForAvatar}`);
                 }
                 
+                // Use flux-2-dev for all avatar generation (fastest option per benchmarks)
+                model = "replicate-flux-2-dev";
+                
                 // Get base avatar image from entity record
                 const baseAvatar = entityConfig.avatar?.image;
                 if (baseAvatar && baseAvatar.url) {
                     // Use the base avatar URL directly (it's already a permanent URL)
                     resolvedBaseAvatarImage = baseAvatar.url;
                 } else {
-                    // No base avatar exists - we'll generate without a reference and set it as base after generation
+                    // No base avatar exists - will generate from scratch
                     needsBaseAvatarSet = true;
                 }
+            }
+            // If we have input images (non-avatar), use the qwen-image-edit-2511 model
+            else if (args.inputImages && Array.isArray(args.inputImages) && args.inputImages.length > 0) {
+                model = "replicate-qwen-image-edit-2511";
             }
             
             // Resolve all input images to URLs using the common utility
@@ -221,20 +219,20 @@ export default {
                 stream: false,
             };
             
-            // Configure flux-2-dev for fastest avatar generation
-            if (model === "replicate-flux-2-dev") {
+            // Configure avatar generation settings - flux-2-dev in fastest mode
+            // Benchmark results: 512px + go_fast + steps20 = ~1.4s total
+            if (isAvatar) {
                 params.aspectRatio = "1:1"; // Square aspect ratio for avatars
-                params.go_fast = true; // Fast mode
                 params.output_format = "webp"; // WebP for smaller file size
                 params.output_quality = 80; // Good quality but not max for speed
-                // Use smaller dimensions for faster generation (512x512 is good for avatars)
                 params.width = 512;
                 params.height = 512;
+                params.go_fast = true;
+                params.num_inference_steps = 20;
                 
-                // If we have a base avatar image, pass it via input_images array
-                // flux-2-dev supports up to 5 images in input_images
+                // If editing existing avatar, pass reference image
                 if (resolvedBaseAvatarImage) {
-                    params.input_images = [resolvedBaseAvatarImage];
+                    params.image = resolvedBaseAvatarImage;
                 }
             }
             
@@ -255,7 +253,7 @@ export default {
             
             // Call appropriate pathway based on model
             let pathwayName;
-            if (model === "replicate-flux-2-dev") {
+            if (model.includes('flux')) {
                 pathwayName = 'image_flux';
             } else if (model.includes('seedream')) {
                 pathwayName = 'image_seedream4';
@@ -417,7 +415,7 @@ export default {
                                             const currentEntityConfig = config.get('entityConfig') || {};
                                             currentEntityConfig[entityIdForAvatar] = updatedEntity;
                                             config.set('entityConfig', currentEntityConfig);
-                                            pathwayResolver.log(`Automatically set generated avatar as base avatar for entity ${entityIdForAvatar}`);
+                                            // Successfully set base avatar
                                         }
                                     }
                                 } catch (avatarSetError) {
