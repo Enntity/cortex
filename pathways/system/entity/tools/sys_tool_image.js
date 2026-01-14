@@ -229,6 +229,7 @@ export default {
                 params.height = 512;
                 params.go_fast = true;
                 params.num_inference_steps = 20;
+                params.disable_safety_checker = true;
                 
                 // If editing existing avatar, pass reference image
                 if (resolvedBaseAvatarImage) {

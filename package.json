@@ -31,6 +31,9 @@
   "author": "",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=20.20.0 || >=22.22.0"
+  },
   "homepage": "https://github.com/aj-archipelago/cortex#readme",
   "dependencies": {
     "@aj-archipelago/merval": "^1.0.7",
