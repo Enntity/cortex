@@ -536,6 +536,72 @@
             "maxImageSize": 31457280,
             "supportsStreaming": true
         },
+        "claude-sonnet-4": {
+            "type": "CLAUDE-ANTHROPIC",
+            "emulateOpenAIChatModel": "claude-sonnet-4",
+            "endpoints": [
+                {
+                    "name": "Anthropic Claude Sonnet 4",
+                    "url": "https://api.anthropic.com/v1/messages",
+                    "headers": {
+                        "x-api-key": "{{CLAUDE_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "claude-sonnet-4-20250514"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 200000,
+            "maxReturnTokens": 64000,
+            "maxImageSize": 31457280,
+            "supportsStreaming": true
+        },
+        "claude-45-sonnet": {
+            "type": "CLAUDE-ANTHROPIC",
+            "emulateOpenAIChatModel": "claude-4.5-sonnet",
+            "endpoints": [
+                {
+                    "name": "Anthropic Claude 4.5 Sonnet",
+                    "url": "https://api.anthropic.com/v1/messages",
+                    "headers": {
+                        "x-api-key": "{{CLAUDE_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "claude-sonnet-4-5-20250929"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 200000,
+            "maxReturnTokens": 64000,
+            "maxImageSize": 31457280,
+            "supportsStreaming": true
+        },
+        "claude-45-opus": {
+            "type": "CLAUDE-ANTHROPIC",
+            "emulateOpenAIChatModel": "claude-4.5-opus",
+            "endpoints": [
+                {
+                    "name": "Anthropic Claude 4.5 Opus",
+                    "url": "https://api.anthropic.com/v1/messages",
+                    "headers": {
+                        "x-api-key": "{{CLAUDE_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "claude-opus-4-5-20251101"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 200000,
+            "maxReturnTokens": 32000,
+            "maxImageSize": 31457280,
+            "supportsStreaming": true
+        },
         "local-llama30b": {
             "type": "LOCAL-CPP-MODEL",
             "executablePath": "../llm/llama.cpp/main",
