@@ -2,7 +2,7 @@ import {type ChatMessage, type CortexVariables, getCortexResponse} from "./utils
 
 const WRITE_QUERY = `
 query Expert($text: String, $contextId: String, $chatHistory: [MultiMessage], $aiName: String) {
-  sys_entity_continue(text: $text, contextId: $contextId, chatHistory: $chatHistory, aiName: $aiName, generatorPathway: "sys_generator_expert", voiceResponse: true) {
+  sys_entity_agent(text: $text, contextId: $contextId, chatHistory: $chatHistory, aiName: $aiName, voiceResponse: true) {
     result
     tool
     errors
@@ -25,5 +25,5 @@ export async function expert(contextId: string,
 
   const res = await getCortexResponse(variables, WRITE_QUERY);
 
-  return res.sys_entity_continue;
+  return res.sys_entity_agent;
 }

@@ -56,7 +56,7 @@ def _build_query() -> str:
     """
 
 
-async def labeeb_sys_entity_start(query: str) -> str:
+async def labeeb_sys_entity_agent(query: str) -> str:
     """
     Call Labeeb GraphQL sys_entity_agent with a single user query.
     Internally wraps the query into a Message {role: user, content: query}.
@@ -83,7 +83,7 @@ async def labeeb_sys_entity_start(query: str) -> str:
             timeout=30,
         )
     except Exception as e:
-        logger.error(f"labeeb sys_entity_start request failed: {e}")
+        logger.error(f"labeeb sys_entity_agent request failed: {e}")
         return json.dumps({"error": f"request_failed: {e}"})
 
     try:
@@ -99,7 +99,7 @@ async def labeeb_sys_entity_start(query: str) -> str:
 
 
 labeeb_agent_tool = FunctionTool(
-    labeeb_sys_entity_start,
+    labeeb_sys_entity_agent,
     description=(
         "Ask Labeeb (sys_entity_agent) anything with a single text query. "
         "Returns result, resultData, warnings, errors, contextId, tool, debug."

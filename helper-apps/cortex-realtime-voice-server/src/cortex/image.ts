@@ -2,7 +2,7 @@ import {type ChatMessage, type CortexVariables, getCortexResponse} from "./utils
 
 const IMAGE_QUERY = `
 query Image($text: String, $contextId: String, $chatHistory: [MultiMessage], $aiName: String) {
-  sys_entity_continue(text: $text, contextId: $contextId, chatHistory: $chatHistory, aiName: $aiName, generatorPathway: "sys_generator_image", voiceResponse: true) {
+  sys_entity_agent(text: $text, contextId: $contextId, chatHistory: $chatHistory, aiName: $aiName, voiceResponse: true) {
     result
     tool
     errors
@@ -25,5 +25,5 @@ export async function image(contextId: string,
 
   const res = await getCortexResponse(variables, IMAGE_QUERY);
 
-  return res.sys_entity_continue;
+  return res.sys_entity_agent;
 }
