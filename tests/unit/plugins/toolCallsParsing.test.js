@@ -5,7 +5,7 @@
 import test from 'ava';
 import OpenAIVisionPlugin from '../../../server/plugins/openAiVisionPlugin.js';
 import GrokVisionPlugin from '../../../server/plugins/grokVisionPlugin.js';
-import Gemini15ChatPlugin from '../../../server/plugins/gemini15ChatPlugin.js';
+import Gemini15VisionPlugin from '../../../server/plugins/gemini15VisionPlugin.js';
 
 const mockPathway = {
     name: 'test-pathway',
@@ -194,8 +194,8 @@ test('GrokVisionPlugin - converts tool message content array to text content par
     t.is(result[0].content[1].text, 'Grok result 2');
 });
 
-test('Gemini15ChatPlugin - converts tool message content array to string', async (t) => {
-    const plugin = new Gemini15ChatPlugin(mockPathway, { ...mockModel, type: 'GEMINI-1.5-VISION' });
+test('Gemini 2.5 Vision Plugin - converts tool message content array to string', async (t) => {
+    const plugin = new Gemini15VisionPlugin(mockPathway, { ...mockModel, type: 'GEMINI-1.5-VISION' });
     
     const messages = [
         {

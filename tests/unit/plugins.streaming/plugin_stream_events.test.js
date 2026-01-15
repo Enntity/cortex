@@ -1,9 +1,8 @@
 import test from 'ava';
 import { PathwayResolver } from '../../../server/pathwayResolver.js';
 import OpenAIChatPlugin from '../../../server/plugins/openAiChatPlugin.js';
-import GeminiChatPlugin from '../../../server/plugins/geminiChatPlugin.js';
-import Gemini15ChatPlugin from '../../../server/plugins/gemini15ChatPlugin.js';
-import Claude3VertexPlugin from '../../../server/plugins/claude3VertexPlugin.js';
+import Gemini15VisionPlugin from '../../../server/plugins/gemini15VisionPlugin.js';
+import ClaudeAnthropicPlugin from '../../../server/plugins/claudeAnthropicPlugin.js';
 import { config } from '../../../config.js';
 
 let testServer;
@@ -11,9 +10,8 @@ let testServer;
 function createResolverWithPlugin(pluginClass, modelName = 'test-model') {
   const pluginToModelType = {
     OpenAIChatPlugin: 'OPENAI-VISION',
-    GeminiChatPlugin: 'GEMINI-VISION',
-    Gemini15ChatPlugin: 'GEMINI-1.5-VISION',
-    Claude3VertexPlugin: 'CLAUDE-3-VERTEX'
+    Gemini15VisionPlugin: 'GEMINI-1.5-VISION',
+    ClaudeAnthropicPlugin: 'CLAUDE-ANTHROPIC'
   };
 
   const modelType = pluginToModelType[pluginClass.name];
@@ -75,8 +73,8 @@ test('OpenAI Chat Plugin - processStreamEvent handles content chunks correctly',
   t.is(progress.progress, 1);
 });
 
-test('Gemini Chat Plugin - processStreamEvent handles content chunks correctly', async t => {
-  const resolver = createResolverWithPlugin(GeminiChatPlugin);
+test('Gemini 2.5 Vision Plugin - processStreamEvent handles content chunks correctly', async t => {
+  const resolver = createResolverWithPlugin(Gemini15VisionPlugin);
   const plugin = resolver.modelExecutor.plugin;
   
   const contentEvent = {
@@ -91,10 +89,9 @@ test('Gemini Chat Plugin - processStreamEvent handles content chunks correctly',
   let progress = plugin.processStreamEvent(contentEvent, {});
   t.truthy(progress.data);
   const parsedData = JSON.parse(progress.data);
-  t.truthy(parsedData.candidates);
-  t.truthy(parsedData.candidates[0].content);
-  t.truthy(parsedData.candidates[0].content.parts);
-  t.is(parsedData.candidates[0].content.parts[0].text, 'test content');
+  t.truthy(parsedData.choices);
+  t.truthy(parsedData.choices[0].delta);
+  t.is(parsedData.choices[0].delta.content, 'test content');
   t.falsy(progress.progress);
   
   const endEvent = {
@@ -108,10 +105,14 @@ test('Gemini Chat Plugin - processStreamEvent handles content chunks correctly',
   
   progress = plugin.processStreamEvent(endEvent, {});
   t.is(progress.progress, 1);
+  if (progress.data) {
+    const endParsed = JSON.parse(progress.data);
+    t.is(endParsed.choices[0].finish_reason, 'stop');
+  }
 });
 
-test('Gemini 15 Chat Plugin - processStreamEvent handles safety blocks', async t => {
-  const resolver = createResolverWithPlugin(Gemini15ChatPlugin);
+test('Gemini 2.5 Vision Plugin - processStreamEvent handles safety blocks', async t => {
+  const resolver = createResolverWithPlugin(Gemini15VisionPlugin);
   const plugin = resolver.modelExecutor.plugin;
   
   const safetyEvent = {
@@ -125,8 +126,8 @@ test('Gemini 15 Chat Plugin - processStreamEvent handles safety blocks', async t
   t.is(progress.progress, 1);
 });
 
-test('Claude 3 Vertex Plugin - processStreamEvent handles message types', async t => {
-  const resolver = createResolverWithPlugin(Claude3VertexPlugin);
+test('Claude 4.5 Anthropic Plugin - processStreamEvent handles message types', async t => {
+  const resolver = createResolverWithPlugin(ClaudeAnthropicPlugin);
   const plugin = resolver.modelExecutor.plugin;
   
   const startEvent = {

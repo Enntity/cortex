@@ -97,14 +97,14 @@ test('transformPrompts preserves other pathway properties', async t => {
         prompt: [{ name: 'Test', prompt: 'Test prompt' }],
         systemPrompt: 'System prompt',
         name: 'Test Pathway',
-        model: 'gpt-4',
+        model: 'gpt-4.1',
         otherProperty: 'value'
     };
 
     const result = await t.context.pathwayManager.transformPrompts(pathway);
 
     t.is(result.name, 'Test Pathway');
-    t.is(result.model, 'gpt-4');
+    t.is(result.model, 'gpt-4.1');
     t.is(result.otherProperty, 'value');
     t.is(result.systemPrompt, 'System prompt');
 });
@@ -243,7 +243,7 @@ test('putPathway stores pathway with correct format', async t => {
             { name: 'Test Prompt', prompt: 'Test prompt text' }
         ],
         systemPrompt: 'System prompt',
-        model: 'gpt-4'
+        model: 'gpt-4.1'
     };
 
     const result = await t.context.pathwayManager.putPathway(
@@ -263,7 +263,7 @@ test('putPathway stores pathway with correct format', async t => {
     t.is(storedPathway.displayName, 'Test Pathway Display');
     t.deepEqual(storedPathway.prompt, pathway.prompt);
     t.is(storedPathway.systemPrompt, 'System prompt');
-    t.is(storedPathway.model, 'gpt-4');
+    t.is(storedPathway.model, 'gpt-4.1');
 });
 
 test('getPathways returns array of pathways for each prompt (string format)', async t => {
@@ -274,7 +274,7 @@ test('getPathways returns array of pathways for each prompt (string format)', as
             'Third prompt text'
         ],
         systemPrompt: 'You are a helpful assistant',
-        model: 'gpt-4',
+        model: 'gpt-4.1',
         enableCache: true,
         customProperty: 'test-value'
     };
@@ -286,7 +286,7 @@ test('getPathways returns array of pathways for each prompt (string format)', as
     // Check each pathway has the correct structure
     result.forEach((pathway, index) => {
         t.is(pathway.systemPrompt, 'You are a helpful assistant');
-        t.is(pathway.model, 'gpt-4');
+        t.is(pathway.model, 'gpt-4.1');
         t.is(pathway.enableCache, true);
         t.is(pathway.customProperty, 'test-value');
         t.is(pathway.prompt.length, 1);
@@ -308,7 +308,7 @@ test('getPathways returns array of pathways for each prompt (object format)', as
             { name: 'Summary', prompt: 'Summarize this text' }
         ],
         systemPrompt: 'You are an expert editor',
-        model: 'gpt-4-turbo'
+        model: 'gpt-4o'
     };
 
     const result = await t.context.pathwayManager.getPathways(pathwayTemplate);
@@ -325,7 +325,7 @@ test('getPathways returns array of pathways for each prompt (object format)', as
     
     result.forEach((pathway, index) => {
         t.is(pathway.systemPrompt, 'You are an expert editor');
-        t.is(pathway.model, 'gpt-4-turbo');
+    t.is(pathway.model, 'gpt-4o');
         t.is(pathway.prompt.length, 1);
         t.true(pathway.prompt[0] instanceof Prompt);
         
@@ -394,7 +394,7 @@ test('getPathways preserves all template properties', async t => {
             { name: 'Test Prompt', prompt: 'Test content' }
         ],
         systemPrompt: 'System test',
-        model: 'gpt-4',
+        model: 'gpt-4.1',
         enableCache: false,
         inputParameters: { temperature: 0.7 },
         customProperty: 'preserved',
@@ -407,7 +407,7 @@ test('getPathways preserves all template properties', async t => {
     const pathway = result[0];
     
     t.is(pathway.systemPrompt, 'System test');
-    t.is(pathway.model, 'gpt-4');
+    t.is(pathway.model, 'gpt-4.1');
     t.is(pathway.enableCache, false);
     t.deepEqual(pathway.inputParameters, { temperature: 0.7 });
     t.is(pathway.customProperty, 'preserved');

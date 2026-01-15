@@ -26,7 +26,7 @@ test.after.always('cleanup', async () => {
 });
 
 // Real API tests - these will call the actual Grok model
-test('make a chat_jarvis API call to Grok 3', async t => {
+test('make a chat_jarvis API call to Grok 4.1 fast (non-reasoning)', async t => {
 
   const response = await testServer.executeOperation({
     query: `
@@ -44,7 +44,7 @@ test('make a chat_jarvis API call to Grok 3', async t => {
           content: 'Hi there!  To whom am I speaking?  Can you tell me what model you are running on right now?'
         }
       ],
-      model: 'xai-grok-3'
+      model: 'xai-grok-4-1-fast-non-reasoning'
     }
   });
 
@@ -54,7 +54,7 @@ test('make a chat_jarvis API call to Grok 3', async t => {
   t.true(result.length > 0, 'Should have a non-empty result');
 });
 
-test('make a chat_jarvis API call to Grok 4', async t => {
+test('make a chat_jarvis API call to Grok 4.1 fast (reasoning)', async t => {
 
   const response = await testServer.executeOperation({
     query: `
@@ -72,7 +72,7 @@ test('make a chat_jarvis API call to Grok 4', async t => {
           content: 'Hi there!  To whom am I speaking?  Can you tell me what model you are running on right now?'
         }
       ],
-      model: 'xai-grok-4-fast-reasoning'
+      model: 'xai-grok-4-1-fast-reasoning'
     }
   });
 
@@ -83,7 +83,7 @@ test('make a chat_jarvis API call to Grok 4', async t => {
 });
 
 // Test Grok 4 through the vision pathway for multimodal capabilities
-test('should execute Grok 4 through vision pathway', async t => {
+test('should execute Grok 4.1 fast through vision pathway', async t => {
 
   const response = await testServer.executeOperation({
     query: `
@@ -105,7 +105,7 @@ test('should execute Grok 4 through vision pathway', async t => {
           ]
         }
       ],
-      model: 'xai-grok-4'
+      model: 'xai-grok-4-1-fast-non-reasoning'
     }
   });
 

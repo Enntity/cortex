@@ -1089,9 +1089,7 @@ The `PathwayResolver` class in `server/pathwayResolver.js` is where memory is lo
 import { getContinuityMemoryService } from '../lib/continuity/index.js';
 
 // In loadMemory method (called during promptAndParse)
-const memoryBackend = args.memoryBackend || this.pathway.memoryBackend;
-const useMemory = args.useMemory !== false;
-const useContinuityMemory = useMemory && memoryBackend === 'continuity';
+const useContinuityMemory = args.useMemory !== false;
 if (useContinuityMemory) {
   try {
     const continuityService = getContinuityMemoryService();
@@ -1701,7 +1699,7 @@ Respond with JSON:
 
 ### Phase 2: Gradual Adoption
 - Enable Continuity for new entities by default
-- Existing entities continue with legacy system
+- All entities use Continuity Memory
 - Build migration pathway to convert old memories to new format
 
 ### Phase 3: Full Migration
@@ -2613,10 +2611,7 @@ The bootloader now processes memories in configurable batches with optimized pip
 
 **Input Format:**
 The script expects a JSON file with sections:
-- `memorySelf`: Identity memories → `IDENTITY` type
-- `memoryUser`: User memories → `ANCHOR` type
-- `memoryDirectives`: Directives → `CORE` (priority 1) or `ANCHOR` (priority > 1)
-- `memoryTopics`: Topics → `ARTIFACT` type
+- Legacy memory section mapping has been removed. Continuity Memory stores all identity, relationship, and topic context directly by type.
 
 Each section contains lines in format: `priority|timestamp|content`
 

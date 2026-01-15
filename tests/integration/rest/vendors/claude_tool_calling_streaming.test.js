@@ -19,12 +19,12 @@ test.after.always('cleanup', async () => {
 test('Claude streaming tool_calls appear as OAI deltas', async (t) => {
   const baseUrl = `http://localhost:${process.env.CORTEX_PORT}/v1`;
 
-  // pick a Claude-compatible model
-  let model = 'claude-4-sonnet-vertex';
+  // pick a Claude-compatible model (non-Vertex)
+  let model = 'claude-45-sonnet';
   try {
     const res = await got(`${baseUrl}/models`, { responseType: 'json' });
     const ids = (res.body?.data || []).map(m => m.id);
-    model = ids.find(id => /^claude|^anthropic/i.test(id)) || model;
+    model = ids.find(id => /^claude/i.test(id) && !id.includes('vertex')) || model;
   } catch (_) {}
 
   const payload = {

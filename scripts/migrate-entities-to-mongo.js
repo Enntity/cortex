@@ -106,7 +106,6 @@ function transformEntity(key, configEntity) {
         name: configEntity.name || key.charAt(0).toUpperCase() + key.slice(1),
         isDefault: configEntity.isDefault ?? false,
         useMemory: configEntity.useMemory ?? true,
-        memoryBackend: configEntity.memoryBackend || 'continuity',
         description: configEntity.description || '',
         // Rename instructions → identity
         identity: configEntity.instructions || configEntity.identity || '',
@@ -188,7 +187,7 @@ async function migrateEntities() {
     for (const entity of transformedEntities) {
         console.log(`   • ${entity.name} → ${entity.id}`);
         console.log(`     - isDefault: ${entity.isDefault}`);
-        console.log(`     - useMemory: ${entity.useMemory} (${entity.memoryBackend})`);
+        console.log(`     - useMemory: ${entity.useMemory}`);
         console.log(`     - tools: ${entity.tools.join(', ')}`);
         console.log(`     - identity: ${entity.identity ? entity.identity.substring(0, 50) + '...' : '(empty)'}`);
         console.log(`     - resources: ${entity.resources.length} files`);

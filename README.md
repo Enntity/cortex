@@ -22,20 +22,15 @@ Just about anything! It's kind of an LLM swiss army knife.  Here are some ideas:
     - GPT-5 (all flavors and router)
     - GPT-4.1 (+mini, +nano)
     - GPT-4 Omni (GPT-4o)
-    - O3 and O4-mini (Advanced reasoning models)
-    - Most of the earlier GPT models (GPT-4 series, 3.5 Turbo, etc.)
+    - O-series (advanced reasoning models)
   - Google models:
+    - Gemini 3 series
     - Gemini 2.5 Pro
     - Gemini 2.5 Flash
-    - Gemini 2.0 Flash
-    - Earlier Google models (Gemini 1.5 series)
   - Anthropic models:
-  - Claude 4 Sonnet (Vertex)
-  - Claude 4.1 Opus (Vertex)
-  - Claude 3.7 Sonnet
-  - Claude 3.5 Sonnet
-  - Claude 3.5 Haiku
-  - Claude 3 Series
+    - Claude 4.5 Sonnet (Vertex + Anthropic)
+    - Claude 4.5 Opus (Anthropic)
+    - Claude 4.5 Haiku (Vertex)
   - Grok (XAI) models:
     - Grok 3 and Grok 4 series (including fast-reasoning and code-fast variants)
     - Multimodal chat with vision, streaming, and tool calling
@@ -502,7 +497,7 @@ export default {
     executePathway: async ({args, runAllPrompts}) => {
         // Switch to a different model based on input length
         if (args.text && args.text.length > 10000) {
-            args.modelOverride = 'oai-gpt4-turbo';  // Use faster model for long text
+            args.modelOverride = 'oai-gpt4o';  // Use faster model for long text
         }
         return await runAllPrompts();
     }
@@ -532,7 +527,7 @@ export default {
         if (args.language === 'ja' || args.complexity === 'high') {
             args.modelOverride = 'oai-gpt4o';
         } else {
-            args.modelOverride = 'oai-gpt4-turbo';
+            args.modelOverride = 'oai-gpt4o';
         }
         return await runAllPrompts();
     }
@@ -595,53 +590,39 @@ Cortex is designed to be highly extensible. This allows you to customize the API
   - chat_persist.js
   - expand_story.js
   - ...whole bunch of custom pathways
-  - translate_gpt4.js
-  - translate_turbo.js
+  - translate_gpt4_omni.js
 - start.js
 
 Where `default.json` holds all of your specific configuration:
 ```js
 {
-    "defaultModelName": "oai-gpturbo",
+    "defaultModelName": "oai-gpt41",
     "models": {
-        "oai-td3": {
-            "type": "OPENAI-COMPLETION",
-            "url": "https://api.openai.com/v1/completions",
-            "headers": {
-                "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                "Content-Type": "application/json"
-            },
-            "params": {
-                "model": "text-davinci-003"
-            },
-            "requestsPerSecond": 10,
-            "maxTokenLength": 4096
-        },
-        "oai-gpturbo": {
-            "type": "OPENAI-CHAT",
+        "oai-gpt4o": {
+            "type": "OPENAI-VISION",
             "url": "https://api.openai.com/v1/chat/completions",
             "headers": {
                 "Authorization": "Bearer {{OPENAI_API_KEY}}",
                 "Content-Type": "application/json"
             },
             "params": {
-                "model": "gpt-3.5-turbo"
+                "model": "gpt-4o"
             },
             "requestsPerSecond": 10,
-            "maxTokenLength": 8192
+            "maxTokenLength": 131072
         },
-        "oai-gpt4": {
-            "type": "OPENAI-CHAT",
+        "oai-gpt41": {
+            "type": "OPENAI-VISION",
             "url": "https://api.openai.com/v1/chat/completions",
             "headers": {
                 "Authorization": "Bearer {{OPENAI_API_KEY}}",
                 "Content-Type": "application/json"
             },
             "params": {
-                "model": "gpt-4"
+                "model": "gpt-4.1"
             },
             "requestsPerSecond": 10,
-            "maxTokenLength": 8192
+            "maxTokenLength": 1000000
         }
     },
     "enableCache": false,
@@ -666,15 +647,13 @@ Configuration of Cortex is done via a [convict](https://github.com/mozilla/node-
 
 Models are configured in the `models` section of the config. Each model can have the following types:
 
-- `OPENAI-CHAT`: For OpenAI chat models (legacy GPT-3.5)
+- `OPENAI-CHAT`: For OpenAI chat models
 - `OPENAI-VISION`: For multimodal models (GPT-4o, GPT-4o-mini) supporting text, images, and other content types
 - `OPENAI-REASONING`: For O1 and O3-mini reasoning models with vision capabilities
 - `OPENAI-COMPLETION`: For OpenAI completion models
 - `OPENAI-WHISPER`: For Whisper transcription
-- `GEMINI-1.5-CHAT`: For Gemini 1.5 Pro chat models
-- `GEMINI-1.5-VISION`: For Gemini vision models (including 2.0 Flash experimental)
-- `CLAUDE-3-VERTEX`: For Claude-3 and 3.5 models (Haiku, Opus, Sonnet)
-- `CLAUDE-4-VERTEX`: For Claude-4 models (Sonnet 4, Sonnet 4.5, Opus 4.1, Haiku 4.5) with enhanced support for PDFs and text files
+- `GEMINI-1.5-VISION`: For Gemini 2.5+ vision models
+- `CLAUDE-4-VERTEX`: For Claude 4.5 models with enhanced support for PDFs and text files
 - `GROK-VISION`: For XAI Grok models (Grok-3, Grok-4, fast-reasoning, code-fast) with multimodal/vision and reasoning
 - `AZURE-TRANSLATE`: For Azure translation services
 
@@ -701,7 +680,7 @@ Each model configuration can include:
     "supportsStreaming": true,
     "supportsVision": true,
     "emulateOpenAIChatModel": "gpt-4o",
-    "emulateOpenAICompletionModel": "gpt-3.5-turbo",
+    "emulateOpenAICompletionModel": "gpt-4.1",
     "restStreaming": {
         "inputParameters": {
             "stream": false
@@ -721,8 +700,8 @@ Each model configuration can include:
 
 **REST Endpoint Emulation**: To expose a model through OpenAI-compatible REST endpoints (`/v1/chat/completions` or `/v1/completions`), add one of these properties:
 
-- `emulateOpenAIChatModel`: Exposes the model as a chat completion model (e.g., `"gpt-4o"`, `"gpt-5"`, `"claude-4-sonnet"`)
-- `emulateOpenAICompletionModel`: Exposes the model as a text completion model (e.g., `"gpt-3.5-turbo"`, `"ollama-completion"`)
+- `emulateOpenAIChatModel`: Exposes the model as a chat completion model (e.g., `"gpt-4o"`, `"gpt-5"`, `"claude-4.5-sonnet"`)
+- `emulateOpenAICompletionModel`: Exposes the model as a text completion model (e.g., `"gpt-4.1"`, `"ollama-completion"`)
 
 When `enableRestEndpoints` is `true`, Cortex automatically:
 1. Generates REST streaming pathways for models with `emulateOpenAIChatModel` or `emulateOpenAICompletionModel`
@@ -790,7 +769,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="gpt-4",  # Or any model configured in Cortex
+    model="gpt-4.1",  # Or any model configured in Cortex
     messages=[{"role": "user", "content": "Hello!"}]
 )
 ```

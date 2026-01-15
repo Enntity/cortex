@@ -13,7 +13,7 @@ test('should create GrokVisionPlugin instance', t => {
   };
 
   const mockModel = {
-    name: 'xai-grok-3',
+    name: 'xai-grok-4-1-fast-non-reasoning',
     type: 'GROK-VISION',
     url: 'https://api.x.ai/v1/chat/completions',
     headers: {
@@ -21,7 +21,7 @@ test('should create GrokVisionPlugin instance', t => {
       'Content-Type': 'application/json'
     },
     params: {
-      model: 'grok-3-latest'
+      model: 'grok-4-1-fast-non-reasoning'
     },
     maxTokenLength: 131072,
     maxReturnTokens: 4096
@@ -30,7 +30,7 @@ test('should create GrokVisionPlugin instance', t => {
   const plugin = new GrokVisionPlugin(mockPathway, mockModel);
   
   t.true(plugin instanceof GrokVisionPlugin);
-  t.is(plugin.modelName, 'xai-grok-3');
+  t.is(plugin.modelName, 'xai-grok-4-1-fast-non-reasoning');
   t.true(plugin.isMultiModal);
 });
 
@@ -42,7 +42,7 @@ test('should handle Grok-specific parameters', async t => {
   };
 
   const mockModel = {
-    name: 'xai-grok-4',
+    name: 'xai-grok-4-1-fast-reasoning',
     type: 'GROK-VISION',
     url: 'https://api.x.ai/v1/chat/completions',
     headers: {
@@ -50,7 +50,7 @@ test('should handle Grok-specific parameters', async t => {
       'Content-Type': 'application/json'
     },
     params: {
-      model: 'grok-4-0709'
+      model: 'grok-4-1-fast-reasoning'
     },
     maxTokenLength: 131072,
     maxReturnTokens: 4096
@@ -77,7 +77,7 @@ test('should handle all Live Search parameters correctly', async t => {
   };
 
   const mockModel = {
-    name: 'xai-grok-3',
+    name: 'xai-grok-4-1-fast-non-reasoning',
     type: 'GROK-VISION',
     url: 'https://api.x.ai/v1/chat/completions',
     headers: {
@@ -85,7 +85,7 @@ test('should handle all Live Search parameters correctly', async t => {
       'Content-Type': 'application/json'
     },
     params: {
-      model: 'grok-3-latest'
+      model: 'grok-4-1-fast-non-reasoning'
     },
     maxTokenLength: 131072,
     maxReturnTokens: 4096

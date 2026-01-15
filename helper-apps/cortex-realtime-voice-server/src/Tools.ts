@@ -9,8 +9,7 @@ import {image} from "./cortex/image";
 import {vision, type MultiMessage} from "./cortex/vision";
 import {reason} from "./cortex/reason";
 import { logger } from './utils/logger';
-import { searchMemory } from "./cortex/memory";
-import { MemorySection, type ChatMessage } from "./cortex/utils";
+import { type ChatMessage } from "./cortex/utils";
 import type {SocketServer} from "./SocketServer";
 
 interface ScreenshotArgs {
@@ -60,18 +59,6 @@ export class Tools {
 
   public static getToolDefinitions() {
     return [
-      {
-        type: 'function',
-        name: 'MemoryLookup',
-        description: 'Use this tool to proactively search your memories for information that might be relevant to the conversation. It\'s critical to maintain natural conversation flow with the user, so stall them for a few seconds with natural banter while you use this tool. Don\'t talk directly about the tool - just say "let me think about that" or something else that fits the conversation.',
-        parameters: {
-          type: "object",
-          properties: {
-            lastUserMessage: {type: "string"},
-          },
-          required: ["lastUserMessage"]
-        },
-      },
       {
         type: 'function',
         name: 'Search',
@@ -259,12 +246,6 @@ export class Tools {
 
     // tool specific initializations
     switch (name.toLowerCase()) {
-      case 'memorylookup':
-        initialPrompt =`You are currently using the MemoryLookup tool to help yourself remember something. It will be a few seconds before you remember the information. Stall the user for a few seconds with natural banter while you use this tool. Don't talk directly about the tool - just say "let me think about that" or something else that fits the conversation.`;
-        isSilent = false;
-        promptOnCompletion = true;
-        promptOnIdle = false;
-        break;
       case 'muteaudio':
         isSilent = true;
         promptOnCompletion = false;
@@ -298,20 +279,11 @@ export class Tools {
             contextId,
             aiName,
             cortexHistory,
-            name === 'Search' ? ['aje', 'aja', 'bing', 'wires', 'mydata'] : ['mydata'],
             JSON.stringify({query: args})
           );
           finishPrompt += ' by reading the output of the tool to the user verbatim - make sure to read it in your signature voice and style and ensure the emotion in your voice is appropriate for the content'
           break;
 
-        case 'memorylookup':
-          response = await searchMemory(
-            contextId,
-            aiName,
-            cortexHistory,
-            MemorySection.memoryAll
-          );
-          break;
 
         case 'muteaudio':
           const parsedMuteArgs = JSON.parse(args);

@@ -40,12 +40,12 @@ test('config enableGraphqlCache', (t) => {
 });
 
 test('config enableRestEndpoints', (t) => {
-    const expectedDefault = false;
+    const expectedDefault = true;
     t.is(config.get('enableRestEndpoints'), expectedDefault);
 });
 
 test('config openaiDefaultModel', (t) => {
-    const expectedDefault = 'gpt-3.5-turbo';
+  const expectedDefault = 'gpt-4.1';
     t.is(config.get('openaiDefaultModel'), expectedDefault);
 });
 

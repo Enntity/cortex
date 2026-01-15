@@ -11,11 +11,6 @@ export default {
 
         // Map of pathway names to their descriptions
         const modelDescriptions = {
-                    'translate_apptek': {
-                        name: 'AppTek Translator',
-                        description: 'AppTek specialized translation service',
-                        supportedLanguages: 'Selected languages supported'
-                    },
                     'translate_groq': {
                         name: 'Groq Llama 4 Scout Translator',
                         description: 'High-performance translation using Groq Llama 4 Scout models',
@@ -30,11 +25,6 @@ export default {
                         name: 'Azure Translator',
                         description: 'Microsoft Azure Translation service',
                         supportedLanguages: 'Over 100 languages supported'
-                    },
-                    'translate_gpt4': {
-                        name: 'GPT-4 Translator',
-                        description: 'High-quality translation using GPT-4',
-                        supportedLanguages: 'All languages supported'
                     },
                     'translate_gpt4_omni': {
                         name: 'GPT-4 Omni Translator',

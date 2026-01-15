@@ -8,7 +8,7 @@ import { Prompt } from './prompt.js';
 import { getv, setv } from '../lib/keyValueStorageClient.js';
 import { getvWithDoubleDecryption, setvWithDoubleEncryption } from '../lib/keyValueStorageClient.js';
 import { requestState } from './requestState.js';
-import { callPathway, addCitationsToResolver } from '../lib/pathwayTools.js';
+import { addCitationsToResolver } from '../lib/pathwayTools.js';
 import logger from '../lib/logger.js';
 import { publishRequestProgress } from '../lib/redisSubscription.js';
 // eslint-disable-next-line import/no-extraneous-dependencies
@@ -428,46 +428,13 @@ class PathwayResolver {
         const { contextId, useMemory } = args;
         this.savedContextId = contextId ? contextId : uuidv4();
         
-        // Check if memory is enabled (default true for backward compatibility)
-        const memoryEnabled = useMemory !== false;
-        
-        // Determine memory backend early so we can skip legacy loading if using continuity
-        const memoryBackend = args.memoryBackend || this.pathway.memoryBackend;
-        const useContinuityMemory = memoryEnabled && memoryBackend === 'continuity';
+        const useContinuityMemory = useMemory !== false;
         
         const loadMemory = async () => {
             try {
                 // Always load savedContext (legacy feature, used for non-memory state)
                 this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.savedContextId)) || {};
                 this.initialState = { savedContext: this.savedContext };
-                
-                // Initialize memory properties
-                this.memorySelf = '';
-                this.memoryDirectives = '';
-                this.memoryTopics = '';
-                this.memoryUser = '';
-                this.memoryContext = '';
-                
-                // Only load legacy memory* sections if memory is enabled AND NOT using continuity
-                // When continuity is enabled, it replaces the legacy memory system entirely
-                if (memoryEnabled && !useContinuityMemory) {
-                    const [memorySelf, memoryDirectives, memoryTopics, memoryUser, memoryContext] = await Promise.all([
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memorySelf', priority: 1, stripMetadata: true }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryDirectives', priority: 1, stripMetadata: true }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryTopics', priority: 0, numResults: 10 }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryUser', priority: 1, stripMetadata: true }),
-                        callPathway('sys_read_memory', { contextId: this.savedContextId, section: 'memoryContext', priority: 0 }),
-                    ]).catch(error => {
-                        this.logError(`Failed to load memory: ${error.message}`);
-                        return ['','','','',''];
-                    });
-
-                    this.memorySelf = memorySelf || '';
-                    this.memoryDirectives = memoryDirectives || '';
-                    this.memoryTopics = memoryTopics || '';
-                    this.memoryUser = memoryUser || '';
-                    this.memoryContext = memoryContext || '';
-                }
                 
                 // === CONTINUITY MEMORY INTEGRATION ===
                 // Load narrative context from the Continuity Architecture if enabled
@@ -560,11 +527,6 @@ class PathwayResolver {
             } catch (error) {
                 this.logError(`Error in loadMemory: ${error.message}`);
                 this.savedContext = {};
-                this.memorySelf = '';
-                this.memoryDirectives = '';
-                this.memoryTopics = '';
-                this.memoryUser = '';
-                this.memoryContext = '';
                 this.continuityContext = '';
                 this.initialState = { savedContext: {} };
             }
@@ -613,9 +575,7 @@ class PathwayResolver {
             
             // === CONTINUITY MEMORY SYNTHESIS (Post-Response Hook) ===
             // Trigger async synthesis after response - fire and forget
-            const memoryBackendPost = args.memoryBackend || this.pathway.memoryBackend;
-            const useMemoryPost = args.useMemory !== false;
-            const useContinuityMemoryPost = useMemoryPost && memoryBackendPost === 'continuity';
+            const useContinuityMemoryPost = args.useMemory !== false;
             if (useContinuityMemoryPost && this.continuityEntityId && this.continuityUserId) {
                 try {
                     const continuityService = getContinuityMemoryService();
@@ -653,7 +613,7 @@ class PathwayResolver {
                             this.continuityUserId,
                             {
                                 aiName: args.aiName || 'Entity',
-                                entityContext: this.memorySelf || ''
+                                entityContext: args.entityInstructions || ''
                             }
                         );
                     }
@@ -872,11 +832,6 @@ class PathwayResolver {
         result = await this.modelExecutor.execute(text, { 
             ...parameters, 
             ...this.savedContext,
-            memorySelf: this.memorySelf,
-            memoryDirectives: this.memoryDirectives,
-            memoryTopics: this.memoryTopics,
-            memoryUser: this.memoryUser,
-            memoryContext: this.memoryContext,
             // Continuity Memory context (narrative layer)
             continuityContext: this.continuityContext || ''
         }, prompt, this);
@@ -896,10 +851,6 @@ class PathwayResolver {
 
         // save the result to the context if requested and no errors
         if (prompt.saveResultTo && this.errors.length === 0) {
-            // Update memory property if it matches a known type
-            if (["memorySelf", "memoryUser", "memoryDirectives", "memoryTopics"].includes(prompt.saveResultTo)) {
-                this[prompt.saveResultTo] = result;
-            }
             this.savedContext[prompt.saveResultTo] = result;
         }
         return result;

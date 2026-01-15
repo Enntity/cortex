@@ -29,22 +29,6 @@ test('GET /models', async (t) => {
   t.true(Array.isArray(response.body.data));
 });
 
-test('POST /completions', async (t) => {
-  const response = await got.post(`${API_BASE}/completions`, {
-    json: {
-      model: 'gpt-3.5-turbo',
-      prompt: 'Word to your motha!',
-      stream: false,
-    },
-    responseType: 'json',
-  });
-
-  t.is(response.statusCode, 200);
-  t.is(response.body.object, 'text_completion');
-  t.true(Array.isArray(response.body.choices));
-});
-
-
 test('POST /chat/completions', async (t) => {
   const response = await got.post(`${API_BASE}/chat/completions`, {
     json: {
@@ -88,22 +72,6 @@ test('POST /chat/completions with multimodal content', async (t) => {
   t.is(response.body.object, 'chat.completion');
   t.true(Array.isArray(response.body.choices));
   t.truthy(response.body.choices[0].message.content);
-});
-
-test('POST SSE: /v1/completions should send a series of events and a [DONE] event', async (t) => {
-  const payload = {
-    model: 'gpt-3.5-turbo',
-    prompt: 'Word to your motha!',
-    stream: true,
-  };
-
-  const url = `http://localhost:${process.env.CORTEX_PORT}/v1`;
-
-  await connectToSSEEndpoint(url, '/completions', payload, (messageJson) => {
-    t.truthy(messageJson.id);
-    t.is(messageJson.object, 'text_completion');
-    t.truthy(messageJson.choices[0].finish_reason === null || messageJson.choices[0].finish_reason === 'stop');
-  });
 });
 
 test('POST SSE: /v1/chat/completions should send a series of events and a [DONE] event', async (t) => {
@@ -219,27 +187,6 @@ test('POST /chat/completions should handle invalid image data', async (t) => {
   t.truthy(response.body.choices[0].message.content);
 });  
 
-test('POST /completions should handle model parameters', async (t) => {
-  const response = await got.post(`${API_BASE}/completions`, {
-    json: {
-      model: 'gpt-4o',
-      prompt: 'Repeat after me: Say this is a test',
-      temperature: 0.7,
-      max_tokens: 100,
-      top_p: 1,
-      frequency_penalty: 0,
-      presence_penalty: 0,
-      stream: false,
-    },
-    responseType: 'json',
-  });
-
-  t.is(response.statusCode, 200);
-  t.is(response.body.object, 'text_completion');
-  t.true(Array.isArray(response.body.choices));
-  t.truthy(response.body.choices[0].text);
-});
-
 test('POST /chat/completions should validate response format', async (t) => {
   const response = await got.post(`${API_BASE}/chat/completions`, {
     json: {
@@ -288,7 +235,8 @@ test('POST /chat/completions should handle errors gracefully', async (t) => {
   const error = await t.throwsAsync(
     () => got.post(`${API_BASE}/chat/completions`, {
       json: {
-        // Missing required model field
+        // Unknown model should trigger a 404 from REST resolver
+        model: 'nonexistent-model',
         messages: [{ role: 'user', content: 'Hello!' }],
       },
       responseType: 'json',
@@ -366,21 +314,10 @@ test('POST /chat/completions should handle array content properly', async (t) =>
       if (modelsResponse.body && modelsResponse.body.data && modelsResponse.body.data.length > 0) {
         const models = modelsResponse.body.data.map(model => model.id);
         
-        // Priority 1: Find sonnet with highest version (e.g., claude-3.7-sonnet)
-        const sonnetVersions = models
-          .filter(id => id.includes('-sonnet') && id.startsWith('claude-'))
-          .sort((a, b) => {
-            // Extract version numbers and compare
-            const versionA = a.match(/claude-(\d+\.\d+)-sonnet/);
-            const versionB = b.match(/claude-(\d+\.\d+)-sonnet/);
-            if (versionA && versionB) {
-              return parseFloat(versionB[1]) - parseFloat(versionA[1]); // Descending order
-            }
-            return 0;
-          });
-        
-        if (sonnetVersions.length > 0) {
-          modelToUse = sonnetVersions[0]; // Use highest version sonnet
+        // Priority 1: Prefer Claude 4.5 Sonnet if available
+        const sonnet45 = models.find(id => id.startsWith('claude-45') && id.includes('sonnet'));
+        if (sonnet45) {
+          modelToUse = sonnet45;
         } else {
           // Priority 2: Any model ending with -sonnet
           const anySonnet = models.find(id => id.endsWith('-sonnet'));

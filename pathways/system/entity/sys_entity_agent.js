@@ -9,8 +9,6 @@ import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
 import { Prompt } from '../../../server/prompt.js';
 import { getToolsForEntity, loadEntityConfig } from './tools/shared/sys_entity_tools.js';
 import CortexResponse from '../../../lib/cortexResponse.js';
-// Continuity Memory Architecture (parallel system)
-import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
 
 // Helper function to generate a smart error response using the agent
 async function generateErrorResponse(error, args, pathwayResolver) {
@@ -81,12 +79,7 @@ export default {
         entityId: ``,
         researchMode: false,
         userInfo: '',
-        model: 'oai-gpt41',
-        // Memory backend selection: "legacy" or "continuity"
-        // - "legacy": Traditional Redis-based memory with sections (memoryUser, memorySelf, etc.)
-        // - "continuity": Narrative memory with relational anchors and identity evolution
-        // Note: useMemory must be true for any memory to work; this just selects which system
-        memoryBackend: 'continuity'
+        model: 'oai-gpt41'
     },
     timeout: 600,
 
@@ -466,7 +459,7 @@ export default {
         let pathwayResolver = resolver;
 
         // Load input parameters and information into args
-        const { entityId, voiceResponse, aiMemorySelfModify, chatId, researchMode, memoryBackend: paramMemoryBackend } = { ...pathwayResolver.pathway.inputParameters, ...args };
+        const { entityId, voiceResponse, aiMemorySelfModify, chatId, researchMode } = { ...pathwayResolver.pathway.inputParameters, ...args };
         
         const entityConfig = loadEntityConfig(entityId);
         const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
@@ -478,18 +471,11 @@ export default {
         // entityConfig.useMemory === false is a hard disable, otherwise args.useMemory can disable it, default true
         args.useMemory = entityConfig?.useMemory === false ? false : (args.useMemory ?? true);
         
-        // Determine memoryBackend: Which memory system to use ("legacy" or "continuity")
-        // Priority: entityConfig > args > default ("continuity")
-        // Legacy support: useContinuityMemory=true maps to memoryBackend="continuity"
-        const legacyFlag = entityConfig?.useContinuityMemory ?? args.useContinuityMemory;
-        args.memoryBackend = entityConfig?.memoryBackend ?? paramMemoryBackend ?? (legacyFlag ? 'continuity' : 'continuity');
-        
         // Override model from entity config if defined (use modelOverride for dynamic model switching)
         const modelOverride = entityConfig?.modelOverride ?? args.modelOverride;
         
         // Convenience flags for template/code use
-        const useLegacyMemory = args.useMemory && args.memoryBackend === 'legacy';
-        const useContinuityMemory = args.useMemory && args.memoryBackend === 'continuity';
+        const useContinuityMemory = args.useMemory;
 
         // Initialize chat history if needed
         if (!args.chatHistory || args.chatHistory.length === 0) {
@@ -525,26 +511,6 @@ export default {
             ));
         }
 
-        // Kick off the legacy memory lookup in parallel - only for legacy memory backend
-        let memoryLookupRequiredPromise = null;
-        if (useLegacyMemory) {
-            const chatHistoryLastTurn = args.chatHistory.slice(-2);
-            const chatHistorySizeOk = (JSON.stringify(chatHistoryLastTurn).length < 5000);
-            if (chatHistorySizeOk) {
-                const timeoutPromise = new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Memory lookup timeout')), 800)
-                );
-                memoryLookupRequiredPromise = Promise.race([
-                    callPathway('sys_memory_lookup_required', { ...args, chatHistory: chatHistoryLastTurn, stream: false }),
-                    timeoutPromise
-                ]).catch(error => {
-                    // Handle timeout or other errors gracefully - return null so the await doesn't throw
-                    logger.warn(`Memory lookup promise rejected: ${error.message}`);
-                    return null;
-                });
-            }
-        }
-        
         args = {
             ...args,
             ...config.get('entityConstants'),
@@ -555,18 +521,12 @@ export default {
             voiceResponse,
             aiMemorySelfModify,
             chatId,
-            researchMode,
-            memoryBackend: args.memoryBackend,
-            useContinuityMemory  // Keep for backward compatibility with pathwayResolver
+            researchMode
         };
 
         pathwayResolver.args = {...args};
 
         const promptPrefix = '';
-
-        // Legacy memory templates - only when using legacy backend
-        const memoryTemplates = useLegacyMemory ? 
-            `{{renderTemplate AI_MEMORY_INSTRUCTIONS}}\n\n{{renderTemplate AI_MEMORY}}\n\n{{renderTemplate AI_MEMORY_CONTEXT}}\n\n` : '';
 
         // Continuity Memory context injection - only when using continuity backend
         const continuityContextTemplate = useContinuityMemory ? 
@@ -575,7 +535,7 @@ export default {
         const instructionTemplates = entityInstructions ? (entityInstructions + '\n\n') : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n{{renderTemplate AI_EXPERTISE}}\n\n`;
 
         const promptMessages = [
-            {"role": "system", "content": `${promptPrefix}${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${memoryTemplates}${continuityContextTemplate}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+            {"role": "system", "content": `${promptPrefix}${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${continuityContextTemplate}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
             "{{chatHistory}}",
         ];
 
@@ -611,37 +571,6 @@ export default {
         // truncate the chat history in case there is really long content
         const truncatedChatHistory = resolver.modelExecutor.plugin.truncateMessagesToTargetLength(args.chatHistory, null, 1000);
       
-        // Asynchronously manage legacy memory for this context (only for legacy backend)
-        if (args.aiMemorySelfModify && useLegacyMemory) {
-            callPathway('sys_memory_manager', {  ...args, chatHistory: truncatedChatHistory, stream: false })    
-            .catch(error => logger.error(error?.message || "Error in sys_memory_manager pathway"));
-        }
-
-        let memoryLookupRequired = false;
-
-        try {
-            if (memoryLookupRequiredPromise) {
-                const result = await memoryLookupRequiredPromise;
-                // If result is null (timeout) or empty, default to false
-                if (result && typeof result === 'string') {
-                    try {
-                        memoryLookupRequired = JSON.parse(result)?.memoryRequired || false;
-                    } catch (parseError) {
-                        logger.warn(`Failed to parse memory lookup result: ${parseError.message}`);
-                        memoryLookupRequired = false;
-                    }
-                } else {
-                    memoryLookupRequired = false;
-                }
-            } else {
-                memoryLookupRequired = false;
-            }
-        } catch (error) {
-            logger.warn(`Failed to test memory lookup requirement: ${error.message}`);
-            // If we hit the timeout or any other error, we'll proceed without memory lookup
-            memoryLookupRequired = false;
-        }
-
         try {
             let currentMessages = JSON.parse(JSON.stringify(args.chatHistory));
 
@@ -652,7 +581,7 @@ export default {
                 availableFiles,
                 reasoningEffort,
                 tools: entityToolsOpenAiFormat,
-                tool_choice: memoryLookupRequired ? "required" : "auto"
+                tool_choice: "auto"
             });
 
             // Handle null response (can happen when ModelExecutor catches an error)

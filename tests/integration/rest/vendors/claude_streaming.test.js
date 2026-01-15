@@ -19,12 +19,12 @@ test.after.always('cleanup', async () => {
 test('Claude SSE chat stream returns OAI-style chunks', async (t) => {
   const baseUrl = `http://localhost:${process.env.CORTEX_PORT}/v1`;
 
-  // Pick an available Claude model from /models
+  // Pick an available Claude model from /models (non-Vertex)
   let model = null;
   try {
     const res = await got(`${baseUrl}/models`, { responseType: 'json' });
     const ids = (res.body?.data || []).map(m => m.id);
-    model = ids.find(id => /^claude-/i.test(id));
+    model = ids.find(id => /^claude-/i.test(id) && !id.includes('vertex'));
   } catch (_) {}
 
   if (!model) {
@@ -44,20 +44,20 @@ test('Claude SSE chat stream returns OAI-style chunks', async (t) => {
   t.true(assertAnyContentDelta(chunks));
 });
 
-test('Claude 4 SSE chat stream with document block (PDF)', async (t) => {
+test('Claude 4.5 SSE chat stream with document block (PDF)', async (t) => {
   const baseUrl = `http://localhost:${process.env.CORTEX_PORT}/v1`;
 
-  // Pick an available Claude 4 model from /models
+  // Pick an available Claude 4.5 model from /models (non-Vertex)
   let model = null;
   try {
     const res = await got(`${baseUrl}/models`, { responseType: 'json' });
     const ids = (res.body?.data || []).map(m => m.id);
-    // Look for claude-4 or claude-45 models specifically
-    model = ids.find(id => /^claude-(4|45)/.test(id));
+    // Look for claude-45 models specifically
+    model = ids.find(id => /^claude-45/.test(id) && !id.includes('vertex'));
   } catch (_) {}
 
   if (!model) {
-    t.pass('Skipping - no Claude 4+ model configured');
+    t.pass('Skipping - no Claude 4.5 model configured');
     return;
   }
 
@@ -105,20 +105,20 @@ test('Claude 4 SSE chat stream with document block (PDF)', async (t) => {
   }
 });
 
-test('Claude 4 SSE chat stream with text document', async (t) => {
+test('Claude 4.5 SSE chat stream with text document', async (t) => {
   const baseUrl = `http://localhost:${process.env.CORTEX_PORT}/v1`;
 
-  // Pick an available Claude 4 model from /models
+  // Pick an available Claude 4.5 model from /models (non-Vertex)
   let model = null;
   try {
     const res = await got(`${baseUrl}/models`, { responseType: 'json' });
     const ids = (res.body?.data || []).map(m => m.id);
-    // Look for claude-4 or claude-45 models specifically
-    model = ids.find(id => /^claude-(4|45)/.test(id));
+    // Look for claude-45 models specifically
+    model = ids.find(id => /^claude-45/.test(id) && !id.includes('vertex'));
   } catch (_) {}
 
   if (!model) {
-    t.pass('Skipping - no Claude 4+ model configured');
+    t.pass('Skipping - no Claude 4.5 model configured');
     return;
   }
 

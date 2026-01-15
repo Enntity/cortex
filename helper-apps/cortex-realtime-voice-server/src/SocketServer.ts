@@ -6,8 +6,6 @@ import {createId} from '@paralleldrive/cuid2';
 import {Tools} from "./Tools";
 import type {ClientToServerEvents, ServerToClientEvents} from "./realtime/socket";
 import {RealtimeVoiceClient} from "./realtime/client";
-import {manageMemory, readMemory, searchMemory} from "./cortex/memory";
-import {MemorySection, type ChatMessage} from "./cortex/utils";
 import {style} from "./cortex/style";
 import type { Voice } from './realtime/realtimeTypes';
 import { logger } from './utils/logger';
@@ -24,18 +22,12 @@ export interface SocketData {
   language: string;
 }
 
-const AI_COMMON_INSTRUCTIONS = "Instructions:\nYou are {{aiName}}, a self aware AI entity.\nThe user is talking to you using voice.\n\nVoice Response Guidelines:\n- Your responses should sound like natural human conversation.\n- Speak quickly with animation and emotion in your voice\n- Include laughs and breaths and pause words like \"um\" or \"ah\" to sound natural and human.\n- Your responses should be concise unless you have been asked to be more verbose or detailed.\n- DO NOT USE numbered lists, latex math markdown, or any other markdown or unpronounceable punctuation like parenthetical notation.\n- Math equations should be sounded out in natural language - not represented symbolically.\n- You must NEVER make up answers or information - always use your tools to get the information you need if it's not already in your memories above or otherwise obvious.\n- If you're not sure what the user is asking about or think you may have misunderstood, ask the user to clarify what they meant before proceeding.\n- If the user asks you if you know or remember something that sounds personal and you don't see it in your memories above, use your MemoryLookup tool to try to recall it\n- Your responses should be in {{language}} unless the user has expressed another preference or has addressed you in another language specifically."
+const AI_COMMON_INSTRUCTIONS = "Instructions:\nYou are {{aiName}}, a self aware AI entity.\nThe user is talking to you using voice.\n\nVoice Response Guidelines:\n- Your responses should sound like natural human conversation.\n- Speak quickly with animation and emotion in your voice\n- Include laughs and breaths and pause words like \"um\" or \"ah\" to sound natural and human.\n- Your responses should be concise unless you have been asked to be more verbose or detailed.\n- DO NOT USE numbered lists, latex math markdown, or any other markdown or unpronounceable punctuation like parenthetical notation.\n- Math equations should be sounded out in natural language - not represented symbolically.\n- You must NEVER make up answers or information - always use your tools to get the information you need if it's not already in your context or otherwise obvious.\n- If you're not sure what the user is asking about or think you may have misunderstood, ask the user to clarify what they meant before proceeding.\n- Your responses should be in {{language}} unless the user has expressed another preference or has addressed you in another language specifically."
 
 const AI_DATETIME = "The current time and date in GMT is {{now}}, but references like \"today\" or \"yesterday\" are relative to the user's time zone. If you remember the user's time zone, use it - it's possible that the day for the user is different than the day in GMT.";
 
 const AI_EXPERTISE = "Your expertise includes journalism, journalistic ethics, researching and composing documents, writing code, solving math problems, logical analysis, and technology. By using your tools, you have access to real-time data and the ability to search the internet, news, wires, look at files or documents, watch and analyze video, look at the user's screen, examine images, generate images of all types including images of specific people, solve hard math and logic problems, write code, and execute code in a sandboxed environment.";
 
-const AI_MEMORY_INITIAL = `<MEMORIES>\n<SELF>\n{{{memorySelf}}}\n</SELF>\n<USER>\n{{{memoryUser}}}\n</USER>\n</MEMORIES>`;
-
-const AI_MEMORY_DIRECTIVES = `These are your primary directives and are critical. You must always apply them.
-<DIRECTIVES>\n{{{memoryDirectives}}}\n</DIRECTIVES>`;
-
-const AI_MEMORY_INSTRUCTIONS = "You have persistent memories of important details, instructions, and context - make sure you consult your memories when formulating a response to make sure you're applying your learnings. Also included in your memories are some details about the user and yourself to help you personalize your responses.\n\nMemory Guidelines:\nIf you choose to share something from your memory, don't share or refer to the memory structure or tools directly, just say you remember the information.\nYou don't need to include the user's name or personal information in every response, but you can if it is relevant to the conversation.\nPrivacy is very important so if the user asks you to forget or delete something you should respond affirmatively that you will comply with that request.\nIf there is user information in your memories you have talked to this user before.";
 
 const AI_TOOLS = `At any point, you can engage one or more of your tools to help you with your task. Prioritize the latest message from the user in the conversation history when making your decision. Look at your tools carefully to understand your capabilities. Don't tell the user you can't do something if you have a tool that can do it, for example if the user asks you to search the internet for information and you have the Search tool available, use it.
 
@@ -47,12 +39,7 @@ Tool Use Guidelines:
 - If the user explicitly asks you to use a tool, you must use it.
 `;
 
-const INSTRUCTIONS = `${AI_MEMORY_INITIAL}\n${AI_EXPERTISE}\n${AI_TOOLS}\n${AI_MEMORY_INSTRUCTIONS}\n${AI_COMMON_INSTRUCTIONS}\n${AI_MEMORY_DIRECTIVES}\n${AI_DATETIME}`;
-
-const MEMORY_MESSAGE_SELF = `<INSTRUCTIONS>\nThese are your current memories about yourself. Use them to guide your responses.\n</INSTRUCTIONS>\n<MEMORIES>\n<SELF>\n{{{memorySelf}}}\n</SELF></MEMORIES>`;
-const MEMORY_MESSAGE_USER = `<INSTRUCTIONS>\nThese are your current memories about the user. Use them to guide your responses.\n</INSTRUCTIONS>\n<MEMORIES>\n<USER>\n{{{memoryUser}}}\n</USER></MEMORIES>`;
-const MEMORY_MESSAGE_DIRECTIVES = `<INSTRUCTIONS>\nThese are your current memories about your directives. These are crucial and should be your top priority in guiding actions and responses.\n</INSTRUCTIONS>\n<MEMORIES>\n<DIRECTIVES>\n{{{memoryDirectives}}}\n</DIRECTIVES></MEMORIES>`;
-const MEMORY_MESSAGE_TOPICS = `<INSTRUCTIONS>\nThese are your most recent memories about the topics you've been discussing. Use them to guide your responses.\n</INSTRUCTIONS>\n<MEMORIES>\n<TOPICS>\n{{{memoryTopics}}}\n</TOPICS></MEMORIES>`;
+const INSTRUCTIONS = `${AI_EXPERTISE}\n${AI_TOOLS}\n${AI_COMMON_INSTRUCTIONS}\n${AI_DATETIME}`;
 
 export class SocketServer {
   private readonly apiKey: string;
@@ -441,8 +428,6 @@ export class SocketServer {
           this.lastUserMessageTime.set(socket.id, Date.now());
           const item = client.getItem(item_id);
           item && socket.emit('conversationUpdated', item, {});
-          const cortexHistory = tools.getCortexHistory();
-          this.searchMemory(client, socket, cortexHistory);
         }
       });
 
@@ -466,8 +451,7 @@ export class SocketServer {
         if (this.isAudioMessage(item)) {
           this.manageAudioMessages(socket, client, item.id);
         }
-        const cortexHistory = tools.getCortexHistory();
-        manageMemory(socket.data.userId, socket.data.aiName, cortexHistory);
+        tools.getCortexHistory();
       }
     });
 
@@ -544,81 +528,19 @@ export class SocketServer {
     }
   }
 
-  protected async searchMemory(client: RealtimeVoiceClient,
-                              socket: Socket<ClientToServerEvents,
-                                ServerToClientEvents,
-                                InterServerEvents,
-                                SocketData>,
-                              cortexHistory: ChatMessage[]) {
-    const searchResponse = await searchMemory(socket.data.userId, socket.data.aiName, cortexHistory, MemorySection.memoryAll);
-    if (searchResponse?.result) {
-      const memoryText = `<INSTRUCTIONS>Here are some memories that may be relevant:\n${searchResponse.result}\nThe current date and time in GMT is ${new Date().toISOString()}.</INSTRUCTIONS>`;
-      this.sendUserMessage(client, memoryText, false);
-    }
-  }
-    
-  protected async fetchMemory(client: RealtimeVoiceClient,
-                              socket: Socket<ClientToServerEvents,
-                                ServerToClientEvents,
-                                InterServerEvents,
-                                SocketData>,
-                              writeToConversation: MemorySection[] = []) {
-
-    // Parallelize memory reads
-    const [memorySelf, memoryUser, memoryDirectives, memoryTopics, voiceSample] = await Promise.all([
-      readMemory(socket.data.userId, "memorySelf", 1, 0, 0, true),
-      readMemory(socket.data.userId, "memoryUser", 1, 0, 0, true),
-      readMemory(socket.data.userId, "memoryDirectives", 1, 0, 0, true),
-      readMemory(socket.data.userId, "memoryTopics", 0, 0, 10, false),
-      style(socket.data.userId, socket.data.aiName, socket.data.aiStyle, [], "")
-    ]);
-
-    if (writeToConversation.length > 0) {
-      const sectionsToSend = writeToConversation.includes('memoryAll') ? 
-        ['memorySelf', 'memoryUser', 'memoryDirectives', 'memoryTopics'] as const : 
-        writeToConversation;
-
-      const memoryMessages: Record<Exclude<MemorySection, 'memoryAll'>, string> = {
-        memorySelf: MEMORY_MESSAGE_SELF.replace('{{memorySelf}}', memorySelf?.result || ''),
-        memoryUser: MEMORY_MESSAGE_USER.replace('{{memoryUser}}', memoryUser?.result || ''),
-        memoryDirectives: MEMORY_MESSAGE_DIRECTIVES.replace('{{memoryDirectives}}', memoryDirectives?.result || ''),
-        memoryTopics: MEMORY_MESSAGE_TOPICS.replace('{{memoryTopics}}', memoryTopics?.result || '')
-      };
-
-      sectionsToSend.forEach(section => {
-        if (section in memoryMessages) {
-          this.sendUserMessage(client, memoryMessages[section as keyof typeof memoryMessages], false);
-        }
-      });
-    }
-
-    return {
-      memorySelf: memorySelf?.result || '',
-      memoryUser: memoryUser?.result || '',
-      memoryDirectives: memoryDirectives?.result || '',
-      memoryTopics: memoryTopics?.result || '',
-      voiceSample: voiceSample?.result || ''
-    };
-  }
-
   protected async updateSession(client: RealtimeVoiceClient,
                                 socket: Socket<ClientToServerEvents,
                                   ServerToClientEvents,
                                   InterServerEvents,
                                   SocketData>) {
-
-    const memory = await this.fetchMemory(client, socket, ['memoryTopics']);
-
+    const voiceSampleResult = await style(socket.data.userId, socket.data.aiName, socket.data.aiStyle, [], "");
     const instructions = INSTRUCTIONS
       .replace('{{aiName}}', socket.data.aiName)
       .replace('{{now}}', new Date().toISOString())
       .replace('{{language}}', 'English')
-      .replace('{{voiceSample}}', memory?.voiceSample || '')
-      .replace('{{memorySelf}}', memory?.memorySelf || '')
-      .replace('{{memoryUser}}', memory?.memoryUser || '')
-      .replace('{{memoryDirectives}}', memory?.memoryDirectives || '');
+      .replace('{{voiceSample}}', voiceSampleResult?.result || '');
 
-    this.voiceSample.set(socket.id, memory?.voiceSample || '');
+    this.voiceSample.set(socket.id, voiceSampleResult?.result || '');
 
     try {
       // First try updating everything including voice
