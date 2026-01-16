@@ -174,7 +174,6 @@ export const getAvailableEntities = (options = {}) => {
                 isDefault: entity.isDefault || false,
                 isSystem: entity.isSystem || false,
                 useMemory: entity.useMemory ?? true,
-                memoryBackend: entity.memoryBackend || 'continuity',
                 avatar: entity.avatar || null,
                 createdAt: entity.createdAt ? (entity.createdAt instanceof Date ? entity.createdAt.toISOString() : entity.createdAt) : null,
                 updatedAt: entity.updatedAt ? (entity.updatedAt instanceof Date ? entity.updatedAt.toISOString() : entity.updatedAt) : null,

@@ -22,9 +22,9 @@ test.after.always('cleanup', async () => {
   }
 });
 
-test('POST SSE: /v1/chat/completions should stream text response from Grok-4', async (t) => {
+test('POST SSE: /v1/chat/completions should stream text response from Grok-4.1 fast', async (t) => {
   const payload = {
-    model: 'grok-4',
+    model: 'xai-grok-4-1-fast-non-reasoning',
     messages: [
       {
         role: 'user',

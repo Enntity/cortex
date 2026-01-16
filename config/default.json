@@ -50,6 +50,13 @@
         },
         "xai-grok-4-1-fast-reasoning": {
             "type": "GROK-VISION",
+            "emulateOpenAIChatModel": "xai-grok-4-1-fast-reasoning",
+            "restStreaming": {
+                "inputParameters": {
+                    "stream": false,
+                    "search_parameters": ""
+                }
+            },
             "endpoints": [
                 {
                     "name": "XAI GROK-4.1-FAST-REASONING",
@@ -70,6 +77,13 @@
         },
         "xai-grok-4-1-fast-non-reasoning": {
             "type": "GROK-VISION",
+            "emulateOpenAIChatModel": "xai-grok-4-1-fast-non-reasoning",
+            "restStreaming": {
+                "inputParameters": {
+                    "stream": false,
+                    "search_parameters": ""
+                }
+            },
             "endpoints": [
                 {
                     "name": "XAI GROK-4.1-FAST-NON-REASONING",
@@ -500,64 +514,6 @@
             "maxReturnTokens": 65535,
             "supportsStreaming": true
         },
-        "claude-45-sonnet-vertex": {
-            "type": "CLAUDE-4-VERTEX",
-            "emulateOpenAIChatModel": "claude-4.5-sonnet",
-            "endpoints": [
-                {
-                    "name": "GLOBAL SONNET 4.5",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929",
-                    "headers": {
-                        "Content-Type": "application/json"
-                    },
-                    "requestsPerSecond": 10
-                }
-            ],
-            "maxTokenLength": 200000,
-            "maxReturnTokens": 64000,
-            "maxImageSize": 31457280,
-            "supportsStreaming": true
-        },
-        "claude-45-haiku-vertex": {
-            "type": "CLAUDE-4-VERTEX",
-            "emulateOpenAIChatModel": "claude-4.5-haiku",
-            "endpoints": [
-                {
-                    "name": "GLOBAL HAIKU 4.5",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/anthropic/models/claude-haiku-4-5@20251001",
-                    "headers": {
-                        "Content-Type": "application/json"
-                    },
-                    "requestsPerSecond": 10
-                }
-            ],
-            "maxTokenLength": 200000,
-            "maxReturnTokens": 64000,
-            "maxImageSize": 31457280,
-            "supportsStreaming": true
-        },
-        "claude-sonnet-4": {
-            "type": "CLAUDE-ANTHROPIC",
-            "emulateOpenAIChatModel": "claude-sonnet-4",
-            "endpoints": [
-                {
-                    "name": "Anthropic Claude Sonnet 4",
-                    "url": "https://api.anthropic.com/v1/messages",
-                    "headers": {
-                        "x-api-key": "{{CLAUDE_API_KEY}}",
-                        "Content-Type": "application/json"
-                    },
-                    "params": {
-                        "model": "claude-sonnet-4-20250514"
-                    },
-                    "requestsPerSecond": 10
-                }
-            ],
-            "maxTokenLength": 200000,
-            "maxReturnTokens": 64000,
-            "maxImageSize": 31457280,
-            "supportsStreaming": true
-        },
         "claude-45-sonnet": {
             "type": "CLAUDE-ANTHROPIC",
             "emulateOpenAIChatModel": "claude-4.5-sonnet",
@@ -571,6 +527,28 @@
                     },
                     "params": {
                         "model": "claude-sonnet-4-5-20250929"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 200000,
+            "maxReturnTokens": 64000,
+            "maxImageSize": 31457280,
+            "supportsStreaming": true
+        },
+        "claude-45-haiku": {
+            "type": "CLAUDE-ANTHROPIC",
+            "emulateOpenAIChatModel": "claude-4.5-haiku",
+            "endpoints": [
+                {
+                    "name": "Anthropic Claude 4.5 Haiku",
+                    "url": "https://api.anthropic.com/v1/messages",
+                    "headers": {
+                        "x-api-key": "{{CLAUDE_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "claude-haiku-4-5-20251001"
                     },
                     "requestsPerSecond": 10
                 }
@@ -712,6 +690,15 @@
                 "Authorization": "Token {{REPLICATE_API_KEY}}",
                 "Content-Type": "application/json"
             }
+        },
+        "replicate-flux-2-klein-4b": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-klein-4b/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
         }
     },
     "enableCache": true,
@@ -725,11 +712,15 @@
         "AI_STYLE_OPENAI_RESEARCH": "oai-gpt51",
         "AI_STYLE_OPENAI_LEGACY": "oai-gpt41",
         "AI_STYLE_OPENAI_LEGACY_RESEARCH": "oai-o3",
-        "AI_STYLE_ANTHROPIC": "claude-45-sonnet-vertex",
-        "AI_STYLE_ANTHROPIC_RESEARCH": "claude-41-opus-vertex",
+        "AI_STYLE_ANTHROPIC": "claude-45-sonnet",
+        "AI_STYLE_ANTHROPIC_RESEARCH": "claude-45-opus",
         "AI_STYLE_XAI": "xai-grok-4-1-fast-reasoning",
         "AI_STYLE_XAI_RESEARCH": "xai-grok-4-1-fast-reasoning",
         "AI_STYLE_GOOGLE": "gemini-flash-3-vision",
         "AI_STYLE_GOOGLE_RESEARCH": "gemini-pro-3-vision"
+    },
+    "systemEntities": {
+        "defaultName": "Enntity",
+        "matchmakerName": "Vesper"
     }
 }

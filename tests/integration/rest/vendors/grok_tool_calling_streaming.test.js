@@ -19,12 +19,12 @@ test.after.always('cleanup', async () => {
 test('Grok streaming tool_calls appear as OAI deltas', async (t) => {
   const baseUrl = `http://localhost:${process.env.CORTEX_PORT}/v1`;
 
-  // pick a Grok-compatible model
-  let model = 'grok-4-fast-reasoning';
+  // pick a Grok-compatible model (4.1 fast)
+  let model = 'xai-grok-4-1-fast-reasoning';
   try {
     const res = await got(`${baseUrl}/models`, { responseType: 'json' });
     const ids = (res.body?.data || []).map(m => m.id);
-    model = ids.find(id => /^xai-|^grok/i.test(id)) || model;
+    model = ids.find(id => /^xai-grok-4-1-fast-/.test(id)) || model;
   } catch (_) {}
 
   const payload = {

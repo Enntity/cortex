@@ -20,11 +20,11 @@ test.after.always('cleanup', async () => {
   if (testServer) await testServer.stop();
 });
 
-test.serial('sys_entity_start streaming works correctly', async (t) => {
+test.serial('sys_entity_agent streaming works correctly', async (t) => {
   const response = await testServer.executeOperation({
     query: `
       query TestQuery($text: String!, $chatHistory: [MultiMessage]!, $stream: Boolean!) {
-        sys_entity_start(text: $text, chatHistory: $chatHistory, stream: $stream) {
+        sys_entity_agent(text: $text, chatHistory: $chatHistory, stream: $stream) {
           result
           contextId
           tool
@@ -40,7 +40,7 @@ test.serial('sys_entity_start streaming works correctly', async (t) => {
     }
   });
 
-  const requestId = response.body?.singleResult?.data?.sys_entity_start?.result;
+  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
   t.truthy(requestId);
 
   const events = await collectSubscriptionEvents(wsClient, {
@@ -67,5 +67,3 @@ test.serial('sys_entity_start streaming works correctly', async (t) => {
     }
   }
 });
-
-

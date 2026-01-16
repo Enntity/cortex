@@ -172,8 +172,8 @@ export default {
                     throw new Error(`Entity not found: ${entityIdForAvatar}`);
                 }
                 
-                // Use flux-2-dev for all avatar generation (fastest option per benchmarks)
-                model = "replicate-flux-2-dev";
+                // Use flux-2-klein-4b for all avatar generation (fastest option)
+                model = "replicate-flux-2-klein-4b";
                 
                 // Get base avatar image from entity record
                 const baseAvatar = entityConfig.avatar?.image;
@@ -219,16 +219,14 @@ export default {
                 stream: false,
             };
             
-            // Configure avatar generation settings - flux-2-dev in fastest mode
-            // Benchmark results: 512px + go_fast + steps20 = ~1.4s total
+            // Configure avatar generation settings - flux-2-klein-4b fastest config
             if (isAvatar) {
                 params.aspectRatio = "1:1"; // Square aspect ratio for avatars
                 params.output_format = "webp"; // WebP for smaller file size
                 params.output_quality = 80; // Good quality but not max for speed
-                params.width = 512;
-                params.height = 512;
+                // Benchmark: go_fast + 0.25 MP was fastest for klein
+                params.output_megapixels = "0.25"; // Smallest/fastest option (~512px)
                 params.go_fast = true;
-                params.num_inference_steps = 20;
                 params.disable_safety_checker = true;
                 
                 // If editing existing avatar, pass reference image

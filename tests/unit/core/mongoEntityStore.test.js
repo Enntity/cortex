@@ -74,7 +74,6 @@ test.serial('MongoEntityStore: upsertEntity creates new entity', async (t) => {
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -90,7 +89,6 @@ test.serial('MongoEntityStore: upsertEntity creates new entity', async (t) => {
     const entity = await entityStore.getEntity(entityId);
     t.truthy(entity, 'Entity should exist');
     t.is(entity.name, 'TestEntity', 'Name should match');
-    t.is(entity.memoryBackend, 'continuity', 'Memory backend should match');
 });
 
 test.serial('MongoEntityStore: upsertEntity updates existing entity', async (t) => {
@@ -108,7 +106,6 @@ test.serial('MongoEntityStore: upsertEntity updates existing entity', async (t) 
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -148,7 +145,6 @@ test.serial('MongoEntityStore: upsertEntity generates UUID when id not provided'
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -182,7 +178,6 @@ test.serial('MongoEntityStore: getEntity retrieves entity by UUID', async (t) =>
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -213,16 +208,21 @@ test.serial('MongoEntityStore: getEntity returns null for non-existent entity', 
 
 // ==================== SYSTEM ENTITY TESTS ====================
 
-test.serial('MongoEntityStore: getSystemEntity finds system entity by name', async (t) => {
+test.serial('MongoEntityStore: getSystemEntity finds system entities by name', async (t) => {
     if (!entityStore.isConfigured()) {
         t.pass('Skipped - MongoDB not configured');
         return;
     }
     
-    const entity = await entityStore.getSystemEntity('Enntity');
-    t.truthy(entity, 'Should find Enntity system entity');
-    t.is(entity.name, 'Enntity', 'Should have correct name');
-    t.true(entity.isSystem, 'Should be marked as system entity');
+    const enntity = await entityStore.getSystemEntity('Enntity');
+    t.truthy(enntity, 'Should find Enntity system entity');
+    t.is(enntity.name, 'Enntity', 'Should have correct name');
+    t.true(enntity.isSystem, 'Should be marked as system entity');
+
+    const vesper = await entityStore.getSystemEntity('Vesper');
+    t.truthy(vesper, 'Should find Vesper system entity');
+    t.is(vesper.name, 'Vesper', 'Should have correct name');
+    t.true(vesper.isSystem, 'Should be marked as system entity');
 });
 
 test.serial('MongoEntityStore: getSystemEntity checks cache first', async (t) => {
@@ -276,7 +276,6 @@ test.serial('MongoEntityStore: getSystemEntity returns null for non-system entit
         isDefault: false,
         isSystem: false, // Not a system entity
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -310,7 +309,6 @@ test.serial('MongoEntityStore: addUserToEntity adds user to entity', async (t) =
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -348,7 +346,6 @@ test.serial('MongoEntityStore: addUserToEntity is idempotent', async (t) => {
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -411,7 +408,6 @@ test.serial('MongoEntityStore: getAllEntities filters by userId', async (t) => {
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -432,7 +428,6 @@ test.serial('MongoEntityStore: getAllEntities filters by userId', async (t) => {
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -493,7 +488,6 @@ test.serial('MongoEntityStore: getAllEntities includes entities with no assocUse
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},
@@ -526,7 +520,6 @@ test.serial('MongoEntityStore: getEntitiesForUser returns user-specific entities
         isDefault: false,
         isSystem: false,
         useMemory: true,
-        memoryBackend: 'continuity',
         tools: ['*'],
         resources: [],
         customTools: {},

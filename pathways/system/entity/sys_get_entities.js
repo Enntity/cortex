@@ -15,7 +15,6 @@
 //     isDefault: true/false,       // Default entity flag
 //     isSystem: true/false,        // System entity flag
 //     useMemory: true/false,       // Memory enabled
-//     memoryBackend: "continuity", // Memory system type
 //     avatar: {                    // Optional visual representation
 //       text: "🤖",               // Optional text/emoji
 //       image: { url, gcs, name },// Optional image file

@@ -544,7 +544,7 @@ function buildRestEndpoints(pathways, app, server, config) {
 
         // Create OpenAI compatible endpoints
         app.post('/v1/completions', async (req, res) => {
-            const modelName = req.body.model || 'gpt-3.5-turbo';
+            const modelName = req.body.model || 'gpt-4.1';
             const { pathwayName, isOllama } = resolveModelName(modelName, openAIChatModels, openAICompletionModels, false);
 
             if (!pathwayName) {
@@ -588,7 +588,7 @@ function buildRestEndpoints(pathways, app, server, config) {
         });
         
         app.post('/v1/chat/completions', async (req, res) => {
-            const modelName = req.body.model || 'gpt-3.5-turbo';
+            const modelName = req.body.model || 'gpt-4.1';
             const { pathwayName, isOllama } = resolveModelName(modelName, openAIChatModels, openAICompletionModels, true);
 
             if (!pathwayName) {
@@ -637,7 +637,7 @@ function buildRestEndpoints(pathways, app, server, config) {
 
         app.get('/v1/models', async (req, res) => {
             const openAIModels = { ...openAIChatModels, ...openAICompletionModels };
-            const defaultModelId = 'gpt-3.5-turbo';
+            const defaultModelId = 'gpt-4.1';
             let models = [];
 
             // Get standard OpenAI-compatible models, filtering out our internal pathway models

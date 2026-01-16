@@ -17,14 +17,10 @@ import OpenAIDallE3Plugin from './plugins/openAiDallE3Plugin.js';
 import OpenAIVisionPlugin from './plugins/openAiVisionPlugin.js';
 import OpenAIReasoningPlugin from './plugins/openAiReasoningPlugin.js';
 import OpenAIReasoningVisionPlugin from './plugins/openAiReasoningVisionPlugin.js';
-import GeminiChatPlugin from './plugins/geminiChatPlugin.js';
-import GeminiVisionPlugin from './plugins/geminiVisionPlugin.js';
-import Gemini15ChatPlugin from './plugins/gemini15ChatPlugin.js';
 import Gemini15VisionPlugin from './plugins/gemini15VisionPlugin.js';
 import Gemini25ImagePlugin from './plugins/gemini25ImagePlugin.js';
 import Gemini3ImagePlugin from './plugins/gemini3ImagePlugin.js';
 import Gemini3ReasoningVisionPlugin from './plugins/gemini3ReasoningVisionPlugin.js';
-import Claude3VertexPlugin from './plugins/claude3VertexPlugin.js';
 import Claude4VertexPlugin from './plugins/claude4VertexPlugin.js';
 import ClaudeAnthropicPlugin from './plugins/claudeAnthropicPlugin.js';
 import NeuralSpacePlugin from './plugins/neuralSpacePlugin.js';
@@ -33,7 +29,6 @@ import ReplicateApiPlugin from './plugins/replicateApiPlugin.js';
 import AzureVideoTranslatePlugin from './plugins/azureVideoTranslatePlugin.js';
 import OllamaChatPlugin from './plugins/ollamaChatPlugin.js';
 import OllamaCompletionPlugin from './plugins/ollamaCompletionPlugin.js';
-import ApptekTranslatePlugin from './plugins/apptekTranslatePlugin.js';
 import GoogleTranslatePlugin from './plugins/googleTranslatePlugin.js';
 import GroqChatPlugin from './plugins/groqChatPlugin.js';
 import VeoVideoPlugin from './plugins/veoVideoPlugin.js';
@@ -96,15 +91,6 @@ class ModelExecutor {
             case 'OPENAI-REASONING-VISION':
                 plugin = new OpenAIReasoningVisionPlugin(pathway, model);
                 break;
-            case 'GEMINI-CHAT':
-                plugin = new GeminiChatPlugin(pathway, model);
-                break;
-            case 'GEMINI-VISION':
-                plugin = new GeminiVisionPlugin(pathway, model);
-                break;
-            case 'GEMINI-1.5-CHAT':
-                plugin = new Gemini15ChatPlugin(pathway, model);
-                break;
             case 'GEMINI-1.5-VISION':
                 plugin = new Gemini15VisionPlugin(pathway, model);
                 break;
@@ -116,9 +102,6 @@ class ModelExecutor {
                 break;
             case 'GEMINI-3-REASONING-VISION':
                 plugin = new Gemini3ReasoningVisionPlugin(pathway, model);
-                break;
-            case 'CLAUDE-3-VERTEX':
-                plugin = new Claude3VertexPlugin(pathway, model);
                 break;
             case 'CLAUDE-4-VERTEX':
                 plugin = new Claude4VertexPlugin(pathway, model);
@@ -140,9 +123,6 @@ class ModelExecutor {
                 break;
             case 'OLLAMA-COMPLETION':
                 plugin = new OllamaCompletionPlugin(pathway, model);
-                break;
-            case 'APPTEK-TRANSLATE':
-                plugin = new ApptekTranslatePlugin(pathway, model);
                 break;
             case 'GOOGLE-TRANSLATE':
                 plugin = new GoogleTranslatePlugin(pathway, model);

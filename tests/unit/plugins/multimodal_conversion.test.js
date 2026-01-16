@@ -442,7 +442,7 @@ test('Gemini 1.5 image URL type handling', t => {
     const { modifiedMessages } = gemini15.convertMessagesToGemini(messages);
 
     t.is(modifiedMessages.length, 1);
-    t.is(modifiedMessages[0].parts.length, 3); // text + gcs + base64 (2 urls dropped)
+    t.is(modifiedMessages[0].parts.length, 5); // text + gcs + base64 + http + azure
     
     // Check text part
     t.is(modifiedMessages[0].parts[0].text, 'Process these images:');
@@ -456,6 +456,16 @@ test('Gemini 1.5 image URL type handling', t => {
     t.true('inlineData' in modifiedMessages[0].parts[2]);
     t.is(modifiedMessages[0].parts[2].inlineData.mimeType, 'image/jpeg');
     t.is(modifiedMessages[0].parts[2].inlineData.data, '/9j/4AAQSkZJRg...');
+
+    // Check HTTP URL handling
+    t.true('fileData' in modifiedMessages[0].parts[3]);
+    t.is(modifiedMessages[0].parts[3].fileData.fileUri, 'https://example.com/image.jpg');
+    t.is(modifiedMessages[0].parts[3].fileData.mimeType, 'image/jpeg');
+
+    // Check Azure blob URL handling
+    t.true('fileData' in modifiedMessages[0].parts[4]);
+    t.is(modifiedMessages[0].parts[4].fileData.fileUri, 'https://myaccount.blob.core.windows.net/container/image.jpg');
+    t.is(modifiedMessages[0].parts[4].fileData.mimeType, 'image/jpeg');
 });
 
 // Test edge cases for image URLs in Gemini 1.5

@@ -39,7 +39,7 @@ export default {
                     },
                     model: {
                         type: "string",
-                        description: "The model to use. You currently have the following models available to call: oai-gpt4o, oai-gpt41, oai-o3, oai-o3-mini, claude-35-sonnet-vertex, gemini-flash-20-vision, gemini-pro-25-vision."
+                        description: "The model to use. You currently have the following models available to call: oai-gpt4o, oai-gpt41, oai-o3, oai-o3-mini, claude-45-sonnet, claude-45-haiku, claude-45-opus, gemini-flash-25-vision, gemini-pro-25-vision."
                     },
                     userMessage: {
                         type: "string",

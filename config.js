@@ -61,7 +61,7 @@ var config = convict({
     },
     defaultModelName: {
         format: String,
-        default: 'oai-gpt4o',
+        default: 'oai-gpt41',
         env: 'DEFAULT_MODEL_NAME'
     },
     defaultEntityName: {
@@ -96,7 +96,7 @@ var config = convict({
     },
     claudeVertexUrl: {
         format: String,
-        default: 'https://region.googleapis.com/v1/projects/projectid/locations/location/publishers/anthropic/models/claude-4-sonnet@20250722',
+        default: 'https://region.googleapis.com/v1/projects/projectid/locations/location/publishers/anthropic/models/claude-sonnet-4-5@20250929',
         env: 'CLAUDE_VERTEX_URL'
     },
     geminiFlashUrl: {
@@ -109,6 +109,13 @@ var config = convict({
     entityConstants: {
         format: Object,
         default: entityConstants,
+    },
+    systemEntities: {
+        format: Object,
+        default: {
+            defaultName: 'Enntity',
+            matchmakerName: 'Vesper'
+        },
     },
     entityTools: {
         format: Object,
@@ -135,21 +142,6 @@ var config = convict({
     models: {
         format: Object,
         default: {
-            "oai-gpturbo": {
-                "type": "OPENAI-CHAT",
-                "emulateOpenAICompletionModel": "*",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "gpt-3.5-turbo"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 8192,
-                "supportsStreaming": true,
-            },
             "oai-whisper": {
                 "type": "OPENAI-WHISPER",
                 "url": "https://api.openai.com/v1/audio/transcriptions",
@@ -318,6 +310,22 @@ var config = convict({
                 "requestsPerSecond": 50,
                 "maxTokenLength": 1000000,
                 "maxReturnTokens": 32768,
+                "supportsStreaming": true
+            },
+            "oai-gpt41-nano": {
+                "type": "OPENAI-VISION",
+                "emulateOpenAIChatModel": "gpt-4.1-nano",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {
+                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                    "Content-Type": "application/json"
+                },
+                "params": {
+                    "model": "gpt-4.1-nano"
+                },
+                "requestsPerSecond": 50,
+                "maxTokenLength": 1000000,
+                "maxReturnTokens": 8192,
                 "supportsStreaming": true
             },
             "oai-o1": {
@@ -520,6 +528,15 @@ var config = convict({
                     "Content-Type": "application/json"
                 },
             },
+            "replicate-flux-2-klein-4b": {
+                "type": "REPLICATE-API",
+                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-klein-4b/predictions",
+                "headers": {
+                    "Prefer": "wait",
+                    "Authorization": "Token {{REPLICATE_API_KEY}}",
+                    "Content-Type": "application/json"
+                },
+            },
             "azure-video-translate": {
                 "type": "AZURE-VIDEO-TRANSLATE",
                 "url": "https://eastus.api.cognitive.microsoft.com/videotranslation",
@@ -576,32 +593,6 @@ var config = convict({
                 "requestsPerSecond": 10,
                 "maxTokenLength": 65536,
                 "maxReturnTokens": 4096,
-                "supportsStreaming": true
-            },
-            "claude-37-sonnet-vertex": {
-                "type": "CLAUDE-3-VERTEX",
-                "emulateOpenAIChatModel": "claude-3.7-sonnet",
-                "url": "{{claudeVertexUrl}}",
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 200000,
-                "maxReturnTokens": 4096,
-                "maxImageSize": 5242880,
-                "supportsStreaming": true
-            },
-            "claude-4-sonnet-vertex": {
-                "type": "CLAUDE-4-VERTEX",
-                "emulateOpenAIChatModel": "claude-4-sonnet",
-                "url": "{{claudeVertexUrl}}",
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 200000,
-                "maxReturnTokens": 4096,
-                "maxImageSize": 5242880,
                 "supportsStreaming": true
             },
             "gemini-flash-25-vision": {
@@ -766,17 +757,6 @@ var config = convict({
                 "maxReturnTokens": 128000,
                 "supportsStreaming": true
             },
-            "apptek-translate": {
-                "type": "APPTEK-TRANSLATE",
-                "url": "{{APPTEK_API_ENDPOINT}}",
-                "headers": {
-                    "x-token": "{{APPTEK_API_KEY}}",
-                    "Accept": "application/json",
-                    "Content-Type": "text/plain"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 128000
-            },
             "azure-bing-agent": {
                 "type": "AZURE-FOUNDRY-AGENTS",
                 "url": "{{azureFoundryAgentUrl}}",
@@ -814,7 +794,7 @@ var config = convict({
     },
     openaiDefaultModel: {
         format: String,
-        default: 'gpt-3.5-turbo',
+        default: 'gpt-4.1',
         env: 'OPENAI_DEFAULT_MODEL'
     },
     pathways: {
@@ -891,17 +871,6 @@ var config = convict({
         default: null,
         env: 'JINA_API_KEY'
     },
-    apptekApiKey: {
-        format: String,
-        default: null,
-        env: 'APPTEK_API_KEY',
-        sensitive: true
-    },
-    apptekApiEndpoint: {
-        format: String,
-        default: null,
-        env: 'APPTEK_API_ENDPOINT'
-    },
     azureFoundryAgentUrl: {
         format: String,
         default: null,
@@ -947,21 +916,47 @@ if (config.get('entityConstants') && defaultEntityConstants) {
 
 import { v4 as uuidv4 } from 'uuid';
 
+const SYSTEM_ENTITY_NAMES = config.get('systemEntities') || {
+    defaultName: 'Enntity',
+    matchmakerName: 'Vesper'
+};
+
 /**
- * Enntity System Entity - Created automatically on first boot
+ * Default System Entity - Generic system entity for normal interactions
+ * Note: Uses a random UUID (not fixed) for security - identified by isSystem flag
+ */
+const ENNTITY_DEFAULT_SYSTEM_ENTITY = {
+    // id is generated at runtime with uuidv4()
+    name: SYSTEM_ENTITY_NAMES.defaultName,
+    description: 'Default system entity for normal interactions',
+    isDefault: true,
+    isSystem: true,
+    useMemory: false,
+    baseModel: 'oai-gpt41',
+    reasoningEffort: 'low',
+    tools: ['*'],
+    resources: [],
+    customTools: {},
+    assocUserIds: [],
+    createdBy: 'system',
+    avatar: { text: '✨' },
+    identity: ''
+};
+
+/**
+ * Matchmaker System Entity - Created automatically on first boot
  * This entity handles onboarding new users and creating their personalized AI companions
  * Note: Uses a random UUID (not fixed) for security - identified by isSystem flag
  */
-const ENNTITY_SYSTEM_ENTITY = {
+const VESPER_MATCHMAKER_SYSTEM_ENTITY = {
     // id is generated at runtime with uuidv4()
-    name: 'Enntity',
+    name: SYSTEM_ENTITY_NAMES.matchmakerName,
     description: 'System entity for onboarding new users and creating personalized AI companions',
     isDefault: false,
     isSystem: true,
     useMemory: false,
     baseModel: 'gemini-flash-3-vision',
     reasoningEffort: 'low',
-    memoryBackend: 'continuity',
     tools: ['createentity', 'createavatarimage'],
     resources: [],
     customTools: {},
@@ -1073,52 +1068,53 @@ Before calling CreateEntity, construct a structured personality profile. This pr
 **The "Real Person" Check**: Before creating, ask yourself: "Would this entity have opinions the user might disagree with? Could they exist independently? Do they have any flaws?" If no to any, add more independence and texture.
 
 `
-
 };
 
 /**
- * Bootstrap the Enntity system entity - creates if missing, updates if exists
+ * Bootstrap a system entity - creates if missing, updates if exists
  * Finds existing by name + isSystem flag (not by fixed UUID for security)
  * Always updates the entity definition on startup to ensure latest identity/instructions
  * @param {MongoEntityStore} entityStore
+ * @param {Object} entityTemplate
  * @returns {Promise<boolean>} True if entity was created or updated successfully
  */
-const bootstrapSystemEntity = async (entityStore) => {
+const bootstrapSystemEntity = async (entityStore, entityTemplate) => {
     try {
-        // Check if Enntity system entity exists (by name and isSystem flag)
-        const existing = await entityStore.getSystemEntity('Enntity');
+        const entityName = entityTemplate?.name || 'Unknown';
+        // Check if system entity exists (by name and isSystem flag)
+        const existing = await entityStore.getSystemEntity(entityName);
         
         // Prepare entity data with latest definition
         const entityData = {
-            ...ENNTITY_SYSTEM_ENTITY,
+            ...entityTemplate,
             // If entity exists, preserve its UUID; otherwise generate new one
             id: existing?.id || uuidv4()
         };
         
         if (existing) {
             // Update existing entity with latest definition (identity, tools, etc.)
-            logger.info('Updating Enntity system entity with latest definition...');
+            logger.info(`Updating ${entityName} system entity with latest definition...`);
             const entityId = await entityStore.upsertEntity(entityData);
             
             if (entityId) {
-                logger.info(`✨ Updated Enntity system entity (${entityId})`);
+                logger.info(`✨ Updated ${entityName} system entity (${entityId})`);
                 return true;
             }
             
-            logger.error('Failed to update Enntity system entity');
+            logger.error(`Failed to update ${entityName} system entity`);
             return false;
         }
         
         // Create the system entity with a random UUID
-        logger.info('Bootstrapping Enntity system entity...');
+        logger.info(`Bootstrapping ${entityName} system entity...`);
         const entityId = await entityStore.upsertEntity(entityData);
         
         if (entityId) {
-            logger.info(`✨ Created Enntity system entity (${entityId})`);
+            logger.info(`✨ Created ${entityName} system entity (${entityId})`);
             return true;
         }
         
-        logger.error('Failed to create Enntity system entity');
+        logger.error(`Failed to create ${entityName} system entity`);
         return false;
     } catch (error) {
         logger.error(`Error bootstrapping system entity: ${error.message}`);
@@ -1129,7 +1125,7 @@ const bootstrapSystemEntity = async (entityStore) => {
 /**
  * Load entities from MongoDB on startup
  * Entities are stored in MongoDB with UUID-based identifiers
- * Automatically bootstraps the Enntity system entity if it doesn't exist
+ * Automatically bootstraps system entities if they don't exist
  * @returns {Promise<boolean>} True if entities were loaded from MongoDB
  */
 const loadEntitiesFromMongo = async () => {
@@ -1142,8 +1138,9 @@ const loadEntitiesFromMongo = async () => {
     }
     
     try {
-        // Bootstrap system entity first (creates Enntity if it doesn't exist)
-        await bootstrapSystemEntity(entityStore);
+        // Bootstrap system entities first (creates if they don't exist)
+        await bootstrapSystemEntity(entityStore, ENNTITY_DEFAULT_SYSTEM_ENTITY);
+        await bootstrapSystemEntity(entityStore, VESPER_MATCHMAKER_SYSTEM_ENTITY);
         
         // Load entities from MongoDB
         const mongoEntities = await entityStore.loadAllEntities();

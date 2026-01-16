@@ -2,23 +2,33 @@
 
 ## Overview
 
-The entity onboarding system allows new users to create personalized AI companions through an interview process with the **Enntity** system entity. This is inspired by the opening scene of the movie "Her" where Samantha is configured.
+The entity onboarding system allows new users to create personalized AI companions through an interview process with the **Vesper** matchmaker system entity. This is inspired by the opening scene of the movie "Her" where Samantha is configured.
 
 ## Architecture
 
-### System Entity: Enntity
+### System Entities
+
+#### Default System Entity: Enntity
+
+- **Purpose**: Generic system entity for normal interactions
+- **Type**: System entity (hidden from normal entity lists)
+- **Memory**: Disabled (no memory for the system entity)
+- **Tools**: All tools (`*`)
+- **Discovery**: Use normal entity resolution (default entity)
+
+#### Matchmaker System Entity: Vesper
 
 - **Purpose**: Onboards new users and creates their personalized AI entities
 - **Type**: System entity (hidden from normal entity lists)
 - **Memory**: Disabled (no memory for the system entity)
-- **Tools**: Only `createentity` tool
+- **Tools**: `createentity` and related onboarding tools
 - **Discovery**: Use `sys_get_onboarding_entity` pathway
 
 ### Entity Types
 
 1. **System Entities** (`isSystem: true`)
    - Hidden from normal entity lists
-   - Example: Enntity (onboarding entity)
+   - Examples: Enntity (default), Vesper (onboarding matchmaker)
    - Available to all users
 
 2. **User Entities** (`isSystem: false`)
@@ -49,11 +59,10 @@ query {
   "success": true,
   "entity": {
     "id": "random-uuid-here",  // Random UUID (not fixed for security)
-    "name": "Enntity",
+    "name": "Vesper",
     "description": "System entity for onboarding new users...",
     "isSystem": true,
     "useMemory": false,
-    "memoryBackend": "continuity",
     "avatar": {
       "text": "✨"
     }
@@ -61,11 +70,11 @@ query {
 }
 ```
 
-### Step 2: Start Chat with Enntity
+### Step 2: Start Chat with Vesper
 
-Start a chat session with the Enntity entity using the `entityId` from Step 1.
+Start a chat session with the Vesper entity using the `entityId` from Step 1.
 
-The Enntity will:
+Vesper will:
 1. Welcome the user warmly
 2. Conduct a brief interview (3-7 exchanges) asking about:
    - **Name**: What they want to call their AI
@@ -77,9 +86,9 @@ The Enntity will:
 
 ### Step 3: Entity Creation
 
-When Enntity has gathered enough information, it will call the `CreateEntity` tool.
+When Vesper has gathered enough information, it will call the `CreateEntity` tool.
 
-**Tool**: `CreateEntity` (called by Enntity, not directly by client)
+**Tool**: `CreateEntity` (called by Vesper, not directly by client)
 
 **Parameters**:
 ```json
@@ -101,7 +110,6 @@ When Enntity has gathered enough information, it will call the `CreateEntity` to
   "success": true,
   "entityId": "new-entity-uuid",
   "name": "Luna",
-  "memoryBackend": "continuity",
   "message": "Your personalized AI companion \"Luna\" has been created! You can now start chatting with Luna."
 }
 ```
@@ -117,9 +125,9 @@ Upon receiving the `CreateEntity` response:
 
 ### For Continuity Memory Entities (Default)
 
-Entities created with `memoryBackend: "continuity"` use the Continuity Memory system:
+Entities use the Continuity Memory system:
 
-- **`identity` field**: Empty (not used)
+- **`identity` field**: Persistent persona instructions for the entity
 - **CORE Memories** (importance 9-10): Fundamental identity of the AI
   - Written in first person: `"I am Luna, a warm and curious companion..."`
   - Always retrieved in context window
@@ -130,13 +138,6 @@ Entities created with `memoryBackend: "continuity"` use the Continuity Memory sy
   - User interests: `"My user is interested in: software development, sci-fi"`
   - User needs: `"My user wants help with: coding, creative writing"`
   - Retrieved based on query relevance
-
-### For Legacy/No Memory Entities (Fallback)
-
-If continuity memory is unavailable, the full profile is written to the `identity` field:
-- Contains both AI personality and user preferences
-- Static (cannot evolve over time)
-- Used as fallback when memory system is disabled
 
 ## API Reference
 
@@ -152,11 +153,10 @@ If continuity memory is unavailable, the full profile is written to the `identit
   "success": true,
   "entity": {
     "id": "uuid",
-    "name": "Enntity",
+    "name": "Vesper",
     "description": "...",
     "isSystem": true,
     "useMemory": false,
-    "memoryBackend": "continuity",
     "avatar": { "text": "✨" }
   }
 }
@@ -180,7 +180,7 @@ If continuity memory is unavailable, the full profile is written to the `identit
 
 **Tool Name**: `CreateEntity`
 
-**Called By**: Enntity system entity (not directly by client)
+**Called By**: Vesper matchmaker system entity (not directly by client)
 
 **Parameters**:
 - `name` (required): Entity name
@@ -198,7 +198,6 @@ If continuity memory is unavailable, the full profile is written to the `identit
   "success": true,
   "entityId": "uuid",
   "name": "EntityName",
-  "memoryBackend": "continuity" | "legacy",
   "message": "Success message"
 }
 ```
@@ -223,24 +222,24 @@ if (entities.length === 0) {
 
 ```javascript
 async function startOnboarding() {
-  // Get Enntity system entity
+  // Get matchmaker system entity
   const response = await callPathway('sys_get_onboarding_entity');
   const { entity } = JSON.parse(response);
   
-  // Start chat with Enntity
+  // Start chat with Vesper
   const chatId = startChat({
     entityId: entity.id,
     userId: currentUserId
   });
   
-  // Enntity will conduct interview and call CreateEntity
+  // Vesper will conduct interview and call CreateEntity
   // Listen for tool call results
 }
 ```
 
 ### 3. Handle Entity Creation
 
-When Enntity calls `CreateEntity`, you'll receive the tool result:
+When Vesper calls `CreateEntity`, you'll receive the tool result:
 
 ```javascript
 function handleToolResult(toolResult) {
@@ -262,7 +261,7 @@ function handleToolResult(toolResult) {
 
 ```javascript
 function switchToEntity(entityId) {
-  // End current chat (with Enntity)
+  // End current chat (with Vesper)
   endChat(currentChatId);
   
   // Start new chat with created entity
@@ -288,7 +287,6 @@ interface Entity {
   isDefault: boolean;            // Default entity flag
   isSystem: boolean;             // System entity flag (hidden)
   useMemory: boolean;            // Memory enabled
-  memoryBackend: 'continuity' | 'legacy';
   identity: string;              // Empty for continuity, full for legacy
   avatar: {
     text?: string;              // Emoji/text avatar
@@ -307,7 +305,7 @@ interface Entity {
 
 ## Security Considerations
 
-1. **System Entity UUID**: The Enntity system entity uses a **random UUID** (not fixed) for security. Always discover it via `sys_get_onboarding_entity`.
+1. **System Entity UUIDs**: System entities use **random UUIDs** (not fixed) for security. Always discover the onboarding entity via `sys_get_onboarding_entity`.
 
 2. **User Association**: Entities are associated with users via `assocUserIds`. Users can only see entities they're associated with (unless `assocUserIds` is empty, meaning public).
 
@@ -340,13 +338,13 @@ No entities found
   ↓
 Call sys_get_onboarding_entity
   ↓
-Start chat with Enntity (entityId from response)
+Start chat with Vesper (matchmaker entityId from response)
   ↓
-Enntity: "Hi! I'm here to help create your AI companion..."
+Vesper: "Hi! I'm here to help create your AI companion..."
   ↓
 [Interview: 3-7 exchanges]
   ↓
-Enntity calls CreateEntity tool
+Vesper calls CreateEntity tool
   ↓
 Receive: { success: true, entityId: "new-uuid", name: "Luna" }
   ↓
@@ -357,7 +355,9 @@ User chats with their new AI companion
 
 ## Notes
 
-- The Enntity system entity is **automatically created** on server startup if it doesn't exist
+- System entities are **automatically created** on server startup if they don't exist
+- Default system entity: `Enntity` (generic prompts for normal interactions)
+- Matchmaker system entity: `Vesper` (specialized onboarding persona)
 - All entities use UUIDs as identifiers (never names for lookups)
 - Continuity memory entities have empty `identity` fields - all knowledge is in memories
 - Legacy entities have full profiles in `identity` field as fallback

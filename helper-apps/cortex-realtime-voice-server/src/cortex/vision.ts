@@ -7,7 +7,7 @@ export type MultiMessage = {
 
 const VISION_QUERY = `
 query Vision($text: String, $contextId: String, $chatHistory: [MultiMessage], $aiName: String) {
-  sys_generator_video_vision(text: $text, contextId: $contextId, chatHistory: $chatHistory, aiName: $aiName) {
+  sys_entity_agent(text: $text, contextId: $contextId, chatHistory: $chatHistory, aiName: $aiName, voiceResponse: true) {
     result
     tool
     errors
@@ -30,5 +30,5 @@ export async function vision(contextId: string,
 
   const res = await getCortexResponse(variables as CortexVariables, VISION_QUERY);
 
-  return res.sys_generator_video_vision;
+  return res.sys_entity_agent;
 }

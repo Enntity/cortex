@@ -1,14 +1,13 @@
 /**
  * Create Entity Tool
  * 
- * Used by the Enntity system entity to create new personalized AI entities
+ * Used by the Vesper matchmaker system entity to create new personalized AI entities
  * based on information gathered during the onboarding interview.
  * 
  * This tool:
  * - Creates a new entity in MongoDB with a generated UUID
  * - Associates the current user with the new entity
- * - For continuity memory entities: Seeds CORE memories (identity) and ANCHOR memories (user prefs)
- * - For legacy/no memory entities: Writes full profile to identity field
+ * - Seeds continuity CORE memories (identity) and ANCHOR memories (user prefs)
  * - Returns the new entity ID so the client can switch to it
  * 
  * Inspired by the opening scene of the movie "Her" where Samantha is configured.
@@ -19,6 +18,7 @@ import { getContinuityMemoryService, ContinuityMemoryType } from '../../../../li
 import { config } from '../../../../config.js';
 import logger from '../../../../lib/logger.js';
 import { v4 as uuidv4 } from 'uuid';
+import { sendAppCommand } from '../../../../lib/pathwayTools.js';
 
 export default {
     inputParameters: {
@@ -115,7 +115,8 @@ Required information before calling:
         }
     }],
     
-    executePathway: async ({ args }) => {
+    executePathway: async ({ args, resolver }) => {
+        const pathwayResolver = resolver;
         const {
             name,
             description,
@@ -131,6 +132,17 @@ Required information before calling:
             personalityProfile,
             contextId
         } = args;
+        
+        // Helper to send createEntity app commands
+        const sendCreateEntityCommand = async (command) => {
+            const requestId = pathwayResolver?.rootRequestId;
+            if (requestId) {
+                await sendAppCommand(requestId, {
+                    type: 'createEntity',
+                    ...command
+                });
+            }
+        };
         
         try {
             // Validate required fields
@@ -165,6 +177,15 @@ Required information before calling:
                 });
             }
             
+            // Send createEntity start command to client
+            await sendCreateEntityCommand({
+                status: 'start',
+                name: name.trim(),
+                avatarText: avatarText?.trim() || null,
+                avatarIcon: avatarIcon?.trim() || null,
+                identity: identity.trim()
+            });
+            
             // Generate a new UUID for the entity
             const entityId = uuidv4();
             
@@ -172,41 +193,33 @@ Required information before calling:
             const continuityService = getContinuityMemoryService();
             const useContinuityMemory = continuityService.isAvailable();
             
-            // Build identity field based on memory backend
-            // For continuity memory: leave empty, seed CORE memories instead
-            // For legacy/no memory: write full profile to identity field
-            let identityField = '';
-            
-            if (!useContinuityMemory) {
-                // Legacy mode: bake everything into identity field
-                identityField = identity.trim();
-                
-                const additionalContext = [];
-                
-                // Add introduction note about the matchmaker
-                const userDisplayName = userName?.trim() || 'the user';
-                const matchmakerDisplayName = matchmakerName?.trim() || 'an entity matchmaker';
-                additionalContext.push(`Introduction: I was introduced to ${userDisplayName} by ${matchmakerDisplayName}, who helps connect users with their perfect AI companion.`);
-                
-                if (userName?.trim()) {
-                    additionalContext.push(`User Name: ${userName.trim()}`);
-                }
-                if (personality) {
-                    additionalContext.push(`Personality Traits: ${personality}`);
-                }
-                if (communicationStyle) {
-                    additionalContext.push(`Communication Style: ${communicationStyle}`);
-                }
-                if (interests) {
-                    additionalContext.push(`User Interests: ${interests}`);
-                }
-                if (expertise) {
-                    additionalContext.push(`Areas of Expertise/Help: ${expertise}`);
-                }
-                
-                if (additionalContext.length > 0) {
-                    identityField += `\n\n## User Preferences\n${additionalContext.join('\n')}`;
-                }
+            // Build identity field (always stored on the entity)
+            let identityField = identity.trim();
+            const additionalContext = [];
+
+            // Add introduction note about the matchmaker
+            const userDisplayName = userName?.trim() || 'the user';
+            const matchmakerDisplayName = matchmakerName?.trim() || 'an entity matchmaker';
+            additionalContext.push(`Introduction: I was introduced to ${userDisplayName} by ${matchmakerDisplayName}, who helps connect users with their perfect AI companion.`);
+
+            if (userName?.trim()) {
+                additionalContext.push(`User Name: ${userName.trim()}`);
+            }
+            if (personality) {
+                additionalContext.push(`Personality Traits: ${personality}`);
+            }
+            if (communicationStyle) {
+                additionalContext.push(`Communication Style: ${communicationStyle}`);
+            }
+            if (interests) {
+                additionalContext.push(`User Interests: ${interests}`);
+            }
+            if (expertise) {
+                additionalContext.push(`Areas of Expertise/Help: ${expertise}`);
+            }
+
+            if (additionalContext.length > 0) {
+                identityField += `\n\n## User Preferences\n${additionalContext.join('\n')}`;
             }
             
             // Create the entity document
@@ -214,11 +227,10 @@ Required information before calling:
                 id: entityId,
                 name: name.trim(),
                 description: description?.trim() || `${name}'s personalized AI companion`,
-                identity: identityField, // Empty for continuity memory, full for legacy
+                identity: identityField,
                 isDefault: false,
                 isSystem: false,
                 useMemory: true,
-                memoryBackend: useContinuityMemory ? 'continuity' : 'legacy',
                 tools: ['*'], // Full tool access
                 resources: [],
                 customTools: {},
@@ -468,16 +480,35 @@ Required information before calling:
                 }
             }
             
+            // Send createEntity complete command to client
+            await sendCreateEntityCommand({
+                status: 'complete',
+                entityId: createdId,
+                name: name.trim(),
+                success: true
+            });
+            
             return JSON.stringify({
                 success: true,
                 entityId: createdId,
                 name: name.trim(),
-                memoryBackend: useContinuityMemory ? 'continuity' : 'legacy',
                 message: `Your personalized AI companion "${name}" has been created! You can now start chatting with ${name}.`
             });
             
         } catch (error) {
             logger.error(`Error creating entity: ${error.message}`);
+            
+            // Send createEntity failure command to client
+            const requestId = pathwayResolver?.rootRequestId;
+            if (requestId) {
+                await sendAppCommand(requestId, {
+                    type: 'createEntity',
+                    status: 'complete',
+                    success: false,
+                    error: error.message
+                });
+            }
+            
             return JSON.stringify({
                 success: false,
                 error: `Failed to create entity: ${error.message}`

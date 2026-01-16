@@ -2,9 +2,13 @@
 // Integration tests for file collection tool
 
 import test from 'ava';
+import fs from 'fs';
 import serverFactory from '../../../../index.js';
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { generateFileMessageContent, resolveFileParameter, loadFileCollection, syncAndStripFilesFromChatHistory } from '../../../../lib/fileUtils.js';
+import { config } from '../../../../config.js';
+import { generateFileMessageContent, resolveFileParameter, loadFileCollection, syncAndStripFilesFromChatHistory, uploadFileToCloud, deleteFileByHash } from '../../../../lib/fileUtils.js';
+
+const SAMPLE_PDF_PATH = new URL('../../../data/sample-local-pdf.pdf', import.meta.url);
 
 // Helper to create agentContext from contextId/contextKey
 const createAgentContext = (contextId, contextKey = null) => [{ contextId, contextKey, default: true }];
@@ -43,6 +47,17 @@ const cleanup = async (contextId, contextKey = null) => {
     } catch (e) {
         // Ignore cleanup errors
     }
+};
+
+const uploadSamplePdf = async (contextId, t) => {
+    const mediaUrl = config.get('whisperMediaApiUrl');
+    if (!mediaUrl || mediaUrl === 'null') {
+        t.pass('Skipped - file handler not configured');
+        return null;
+    }
+
+    const fileBuffer = fs.readFileSync(SAMPLE_PDF_PATH);
+    return uploadFileToCloud(fileBuffer, 'application/pdf', 'sample-local-pdf.pdf', null, contextId);
 };
 
 test('File collection: Add file to collection', async t => {
@@ -2257,14 +2272,24 @@ test('Analyzer tool: Returns error JSON format when file not found', async t => 
 
 test('Analyzer tool: Works with legacy contextId/contextKey parameters (backward compatibility)', async t => {
     const contextId = createTestContext();
+    let uploadedHash = null;
     
     try {
         // First add a file to the collection
-        // Use a publicly accessible PDF that allows bot/crawler access (required for Vertex AI)
+        // Upload local sample PDF to the file handler (avoid external URL dependencies)
+        const uploadResult = await uploadSamplePdf(contextId, t);
+        if (!uploadResult) {
+            return;
+        }
+        uploadedHash = uploadResult.hash || null;
+
         await callPathway('sys_tool_file_collection', {
             agentContext: [{ contextId, contextKey: null, default: true }],
-            url: 'https://www.rd.usda.gov/sites/default/files/pdf-sample_0.pdf',
-            filename: 'test-document.pdf',
+            contextId,
+            contextKey: null,
+            url: uploadResult.url,
+            gcs: uploadResult.gcs || null,
+            filename: 'sample-local-pdf.pdf',
             userMessage: 'Add test file for analyzer'
         });
         
@@ -2298,20 +2323,33 @@ test('Analyzer tool: Works with legacy contextId/contextKey parameters (backward
             t.truthy(typeof result === 'string', 'Result should be a string');
         }
     } finally {
+        if (uploadedHash) {
+            await deleteFileByHash(uploadedHash, null, contextId);
+        }
         await cleanup(contextId);
     }
 });
 
 test('Analyzer tool: File resolution works with agentContext', async t => {
     const contextId = createTestContext();
+    let uploadedHash = null;
     
     try {
         // Add a file to the collection
-        // Use a publicly accessible PDF that allows bot/crawler access (required for Vertex AI)
+        // Upload local sample PDF to the file handler (avoid external URL dependencies)
+        const uploadResult = await uploadSamplePdf(contextId, t);
+        if (!uploadResult) {
+            return;
+        }
+        uploadedHash = uploadResult.hash || null;
+
         await callPathway('sys_tool_file_collection', {
             agentContext: [{ contextId, contextKey: null, default: true }],
-            url: 'https://www.rd.usda.gov/sites/default/files/pdf-sample_0.pdf',
-            filename: 'test-file.pdf',
+            contextId,
+            contextKey: null,
+            url: uploadResult.url,
+            gcs: uploadResult.gcs || null,
+            filename: 'sample-local-pdf.pdf',
             userMessage: 'Add test file'
         });
         
@@ -2341,6 +2379,9 @@ test('Analyzer tool: File resolution works with agentContext', async t => {
             t.truthy(typeof result === 'string', 'Result should be a string');
         }
     } finally {
+        if (uploadedHash) {
+            await deleteFileByHash(uploadedHash, null, contextId);
+        }
         await cleanup(contextId);
     }
 });

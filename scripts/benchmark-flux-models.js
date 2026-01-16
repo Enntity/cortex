@@ -2,7 +2,7 @@
 /**
  * Flux Model Benchmark Script
  * 
- * Tests different configurations for flux-11-pro, flux-2-dev, and flux-2-pro
+ * Tests different configurations for flux-11-pro, flux-2-dev, flux-2-pro, and flux-2-klein-4b
  * to find the fastest settings empirically.
  * 
  * Usage: 
@@ -33,6 +33,20 @@ const MODELS = [
         name: 'flux-2-pro',
         url: 'https://api.replicate.com/v1/models/black-forest-labs/flux-pro/predictions',
         supportedParams: ['width', 'height', 'steps', 'guidance', 'output_format', 'output_quality', 'safety_tolerance']
+    },
+    {
+        name: 'flux-2-klein-4b',
+        url: 'https://api.replicate.com/v1/models/black-forest-labs/flux-2-klein-4b/predictions',
+        supportedParams: [
+            'output_megapixels',
+            'aspect_ratio',
+            'output_format',
+            'output_quality',
+            'go_fast',
+            'disable_safety_checker',
+            'seed',
+            'images'
+        ]
     }
 ];
 
@@ -73,6 +87,17 @@ const CONFIGURATIONS = {
         { name: 'guidance-2-steps-2', params: { guidance: 2, steps: 2 } },
         { name: 'small-512', params: { width: 512, height: 512 } },
         { name: 'small-512-steps-2', params: { width: 512, height: 512, steps: 2 } },
+    ],
+    'flux-2-klein-4b': [
+        { name: 'default', params: {} },
+        { name: 'go-fast', params: { go_fast: true } },
+        { name: 'mp-0.25', params: { output_megapixels: '0.25' } },
+        { name: 'mp-0.5', params: { output_megapixels: '0.5' } },
+        { name: 'mp-1', params: { output_megapixels: '1' } },
+        { name: 'mp-2', params: { output_megapixels: '2' } },
+        { name: 'mp-4', params: { output_megapixels: '4' } },
+        { name: 'go-fast-mp-0.25', params: { go_fast: true, output_megapixels: '0.25' } },
+        { name: 'go-fast-mp-0.5', params: { go_fast: true, output_megapixels: '0.5' } },
     ]
 };
 
@@ -80,7 +105,18 @@ const CONFIGURATIONS = {
 const BASE_PARAMS = {
     output_format: 'webp',
     output_quality: 80,
-    safety_tolerance: 6
+};
+
+const BASE_PARAMS_BY_MODEL = {
+    'flux-11-pro': {
+        safety_tolerance: 6,
+    },
+    'flux-2-pro': {
+        safety_tolerance: 6,
+    },
+    'flux-2-klein-4b': {
+        output_megapixels: '1',
+    },
 };
 
 function getReplicateApiKey() {
@@ -125,14 +161,15 @@ function getReplicateApiKey() {
     throw new Error('REPLICATE_API_TOKEN not found. Set it via:\n  export REPLICATE_API_TOKEN=your_token\n  or in CORTEX_CONFIG_FILE');
 }
 
-async function runPrediction(modelUrl, params, apiKey) {
+async function runPrediction(model, params, apiKey) {
     const startTime = Date.now();
     
     // Start prediction
-    const response = await axios.post(modelUrl, {
+    const response = await axios.post(model.url, {
         input: {
             prompt: TEST_PROMPT,
             ...BASE_PARAMS,
+            ...(BASE_PARAMS_BY_MODEL[model.name] || {}),
             ...params
         }
     }, {
@@ -194,7 +231,7 @@ async function benchmarkModel(model, apiKey) {
         process.stdout.write(`  Testing "${config.name}"... `);
         
         try {
-            const result = await runPrediction(model.url, config.params, apiKey);
+            const result = await runPrediction(model, config.params, apiKey);
             
             if (result.success) {
                 const predictTime = result.metrics?.predict_time 
