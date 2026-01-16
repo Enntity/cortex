@@ -500,6 +500,63 @@ class ReplicateApiPlugin extends ModelPlugin {
         };
         break;
       }
+      case "replicate-flux-2-klein-4b": {
+        const validRatios = [
+          "1:1",
+          "16:9",
+          "9:16",
+          "3:2",
+          "2:3",
+          "4:3",
+          "3:4",
+          "5:4",
+          "4:5",
+          "21:9",
+          "9:21",
+          "match_input_image"
+        ];
+        const validOutputFormats = ["webp", "jpg", "png"];
+        const validMegapixels = ["0.25", "0.5", "1", "2", "4"];
+
+        const normalizedImages = collectNormalizedImages(combinedParameters).slice(0, 5); // Maximum 5 images
+
+        const aspectRatio = validRatios.includes(combinedParameters.aspect_ratio ?? combinedParameters.aspectRatio) 
+          ? (combinedParameters.aspect_ratio ?? combinedParameters.aspectRatio) 
+          : "1:1";
+        
+        const outputFormat = validOutputFormats.includes(combinedParameters.output_format ?? combinedParameters.outputFormat) 
+          ? (combinedParameters.output_format ?? combinedParameters.outputFormat) 
+          : "jpg";
+        
+        const outputQuality = combinedParameters.output_quality ?? combinedParameters.outputQuality ?? 95;
+        const goFast = combinedParameters.go_fast ?? combinedParameters.goFast ?? false;
+        const disableSafetyChecker = combinedParameters.disable_safety_checker ?? combinedParameters.disableSafetyChecker ?? false;
+        const outputMegapixels = validMegapixels.includes(combinedParameters.output_megapixels ?? combinedParameters.outputMegapixels)
+          ? (combinedParameters.output_megapixels ?? combinedParameters.outputMegapixels)
+          : "1";
+
+        const basePayload = omitUndefined({
+          prompt: modelPromptText,
+          aspect_ratio: aspectRatio,
+          output_format: outputFormat,
+          output_quality: Math.max(0, Math.min(100, outputQuality)),
+          output_megapixels: outputMegapixels,
+          go_fast: goFast,
+          disable_safety_checker: disableSafetyChecker,
+          ...(Number.isInteger(combinedParameters.seed) ? { seed: combinedParameters.seed } : {}),
+        });
+
+        // Include images array if we have images (max 5)
+        const inputPayload = {
+          ...basePayload,
+          ...(normalizedImages.length > 0 ? { images: normalizedImages } : {})
+        };
+
+        requestParameters = {
+          input: inputPayload,
+        };
+        break;
+      }
     }
 
     return requestParameters;

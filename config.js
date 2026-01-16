@@ -528,6 +528,15 @@ var config = convict({
                     "Content-Type": "application/json"
                 },
             },
+            "replicate-flux-2-klein-4b": {
+                "type": "REPLICATE-API",
+                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-klein-4b/predictions",
+                "headers": {
+                    "Prefer": "wait",
+                    "Authorization": "Token {{REPLICATE_API_KEY}}",
+                    "Content-Type": "application/json"
+                },
+            },
             "azure-video-translate": {
                 "type": "AZURE-VIDEO-TRANSLATE",
                 "url": "https://eastus.api.cognitive.microsoft.com/videotranslation",

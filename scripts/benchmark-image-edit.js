@@ -2,7 +2,7 @@
 /**
  * Image Edit Benchmark Script
  * 
- * Compares flux-2-dev vs qwen-image-edit-2511 for editing images with a reference.
+ * Compares flux-2-dev, flux-2-klein-4b, and qwen-image-edit-2511 for editing images with a reference.
  * 
  * Usage: 
  *   REPLICATE_API_TOKEN=your_token node scripts/benchmark-image-edit.js
@@ -28,12 +28,20 @@ const MODELS = {
     'flux-2-dev': {
         url: 'https://api.replicate.com/v1/models/black-forest-labs/flux-dev/predictions',
         imageParam: 'image', // flux uses 'image' for reference
-        supportsImageInput: true
+        supportsImageInput: true,
+        imageIsArray: false
+    },
+    'flux-2-klein-4b': {
+        url: 'https://api.replicate.com/v1/models/black-forest-labs/flux-2-klein-4b/predictions',
+        imageParam: 'images',
+        supportsImageInput: true,
+        imageIsArray: true
     },
     'qwen-image-edit-2511': {
         url: 'https://api.replicate.com/v1/models/qwen/qwen-image-edit-2511/predictions',
         imageParam: 'image',
-        supportsImageInput: true
+        supportsImageInput: true,
+        imageIsArray: true
     }
 };
 
@@ -45,6 +53,15 @@ const CONFIGURATIONS = {
         { name: 'small-512-go-fast-ref', params: { width: 512, height: 512, go_fast: true } },
         { name: 'small-512-go-fast-steps15-ref', params: { width: 512, height: 512, go_fast: true, num_inference_steps: 15 } },
         { name: 'small-512-go-fast-steps20-ref', params: { width: 512, height: 512, go_fast: true, num_inference_steps: 20 } },
+    ],
+    'flux-2-klein-4b': [
+        { name: 'default-with-ref', params: { } },
+        { name: 'go-fast-with-ref', params: { go_fast: true } },
+        { name: 'mp-0.25', params: { output_megapixels: '0.25' } },
+        { name: 'mp-0.5', params: { output_megapixels: '0.5' } },
+        { name: 'mp-1', params: { output_megapixels: '1' } },
+        { name: 'go-fast-mp-0.25', params: { go_fast: true, output_megapixels: '0.25' } },
+        { name: 'go-fast-mp-0.5', params: { go_fast: true, output_megapixels: '0.5' } },
     ],
     'qwen-image-edit-2511': [
         { name: 'default-with-ref', params: { } },
@@ -61,6 +78,12 @@ const CONFIGURATIONS = {
 const BASE_PARAMS = {
     output_format: 'webp',
     output_quality: 80,
+};
+
+const BASE_PARAMS_BY_MODEL = {
+    'flux-2-klein-4b': {
+        output_megapixels: '1',
+    },
 };
 
 async function generateReferenceImage(apiKey) {
@@ -152,12 +175,12 @@ async function runPrediction(modelName, modelConfig, params, apiKey) {
     const input = {
         prompt: EDIT_PROMPT,
         ...BASE_PARAMS,
+        ...(BASE_PARAMS_BY_MODEL[modelName] || {}),
         ...params,
     };
     
     // Add reference image with the correct param name for each model
-    // qwen expects an array, flux expects a string
-    if (modelName.includes('qwen')) {
+    if (modelConfig.imageIsArray) {
         input[modelConfig.imageParam] = [REFERENCE_IMAGE];
     } else {
         input[modelConfig.imageParam] = REFERENCE_IMAGE;
