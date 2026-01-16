@@ -18,6 +18,7 @@ import { getContinuityMemoryService, ContinuityMemoryType } from '../../../../li
 import { config } from '../../../../config.js';
 import logger from '../../../../lib/logger.js';
 import { v4 as uuidv4 } from 'uuid';
+import { sendAppCommand } from '../../../../lib/pathwayTools.js';
 
 export default {
     inputParameters: {
@@ -114,7 +115,8 @@ Required information before calling:
         }
     }],
     
-    executePathway: async ({ args }) => {
+    executePathway: async ({ args, resolver }) => {
+        const pathwayResolver = resolver;
         const {
             name,
             description,
@@ -130,6 +132,17 @@ Required information before calling:
             personalityProfile,
             contextId
         } = args;
+        
+        // Helper to send createEntity app commands
+        const sendCreateEntityCommand = async (command) => {
+            const requestId = pathwayResolver?.rootRequestId;
+            if (requestId) {
+                await sendAppCommand(requestId, {
+                    type: 'createEntity',
+                    ...command
+                });
+            }
+        };
         
         try {
             // Validate required fields
@@ -163,6 +176,15 @@ Required information before calling:
                     error: 'Entity storage is not configured'
                 });
             }
+            
+            // Send createEntity start command to client
+            await sendCreateEntityCommand({
+                status: 'start',
+                name: name.trim(),
+                avatarText: avatarText?.trim() || null,
+                avatarIcon: avatarIcon?.trim() || null,
+                identity: identity.trim()
+            });
             
             // Generate a new UUID for the entity
             const entityId = uuidv4();
@@ -458,6 +480,14 @@ Required information before calling:
                 }
             }
             
+            // Send createEntity complete command to client
+            await sendCreateEntityCommand({
+                status: 'complete',
+                entityId: createdId,
+                name: name.trim(),
+                success: true
+            });
+            
             return JSON.stringify({
                 success: true,
                 entityId: createdId,
@@ -467,6 +497,18 @@ Required information before calling:
             
         } catch (error) {
             logger.error(`Error creating entity: ${error.message}`);
+            
+            // Send createEntity failure command to client
+            const requestId = pathwayResolver?.rootRequestId;
+            if (requestId) {
+                await sendAppCommand(requestId, {
+                    type: 'createEntity',
+                    status: 'complete',
+                    success: false,
+                    error: error.message
+                });
+            }
+            
             return JSON.stringify({
                 success: false,
                 error: `Failed to create entity: ${error.message}`
