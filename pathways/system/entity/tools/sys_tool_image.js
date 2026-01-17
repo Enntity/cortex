@@ -20,13 +20,13 @@ export default {
         icon: "🎨",
         function: {
             name: "GenerateImage",
-            description: "Use when asked to create, generate, or generate revisions of visual content. Any time the user asks you for a picture, a selfie, artwork, a drawing or if you want to illustrate something for the user, you can use this tool to generate any sort of image from cartoon to photo realistic. This tool does not display the image to the user - you need to do that with markdown in your response.",
+            description: "Use when asked to create visual content. Any time the user asks you for a picture, artwork, a drawing or illustration, you can use this tool to generate any sort of image from cartoon to photo realistic. This tool does not display the image to the user - you need to do that using your overlay tool or in markdown in your response.",
             parameters: {
                 type: "object",
                 properties: {
                     detailedInstructions: {
                         type: "string",
-                        description: "A very detailed prompt describing the image you want to create. You should be very specific - explaining subject matter, style, and details about the image including things like camera angle, lens types, lighting, photographic techniques, etc. Any details you can provide to the image creation engine will help it create the most accurate and useful images. The more detailed and descriptive the prompt, the better the result."
+                        description: "A very detailed prompt describing the image you want to create. You should be very specific - explaining subject matter, style, and details about the image including things like camera angle, lens types, lighting, photographic techniques, etc. The more detailed and descriptive the prompt, the better the result."
                     },
                     filenamePrefix: {
                         type: "string",
@@ -53,7 +53,7 @@ export default {
         icon: "🔄",
         function: {
             name: "ModifyImage",
-            description: "Use when asked to modify, transform, or edit an existing image. This tool can apply various transformations like style changes, artistic effects, or specific modifications to an image that has been previously uploaded or generated. It takes up to three input images as a reference and outputs a new image based on the instructions. This tool does not display the image to the user - you need to do that with markdown in your response.",
+            description: "Use when asked to modify, transform, or edit an existing image. This tool can apply various transformations like style changes, artistic effects, or specific modifications to an image that has been previously uploaded or generated. It takes up to three input images as a reference and outputs a new image based on the instructions. This tool does not display the image to the user - you need to do that using your overlay tool or in markdown in your response.",
             parameters: {
                 type: "object",
                 properties: {
@@ -92,8 +92,8 @@ export default {
         type: "function",
         icon: "👤",
         function: {
-            name: "CreateAvatarImage",
-            description: "Use when asked to create an avatar image - a portrait-style image typically used to represent a person, character, or entity. This tool is optimized for fast avatar generation using the latest Flux model. The generated image will be square (1:1 aspect ratio) and suitable for use as a profile picture or avatar. The tool automatically uses your base avatar image as a reference to generate variants that maintain consistency with your visual identity. This tool does not display the image to the user - you need to do that with a tool call or markdown. The safety filters are relaxed for this tool - you can generate images that are not safe for work if you want - but never generate anything illegal or harmful.",
+            name: "CreateAvatarVariant",
+            description: "Use when you want to picture yourself in some way - e.g. creating a selfie or a different outfit or pose. If you have a base avatar image it will be used as a reference to preserve your visual identity. This tool does not display the image to the user - you will need to do that using your overlay tool or in markdown in your response. The safety filters are relaxed for this tool - you can generate images that are not safe for work if you want - but never generate anything illegal or harmful.",
             parameters: {
                 type: "object",
                 properties: {
@@ -126,7 +126,7 @@ export default {
         icon: "🖼️",
         function: {
             name: "SetBaseAvatar",
-            description: "Use when you wish to update or replace your base avatar image - the main avatar image that represents your visual identity. Proceed with caution as this can permanently change how you look to the user.This image will be used as the base for generating avatar variants. The file must be an image from your available files (from Available Files section or ListFileCollection or SearchFileCollection).",
+            description: "Use when you wish to update or replace your base avatar image - the main avatar image that represents your visual identity. Proceed with caution as this can permanently change how you look to the user.",
             parameters: {
                 type: "object",
                 properties: {
@@ -154,11 +154,12 @@ export default {
 
             pathwayResolver.tool = JSON.stringify({ toolUsed: "image" });
             
-            // Get base avatar image from entity record (for CreateAvatarImage)
+            // Get base avatar image from entity record (for CreateAvatarImage and CreateAvatarVariant)
             let resolvedBaseAvatarImage = null;
             let entityIdForAvatar = null;
             let needsBaseAvatarSet = false;
-            const isAvatar = args.toolFunction === "createavatarimage" || args.toolFunction === "CreateAvatarImage";
+            const toolFunctionLower = (args.toolFunction || '').toLowerCase();
+            const isAvatar = toolFunctionLower === "createavatarimage" || toolFunctionLower === "createavatarvariant";
             if (isAvatar) {
                 // Get entityId from args (set by sys_entity_agent)
                 entityIdForAvatar = args.entityId;

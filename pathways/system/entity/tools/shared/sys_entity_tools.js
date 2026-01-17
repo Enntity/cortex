@@ -5,6 +5,34 @@ import logger from '../../../../../lib/logger.js';
 
 export const CUSTOM_TOOLS = {};
 
+const STANDARD_FUNCTION_KEYS = new Set(['name', 'description', 'parameters']);
+
+const sanitizeOpenAiToolDefinition = (toolDefinition, toolName) => {
+    if (!toolDefinition || toolDefinition.type !== 'function' || !toolDefinition.function) {
+        logger.warn(`Skipping invalid tool definition for ${toolName || 'unknown tool'}`);
+        return null;
+    }
+
+    const functionDefinition = toolDefinition.function || {};
+    const sanitizedFunction = {};
+
+    STANDARD_FUNCTION_KEYS.forEach((key) => {
+        if (functionDefinition[key] !== undefined) {
+            sanitizedFunction[key] = functionDefinition[key];
+        }
+    });
+
+    if (!sanitizedFunction.name || !sanitizedFunction.parameters) {
+        logger.warn(`Skipping tool with missing standard fields: ${toolName || sanitizedFunction.name || 'unknown tool'}`);
+        return null;
+    }
+
+    return {
+        type: toolDefinition.type,
+        function: sanitizedFunction
+    };
+};
+
 // Helper function to get tools for a specific entity
 export const getToolsForEntity = (entityConfig) => {
     // Get system tools from config
@@ -29,14 +57,22 @@ export const getToolsForEntity = (entityConfig) => {
     // Merge system tools with custom tools (custom tools override system tools)
     const allTools = { ...normalizedSystemTools, ...normalizedCustomTools, ...normalizedCUSTOM_TOOLS };
     
-    // If no tools property specified or array contains *, return all tools
+    const toolExclusions = Array.isArray(entityConfig?.toolExclusions)
+        ? entityConfig.toolExclusions.map(name => name.toLowerCase())
+        : [];
+
+    const applyExclusions = (toolsMap) => Object.fromEntries(
+        Object.entries(toolsMap).filter(([toolName]) => !toolExclusions.includes(toolName.toLowerCase()))
+    );
+
+    // If no tools property specified or array contains *, return all tools (minus exclusions)
     if (!entityConfig?.tools || entityConfig.tools.includes('*')) {
+        const allToolsExcluding = applyExclusions(allTools);
         return {
-            entityTools: allTools,
-            entityToolsOpenAiFormat: Object.values(allTools).map(tool => {
-                const { icon, pathwayParams, ...definitionWithoutExtras } = tool.definition;
-                return definitionWithoutExtras;
-            })
+            entityTools: allToolsExcluding,
+            entityToolsOpenAiFormat: Object.entries(allToolsExcluding)
+                .map(([toolName, tool]) => sanitizeOpenAiToolDefinition(tool.definition, toolName))
+                .filter(Boolean)
         };
     }
 
@@ -53,18 +89,17 @@ export const getToolsForEntity = (entityConfig) => {
     }
     
     // Filter the tools to only include those specified for this entity
-    const filteredTools = Object.fromEntries(
-        Object.entries(allTools).filter(([toolName]) => 
+    const filteredTools = applyExclusions(Object.fromEntries(
+        Object.entries(allTools).filter(([toolName]) =>
             entityToolNames.includes(toolName.toLowerCase())
         )
-    );
+    ));
 
     return {
         entityTools: filteredTools,
-        entityToolsOpenAiFormat: Object.values(filteredTools).map(tool => {
-            const { icon, pathwayParams, ...definitionWithoutExtras } = tool.definition;
-            return definitionWithoutExtras;
-        })
+        entityToolsOpenAiFormat: Object.entries(filteredTools)
+            .map(([toolName, tool]) => sanitizeOpenAiToolDefinition(tool.definition, toolName))
+            .filter(Boolean)
     };
 };
 
@@ -89,10 +124,12 @@ export const loadEntityConfig = (entityId) => {
             if (entity) {
                 return entity;
             }
+            // Entity explicitly requested but not found - return null, don't silently fall back
             logger.warn(`Entity with UUID ${entityId} not found`);
+            return null;
         }
 
-        // If no entityId provided or not found, return default entity
+        // No entityId provided - return default entity
         const defaultEntity = entities.find(e => e.isDefault === true);
         if (defaultEntity) {
             return defaultEntity;

@@ -232,6 +232,7 @@ Required information before calling:
                 isSystem: false,
                 useMemory: true,
                 tools: ['*'], // Full tool access
+                toolExclusions: ['createentity'], // Never allow entity creation
                 resources: [],
                 customTools: {},
                 assocUserIds: [userId], // Associate with the creating user

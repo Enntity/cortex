@@ -96,17 +96,32 @@ export function validateProgressMessage(t, progress, requestId = null) {
 
   if (progress.data) {
     t.true(typeof progress.data === 'string');
-    t.notThrows(() => JSON.parse(progress.data));
+    try {
+      JSON.parse(progress.data);
+    } catch (e) {
+      t.fail(`progress.data is not valid JSON: ${e.message}\nContent: ${progress.data.substring(0, 200)}`);
+    }
   }
 
   if (progress.info) {
     t.true(typeof progress.info === 'string');
-    t.notThrows(() => JSON.parse(progress.info));
+    try {
+      JSON.parse(progress.info);
+    } catch (e) {
+      t.fail(`progress.info is not valid JSON: ${e.message}\nContent: ${progress.info.substring(0, 200)}`);
+    }
   }
 
   if (progress.error) {
     t.true(typeof progress.error === 'string');
-    t.notThrows(() => JSON.parse(progress.error));
+    // Only parse error if it looks like JSON (starts with { or [), otherwise it's a plain string message
+    if (progress.error.trim().startsWith('{') || progress.error.trim().startsWith('[')) {
+      try {
+        JSON.parse(progress.error);
+      } catch (e) {
+        t.fail(`progress.error is not valid JSON: ${e.message}\nContent: ${progress.error.substring(0, 200)}`);
+      }
+    }
   }
 }
 

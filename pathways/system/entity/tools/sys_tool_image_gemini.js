@@ -19,7 +19,7 @@ export default {
         icon: "🎨",
         function: {
             name: "GenerateImage",
-            description: "Use when asked to create, generate, or generate revisions of visual content. Any time the user asks you for a picture, artwork, a drawing or if you want to illustrate something for the user, you can use this tool to generate any sort of image from cartoon to photo realistic. After you have generated the image, you must include the image in your response to show it to the user. This is for SFW images only - the safety filters are strict.",
+            description: "Use when asked to create visual content. Any time the user asks you for a picture, artwork, a drawing or illustration, you can use this tool to generate any sort of image from cartoon to photo realistic. This tool does not display the image to the user - you need to do that using your overlay tool or in markdown in your response. This is for SFW images only - the safety filters are strict.",
             parameters: {
                 type: "object",
                 properties: {

@@ -13,7 +13,7 @@ export default {
         hideExecution: true,
         function: {
             name: "ShowAvatarOverlay",
-            description: "Display an avatar overlay playlist in a special area of the UI. Provide an array of items to show in sequence. Each item can be text, image, or video with optional duration and label. Use this to show avatar visuals or text overlays.",
+            description: "Display an overlay playlist in a prominent area of the UI. Provide an array of items to show in sequence. Each item can be text, image, or video with optional duration and label. Use this any time you want to show yourself or something particularly interesting to the user in a dynamic way. The items will be displayed in the order they are provided in the array.",
             parameters: {
                 type: "object",
                 properties: {

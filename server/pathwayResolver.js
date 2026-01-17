@@ -278,6 +278,9 @@ class PathwayResolver {
 
     async handleStream(response) {
         let streamErrorOccurred = false;
+        let streamErrorMessage = null;
+        // Accumulate streamed content for continuity memory
+        this.streamedContent = '';
 
         if (response && typeof response.on === 'function') {
             try {
@@ -304,6 +307,7 @@ class PathwayResolver {
                         requestProgress = this.modelExecutor.plugin.processStreamEvent(event, requestProgress);
                     } catch (error) {
                         streamErrorOccurred = true;
+                        streamErrorMessage = error instanceof Error ? error.message : String(error);
                         logger.error(`Stream error: ${error instanceof Error ? error.stack || error.message : JSON.stringify(error)}`);
                         incomingMessage.off('data', processStream);
                         return;
@@ -311,6 +315,17 @@ class PathwayResolver {
 
                     try {
                         if (!streamEnded && requestProgress.data) {
+                            // Accumulate just the text content for continuity memory
+                            // requestProgress.data is the raw JSON - we need to extract delta.content
+                            try {
+                                const parsed = JSON.parse(requestProgress.data);
+                                const textContent = parsed?.choices?.[0]?.delta?.content;
+                                if (textContent) {
+                                    this.streamedContent += textContent;
+                                }
+                            } catch {
+                                // If parsing fails or no content, skip accumulation
+                            }
                             this.publishNestedRequestProgress(requestProgress);
                             streamEnded = requestProgress.progress === 1;
                         }
@@ -331,22 +346,33 @@ class PathwayResolver {
                     await new Promise((resolve, reject) => {
                         incomingMessage.on('data', processStream);
                         incomingMessage.on('end', resolve);
-                        incomingMessage.on('error', reject);
+                        incomingMessage.on('error', (err) => {
+                            streamErrorOccurred = true;
+                            streamErrorMessage = err instanceof Error ? err.message : String(err);
+                            reject(err);
+                        });
                     });
                 }
 
             } catch (error) {
+                streamErrorOccurred = true;
+                if (!streamErrorMessage) {
+                    streamErrorMessage = error instanceof Error ? error.message : String(error);
+                }
                 logger.error(`Could not subscribe to stream: ${error instanceof Error ? error.stack || error.message : JSON.stringify(error)}`);
             }
 
             if (streamErrorOccurred) {
                 logger.error(`Stream read failed. Finishing stream...`);
+                const errorMessage = streamErrorMessage || 
+                    (this.errors.length > 0 ? this.errors.join(', ') : 'Stream read failed');
+                const infoObject = { ...this.pathwayResultData || {} };
                 publishRequestProgress({
-                    requestId: this.requestId,
+                    requestId: this.rootRequestId || this.requestId,
                     progress: 1,
                     data: '',
-                    info: '',
-                    error: 'Stream read failed'
+                    info: JSON.stringify(infoObject),
+                    error: errorMessage
                 });
             } else {
                 return;
@@ -559,6 +585,9 @@ class PathwayResolver {
             // if data is a stream, handle it
             if (data && typeof data.on === 'function') {
                 await this.handleStream(data);
+                // Note: Continuity memory recording is handled by the agent (sys_entity_agent.js)
+                // after the full agentic workflow completes. This avoids recording intermediate
+                // tool-calling turns and ensures only one turn is recorded per user message.
                 return data;
             }
 
@@ -572,55 +601,8 @@ class PathwayResolver {
 
         if (data !== null) {
             await saveChangedMemory();
-            
-            // === CONTINUITY MEMORY SYNTHESIS (Post-Response Hook) ===
-            // Trigger async synthesis after response - fire and forget
-            const useContinuityMemoryPost = args.useMemory !== false;
-            if (useContinuityMemoryPost && this.continuityEntityId && this.continuityUserId) {
-                try {
-                    const continuityService = getContinuityMemoryService();
-                    if (continuityService.isAvailable()) {
-                        // Record the user turn
-                        const userMessage = args.text || args.chatHistory?.slice(-1)?.[0]?.content || '';
-                        if (userMessage) {
-                            await continuityService.recordTurn(
-                                this.continuityEntityId,
-                                this.continuityUserId,
-                                {
-                                    role: 'user',
-                                    content: userMessage,
-                                    timestamp: new Date().toISOString()
-                                }
-                            );
-                        }
-                        
-                        // Record the assistant response
-                        const assistantResponse = typeof data === 'string' ? data : 
-                            (data?.output_text || data?.content || JSON.stringify(data));
-                        await continuityService.recordTurn(
-                            this.continuityEntityId,
-                            this.continuityUserId,
-                            {
-                                role: 'assistant',
-                                content: assistantResponse?.substring(0, 5000) || '', // Limit stored length
-                                timestamp: new Date().toISOString()
-                            }
-                        );
-                        
-                        // Trigger background synthesis (fire and forget)
-                        continuityService.triggerSynthesis(
-                            this.continuityEntityId,
-                            this.continuityUserId,
-                            {
-                                aiName: args.aiName || 'Entity',
-                                entityContext: args.entityInstructions || ''
-                            }
-                        );
-                    }
-                } catch (error) {
-                    logger.warn(`Continuity synthesis trigger failed (non-fatal): ${error.message}`);
-                }
-            }
+            // Note: Continuity memory recording is handled by the agent (sys_entity_agent.js)
+            // after the full agentic workflow completes.
         }
 
         addCitationsToResolver(this, data);

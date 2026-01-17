@@ -346,9 +346,22 @@ class GrokResponsesPlugin extends OpenAIVisionPlugin {
             }
         }
 
+        // Normalize XAI Responses API status to OpenAI-compatible finish_reason
+        // XAI uses: completed, incomplete, failed, cancelled
+        // OpenAI uses: stop, length, tool_calls, content_filter, function_call
+        const normalizeStatus = (status) => {
+            switch (status) {
+                case 'completed': return 'stop';
+                case 'incomplete': return 'length';
+                case 'failed': return 'stop';  // Best approximation
+                case 'cancelled': return 'stop';
+                default: return status || 'stop';
+            }
+        };
+
         const cortexResponse = new CortexResponse({
             output_text: outputText,
-            finishReason: data.status || 'completed',
+            finishReason: normalizeStatus(data.status),
             usage: data.usage || null,
             metadata: {
                 model: this.modelName,

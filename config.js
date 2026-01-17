@@ -957,7 +957,7 @@ const VESPER_MATCHMAKER_SYSTEM_ENTITY = {
     useMemory: false,
     baseModel: 'gemini-flash-3-vision',
     reasoningEffort: 'low',
-    tools: ['createentity', 'createavatarimage'],
+    tools: ['createentity'],
     resources: [],
     customTools: {},
     assocUserIds: [],

@@ -105,10 +105,9 @@ test('Gemini 2.5 Vision Plugin - processStreamEvent handles content chunks corre
   
   progress = plugin.processStreamEvent(endEvent, {});
   t.is(progress.progress, 1);
-  if (progress.data) {
-    const endParsed = JSON.parse(progress.data);
-    t.is(endParsed.choices[0].finish_reason, 'stop');
-  }
+  t.truthy(progress.data);
+  const endParsed = JSON.parse(progress.data);
+  t.is(endParsed.choices[0].finish_reason, 'stop');
 });
 
 test('Gemini 2.5 Vision Plugin - processStreamEvent handles safety blocks', async t => {

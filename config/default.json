@@ -309,6 +309,27 @@
             "maxReturnTokens": 128000,
             "supportsStreaming": true
         },
+        "oai-gpt52-chat": {
+            "type": "OPENAI-VISION",
+            "emulateOpenAIChatModel": "gpt-5.2-chat-latest",
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "gpt-5.2-chat-latest"
+                    },
+                    "requestsPerSecond": 50
+                }
+            ],
+            "maxTokenLength": 128000,
+            "maxReturnTokens": 16384,
+            "supportsStreaming": true
+        },
         "oai-gpt51": {
             "type": "OPENAI-REASONING-VISION",
             "emulateOpenAIChatModel": "gpt-5.1",
@@ -705,20 +726,6 @@
     "enableRestEndpoints": true,
     "enableDuplicateRequests": true,
     "subscriptionKeepAlive": 0,
-    "entityConstants": {
-        "AI_STYLE_OPENAI_PREVIEW": "oai-gpt52",
-        "AI_STYLE_OPENAI_PREVIEW_RESEARCH": "oai-gpt52",
-        "AI_STYLE_OPENAI": "oai-gpt51",
-        "AI_STYLE_OPENAI_RESEARCH": "oai-gpt51",
-        "AI_STYLE_OPENAI_LEGACY": "oai-gpt41",
-        "AI_STYLE_OPENAI_LEGACY_RESEARCH": "oai-o3",
-        "AI_STYLE_ANTHROPIC": "claude-45-sonnet",
-        "AI_STYLE_ANTHROPIC_RESEARCH": "claude-45-opus",
-        "AI_STYLE_XAI": "xai-grok-4-1-fast-reasoning",
-        "AI_STYLE_XAI_RESEARCH": "xai-grok-4-1-fast-reasoning",
-        "AI_STYLE_GOOGLE": "gemini-flash-3-vision",
-        "AI_STYLE_GOOGLE_RESEARCH": "gemini-pro-3-vision"
-    },
     "systemEntities": {
         "defaultName": "Enntity",
         "matchmakerName": "Vesper"

@@ -25,9 +25,6 @@ export default {
             ...config.get('entityConstants')
         };
 
-        const { aiStyle, AI_STYLE_ANTHROPIC, AI_STYLE_OPENAI } = args;
-        args.model = aiStyle === "Anthropic" ? AI_STYLE_ANTHROPIC : AI_STYLE_OPENAI;
-
         const result = await runAllPrompts({ ...args, stream: false });
 
         return result;

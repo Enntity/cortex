@@ -9,6 +9,7 @@ import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
 import { Prompt } from '../../../server/prompt.js';
 import { getToolsForEntity, loadEntityConfig } from './tools/shared/sys_entity_tools.js';
 import CortexResponse from '../../../lib/cortexResponse.js';
+import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
 
 // Helper function to generate a smart error response using the agent
 async function generateErrorResponse(error, args, pathwayResolver) {
@@ -70,7 +71,6 @@ export default {
         chatId: ``,
         language: "English",
         aiName: "Jarvis",
-        aiMemorySelfModify: true,
         title: ``,
         messages: [],
         voiceResponse: false,
@@ -79,7 +79,8 @@ export default {
         entityId: ``,
         researchMode: false,
         userInfo: '',
-        model: 'oai-gpt41'
+        model: 'oai-gpt41',
+        useMemory: true  // Enable continuity memory (default true). False here OR in entity config disables memory.
     },
     timeout: 600,
 
@@ -459,7 +460,7 @@ export default {
         let pathwayResolver = resolver;
 
         // Load input parameters and information into args
-        const { entityId, voiceResponse, aiMemorySelfModify, chatId, researchMode } = { ...pathwayResolver.pathway.inputParameters, ...args };
+        const { entityId, voiceResponse, chatId, researchMode } = { ...pathwayResolver.pathway.inputParameters, ...args };
         
         const entityConfig = loadEntityConfig(entityId);
         const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
@@ -467,15 +468,15 @@ export default {
         const entityName = entityConfig?.name;
         const entityInstructions = entityConfig?.identity || entityConfig?.instructions || '';
         
-        // Determine useMemory: Master switch for any memory system
-        // entityConfig.useMemory === false is a hard disable, otherwise args.useMemory can disable it, default true
-        args.useMemory = entityConfig?.useMemory === false ? false : (args.useMemory ?? true);
+        // Determine useMemory: "False always wins"
+        // Memory is only enabled if BOTH entity config AND input args allow it
+        // Either can disable by setting to false; default is true for both
+        const entityAllowsMemory = entityConfig?.useMemory !== false;
+        const inputAllowsMemory = args.useMemory !== false;
+        const useContinuityMemory = entityAllowsMemory && inputAllowsMemory;
         
         // Override model from entity config if defined (use modelOverride for dynamic model switching)
         const modelOverride = entityConfig?.modelOverride ?? args.modelOverride;
-        
-        // Convenience flags for template/code use
-        const useContinuityMemory = args.useMemory;
 
         // Initialize chat history if needed
         if (!args.chatHistory || args.chatHistory.length === 0) {
@@ -519,7 +520,6 @@ export default {
             entityToolsOpenAiFormat,
             entityInstructions,
             voiceResponse,
-            aiMemorySelfModify,
             chatId,
             researchMode
         };
@@ -530,10 +530,11 @@ export default {
         const continuityContextTemplate = useContinuityMemory ? 
             `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n` : '';
 
-        const instructionTemplates = `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n{{renderTemplate AI_EXPERTISE}}\n\n`;
+        const instructionTemplates = `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n${continuityContextTemplate}{{renderTemplate AI_EXPERTISE}}\n\n`;
+        const searchRulesTemplate = researchMode ? `{{renderTemplate AI_SEARCH_RULES}}\n\n` : '';
 
         const promptMessages = [
-            {"role": "system", "content": `${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${continuityContextTemplate}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+            {"role": "system", "content": `${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n${searchRulesTemplate}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
             "{{chatHistory}}",
         ];
 
@@ -609,6 +610,99 @@ export default {
                     // Ensure errors are cleared before returning
                     pathwayResolver.errors = [];
                     return errorResponse;
+                }
+            }
+
+            // === CONTINUITY MEMORY RECORDING ===
+            // Record turn and trigger synthesis ONCE after the full agentic workflow completes.
+            // This ensures we only record one turn per user message, regardless of how many
+            // intermediate tool calls occurred.
+            if (useContinuityMemory && pathwayResolver.continuityEntityId && pathwayResolver.continuityUserId) {
+                try {
+                    const continuityService = getContinuityMemoryService();
+                    if (continuityService.isAvailable()) {
+                        // Extract original user message from chatHistory
+                        // Find the last actual user message (not tool responses)
+                        let userMessage = args.text || '';
+                        if (!userMessage && args.chatHistory?.length > 0) {
+                            for (let i = args.chatHistory.length - 1; i >= 0; i--) {
+                                const msg = args.chatHistory[i];
+                                if (msg?.role === 'user') {
+                                    const content = msg.content;
+                                    if (typeof content === 'string') {
+                                        // Skip tool response JSON
+                                        if (!content.trim().startsWith('{') || !content.includes('"success"')) {
+                                            userMessage = content;
+                                            break;
+                                        }
+                                    } else if (Array.isArray(content)) {
+                                        // Extract text from content array
+                                        const textItem = content.find(c => typeof c === 'string' || c?.type === 'text');
+                                        if (textItem) {
+                                            userMessage = typeof textItem === 'string' ? textItem : textItem.text;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Extract final assistant response
+                        // For streaming: use accumulated streamedContent
+                        // For non-streaming: extract from response object
+                        let assistantResponse = '';
+                        if (response && typeof response.on === 'function') {
+                            // Streaming case - content was accumulated in pathwayResolver
+                            assistantResponse = pathwayResolver.streamedContent || '';
+                        } else if (response instanceof CortexResponse) {
+                            assistantResponse = response.output_text || response.content || '';
+                        } else if (typeof response === 'string') {
+                            assistantResponse = response;
+                        } else if (response) {
+                            assistantResponse = response.output_text || response.content || JSON.stringify(response);
+                        }
+                        
+                        // Record user turn
+                        if (userMessage) {
+                            await continuityService.recordTurn(
+                                pathwayResolver.continuityEntityId,
+                                pathwayResolver.continuityUserId,
+                                {
+                                    role: 'user',
+                                    content: userMessage,
+                                    timestamp: new Date().toISOString()
+                                }
+                            );
+                        }
+                        
+                        // Record assistant turn
+                        if (assistantResponse) {
+                            await continuityService.recordTurn(
+                                pathwayResolver.continuityEntityId,
+                                pathwayResolver.continuityUserId,
+                                {
+                                    role: 'assistant',
+                                    content: assistantResponse.substring(0, 5000), // Limit stored length
+                                    timestamp: new Date().toISOString()
+                                }
+                            );
+                        }
+                        
+                        // Trigger background synthesis (fire and forget)
+                        continuityService.triggerSynthesis(
+                            pathwayResolver.continuityEntityId,
+                            pathwayResolver.continuityUserId,
+                            {
+                                aiName: args.aiName || entityName || 'Entity',
+                                entityContext: entityInstructions
+                            }
+                        );
+                        
+                        logger.debug(`Continuity memory recorded for turn (user: ${userMessage?.length || 0} chars, assistant: ${assistantResponse?.length || 0} chars)`);
+                    }
+                } catch (error) {
+                    // Non-fatal - log and continue
+                    logger.warn(`Continuity memory recording failed (non-fatal): ${error.message}`);
                 }
             }
 

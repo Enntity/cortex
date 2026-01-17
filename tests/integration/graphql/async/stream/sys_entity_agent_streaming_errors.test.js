@@ -1,4 +1,5 @@
 import test from 'ava';
+import { EventEmitter } from 'events';
 import serverFactory from '../../../../../index.js';
 import { createWsClient, ensureWsConnection, collectSubscriptionEvents, validateProgressMessage } from '../../../../helpers/subscriptions.js';
 import { config } from '../../../../../config.js';
@@ -180,4 +181,171 @@ test.serial('sys_entity_agent streaming completes when model crashes after tools
   t.true(typeof finalData === 'string');
   t.true(finalData.includes('ERROR_RESPONSE'));
   t.true(finalData.includes('Model crashed after tool calls'));
+});
+
+test.serial('sys_entity_agent streaming sends error to client when runAllPrompts throws 400 error', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  // Stub promptAndParse to simulate a 400 error from runAllPrompts (which is promptAndParse)
+  PathwayResolver.prototype.promptAndParse = async function promptAndParseStub(args) {
+    if (args?.title === 'test-400-error') {
+      // Simulate runAllPrompts throwing a 400 error (this is what happens when model API returns 400)
+      const error = new Error('HTTP 400 Bad Request: Invalid request parameters');
+      error.statusCode = 400;
+      throw error;
+    }
+    return originalPromptAndParse.call(this, args);
+  };
+
+  const response = await testServer.executeOperation({
+    query: `
+      query TestQuery($text: String!, $chatHistory: [MultiMessage]!, $stream: Boolean!, $entityId: String!, $title: String) {
+        sys_entity_agent(text: $text, chatHistory: $chatHistory, stream: $stream, entityId: $entityId, title: $title) {
+          result
+          contextId
+          tool
+          warnings
+          errors
+        }
+      }
+    `,
+    variables: {
+      text: 'Trigger 400 error',
+      chatHistory: [{ role: 'user', content: ['Trigger 400 error'] }],
+      stream: true,
+      entityId: originals.entityId,
+      title: 'test-400-error',
+    },
+  });
+
+  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  t.truthy(requestId);
+
+  const events = await collectSubscriptionEvents(wsClient, {
+    query: `
+      subscription OnRequestProgress($requestId: String!) {
+        requestProgress(requestIds: [$requestId]) {
+          requestId
+          progress
+          data
+          info
+          error
+        }
+      }
+    `,
+    variables: { requestId },
+  }, 30000, { requireCompletion: true, minEvents: 1 });
+
+  t.true(events.length > 0, 'Should receive at least one event');
+  const completionEvent = events.find((event) => event?.data?.requestProgress?.progress === 1);
+  t.truthy(completionEvent, 'Should receive completion event with progress=1');
+
+  const progress = completionEvent.data.requestProgress;
+  validateProgressMessage(t, progress, requestId);
+
+  // The error should be sent to the client either in the data field (as error response) or error field
+  const finalData = JSON.parse(progress.data || '""');
+  const hasErrorInData = typeof finalData === 'string' && (
+    finalData.includes('ERROR_RESPONSE') || 
+    finalData.includes('400') || 
+    finalData.includes('Bad Request')
+  );
+  const hasErrorInField = progress.error && (
+    progress.error.includes('400') || 
+    progress.error.includes('Bad Request')
+  );
+
+  t.true(
+    hasErrorInData || hasErrorInField,
+    `Error should be sent to client. Data: ${JSON.stringify(finalData)}, Error field: ${progress.error}`
+  );
+});
+
+test.serial('sys_entity_agent streaming sends error to client when stream errors with 400', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  // Stub promptAndParse to return a stream that immediately errors
+  PathwayResolver.prototype.promptAndParse = async function promptAndParseStub(args) {
+    if (args?.title === 'test-stream-400-error') {
+      // Create a mock stream that errors immediately with 400
+      const errorStream = new EventEmitter();
+      
+      // Simulate stream erroring immediately
+      setImmediate(() => {
+        const error = new Error('HTTP 400 Bad Request: Invalid request parameters');
+        error.statusCode = 400;
+        errorStream.emit('error', error);
+      });
+      
+      return errorStream;
+    }
+    return originalPromptAndParse.call(this, args);
+  };
+
+  const response = await testServer.executeOperation({
+    query: `
+      query TestQuery($text: String!, $chatHistory: [MultiMessage]!, $stream: Boolean!, $entityId: String!, $title: String) {
+        sys_entity_agent(text: $text, chatHistory: $chatHistory, stream: $stream, entityId: $entityId, title: $title) {
+          result
+          contextId
+          tool
+          warnings
+          errors
+        }
+      }
+    `,
+    variables: {
+      text: 'Trigger stream 400 error',
+      chatHistory: [{ role: 'user', content: ['Trigger stream 400 error'] }],
+      stream: true,
+      entityId: originals.entityId,
+      title: 'test-stream-400-error',
+    },
+  });
+
+  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  t.truthy(requestId);
+
+  const events = await collectSubscriptionEvents(wsClient, {
+    query: `
+      subscription OnRequestProgress($requestId: String!) {
+        requestProgress(requestIds: [$requestId]) {
+          requestId
+          progress
+          data
+          info
+          error
+        }
+      }
+    `,
+    variables: { requestId },
+  }, 30000, { requireCompletion: true, minEvents: 1 });
+
+  t.true(events.length > 0, 'Should receive at least one event');
+  const completionEvent = events.find((event) => event?.data?.requestProgress?.progress === 1);
+  t.truthy(completionEvent, 'Should receive completion event with progress=1');
+
+  const progress = completionEvent.data.requestProgress;
+  validateProgressMessage(t, progress, requestId);
+
+  // The error should be sent to the client - either in error field or data field
+  const hasErrorInField = progress.error && (
+    progress.error.includes('400') || 
+    progress.error.includes('Bad Request') ||
+    progress.error.includes('Stream read failed')
+  );
+  
+  const finalData = JSON.parse(progress.data || '""');
+  const hasErrorInData = typeof finalData === 'string' && (
+    finalData.includes('ERROR_RESPONSE') || 
+    finalData.includes('400') || 
+    finalData.includes('Bad Request')
+  );
+
+  t.true(
+    hasErrorInData || hasErrorInField,
+    `Error should be sent to client when stream errors. Data: ${JSON.stringify(finalData)}, Error field: ${progress.error}`
+  );
 });
