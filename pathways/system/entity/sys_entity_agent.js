@@ -526,16 +526,14 @@ export default {
 
         pathwayResolver.args = {...args};
 
-        const promptPrefix = '';
-
         // Continuity Memory context injection - only when using continuity backend
         const continuityContextTemplate = useContinuityMemory ? 
             `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n` : '';
 
-        const instructionTemplates = entityInstructions ? (entityInstructions + '\n\n') : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n{{renderTemplate AI_EXPERTISE}}\n\n`;
+        const instructionTemplates = `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n{{renderTemplate AI_EXPERTISE}}\n\n`;
 
         const promptMessages = [
-            {"role": "system", "content": `${promptPrefix}${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${continuityContextTemplate}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+            {"role": "system", "content": `${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n{{renderTemplate AI_SEARCH_RULES}}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n${continuityContextTemplate}{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
             "{{chatHistory}}",
         ];
 
