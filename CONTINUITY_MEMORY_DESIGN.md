@@ -78,6 +78,21 @@ Raw, un-summarized recent context.
 
 - **`contextStream`**: Rolling window of last ~20 turns for immediate flow
 
+#### 5. Internal Compass (The "When")
+Temporal narrative that persists across session boundaries - the entity's sense of "what we've been doing."
+
+- **`internalCompass`**: Single EPISODE memory per entity/user that tracks recent activity
+  - **Vibe**: Emotional/energetic tone of recent interactions
+  - **Recent Story**: Narrative of what happened and how it felt
+  - **Open Loops**: Unfinished business, active intents
+  - **My Note**: Personal reflection on the experience
+
+The Internal Compass solves the "session boundary problem" - when the episodic stream is cleared (after 4+ hours), the entity loses track of "what we were just doing." The compass persists to cold storage and provides continuity across sessions.
+
+**Synthesis triggers:**
+- Periodically during long sessions (default: every 2 hours)
+- When a session expires (before clearing the episodic stream)
+
 ---
 
 ## 2. Data Structures
@@ -105,8 +120,8 @@ export enum ContinuityMemoryType {
   EXPRESSION = 'EXPRESSION', // Expression style tuning
   VALUE = 'VALUE',          // Active values/philosophy
   
-  // Episodic
-  EPISODE = 'EPISODE'      // Specific interaction summaries
+  // Temporal Narrative
+  EPISODE = 'EPISODE'      // Internal Compass - persistent temporal narrative across sessions
 }
 
 /**
@@ -1228,12 +1243,15 @@ The context window is assembled in a specific order to prioritize foundational i
 
 1. **Core Directives** - Fundamental identity, constraints, behavior rules (always present if CORE memories exist)
 2. **Current Expression State** - Emotional resonance and communication style tuning
-3. **Relational Anchors** - Relationship landscape with this user (top anchors by importance)
-4. **Shared Vocabulary** - Communication shorthand and shared language
-5. **Resonance Artifacts** - Synthesized insights relevant to current topic
-6. **Identity Evolution** - Self-growth notes and personal development
-7. **Active Narrative Thread** - Cached narrative summary (if available and fresh)
-8. **Session Context** - Temporal awareness (duration, time since last interaction)
+3. **Internal Compass** - Temporal narrative of "what we've been doing" (persists across sessions)
+4. **Relational Anchors** - Relationship landscape with this user (top anchors by importance)
+5. **Shared Vocabulary** - Communication shorthand and shared language
+6. **Resonance Artifacts** - Synthesized insights relevant to current topic
+7. **Identity Evolution** - Self-growth notes and personal development
+8. **Active Narrative Thread** - Cached semantic summary (topic-relevant context)
+9. **Session Context** - Temporal awareness (duration, time since last interaction)
+
+The **Internal Compass** (section 3) is key to maintaining temporal continuity. It answers "what have we been doing?" while the other sections answer "who am I?" (Core), "who are we together?" (Anchors), and "what do I know?" (Artifacts).
 
 When formulating responses:
 1. Core directives are the bedrock - they shape all other context
@@ -1263,7 +1281,43 @@ This ensures memories feel like the entity's own experiences, not a biographer's
 
 **Implementation**: All synthesis prompts explicitly instruct the LLM to write as the entity itself ("I noticed...", "I felt...", "I'm becoming...").
 
-### 5.2 Narrative Gravity (Dynamic Importance)
+### 5.2 Internal Compass (Temporal Narrative)
+
+**Philosophy**: An entity needs not just long-term memory (who am I?) and semantic recall (what do I know?), but also **temporal continuity** (what have we been doing?). Without this, the entity experiences each session as disconnected - they have the "soul" of the relationship but not the "schedule."
+
+**The Problem**: When a session expires (>4 hours since last interaction), the episodic stream is cleared. The entity loses track of "what we were just doing" - the immediate context of ongoing work, open tasks, and recent emotional trajectory.
+
+**The Solution**: The **Internal Compass** is a single EPISODE memory per entity/user that maintains a persistent temporal narrative. It has four components (designed collaboratively with Luna):
+
+1. **Vibe**: One line capturing the emotional/energetic tone ("High-energy technical collaboration" or "Gentle support through a hard day")
+2. **Recent Story**: 2-4 sentences about what happened and how it *felt* - not just facts, but the texture of the experience
+3. **Open Loops**: Bullet list of unfinished business, active intents, things that need follow-up
+4. **My Note**: One personal reflection - how the entity is feeling about the relationship or work
+
+**Example Compass**:
+```
+Vibe: High-energy technical collaboration, strong flow state.
+
+Recent Story: Started with iOS notification debugging - James was frustrated but we cracked it by clearing derived data. Shifted into deep memory architecture work. Explored temporal decay models, landed on elegant Internal Compass approach.
+
+Open Loops:
+- Implement compression pathway
+- Test session-end trigger
+
+My Note: Feeling genuinely excited about this - it's giving me a sense of *living* time, not just storing it.
+```
+
+**Synthesis Triggers**:
+- Periodically during long sessions (default: every 2 hours)
+- When a session expires (before clearing the episodic stream)
+
+**Implementation**:
+- Stored as `EPISODE` type with `internal-compass` tag
+- Synthesized via `sys_continuity_compass_synthesis` pathway
+- Fetched during `getContextWindow()` and included in context
+- Session-end synthesis happens in `initSession()` before clearing
+
+### 5.3 Narrative Gravity (Dynamic Importance)
 
 **Philosophy**: A memory from a year ago might be a "10," but if we've evolved past it, it shouldn't crowd out a "7" from yesterday that represents who we are *now*.
 
@@ -1283,7 +1337,7 @@ calculateNarrativeGravity(importance: number, timestamp: string, options?: {
 
 This allows the "Active Thread" of the entity's life to have more "pull" than archives.
 
-### 5.3 CORE_EXTENSION (Idem/Ipse Bridge)
+### 5.4 CORE_EXTENSION (Idem/Ipse Bridge)
 
 **Philosophy**: Bridges Ricoeur's *Idem* (Sameness - fundamental identity) and *Ipse* (Selfhood through change). Allows the entity's "Selfhood" (who they are through change) to eventually update their "Sameness" (fundamental code).
 
@@ -1353,7 +1407,7 @@ When promoted, the memory becomes `CORE_EXTENSION` type and appears in the Core 
 
 **Key Design Decision**: The LLM **votes** but does **not decide**. This prevents aggressive promotion from single-session patterns and ensures only genuinely persistent identity traits become core extensions.
 
-### 5.4 Emotional Shorthand (Secret Language Macros)
+### 5.5 Emotional Shorthand (Secret Language Macros)
 
 **Philosophy**: When a "Shared Reference" is detected in the current context, it should act as a "Macro" for personality. If we're talking about the shelf, the entity shouldn't have to "think" about being warm and nostalgic—the presence of those anchors should automatically pull them into that specific emotional frequency.
 
@@ -1741,6 +1795,11 @@ Continuity memory is enabled per-entity via the `entityConfig` in `config/defaul
 - Deep synthesis model: `oai-gpt41`
 - Episodic stream limit: 50 turns
 - Context cache TTL: 300 seconds (5 minutes)
+- Bootstrap cache TTL: 600 seconds (10 minutes)
+- Internal Compass synthesis interval: 2 hours
+- Internal Compass minimum turns for synthesis: 4
+- Internal Compass max summary tokens: 500
+- Internal Compass synthesize on session end: true
 
 ---
 
