@@ -855,7 +855,6 @@ The following properties can be configured through environment variables or the 
 API-specific configuration:
 - `azureVideoTranslationApiKey`: API key for Azure video translation API. Default is null.
 - `dalleImageApiUrl`: URL for DALL-E image API. Default is 'null'.
-- `neuralSpaceApiKey`: API key for NeuralSpace services. Default is null.
 - `whisperMediaApiUrl`: URL for Whisper media API. Default is 'null'.
 - `whisperTSApiUrl`: URL for Whisper TS API. Default is null.
 

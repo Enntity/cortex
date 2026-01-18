@@ -720,6 +720,394 @@
                 "Authorization": "Token {{REPLICATE_API_KEY}}",
                 "Content-Type": "application/json"
             }
+        },
+        "azure-cognitive": {
+            "type": "AZURE-COGNITIVE",
+            "url": "{{{AZURE_COGNITIVE_API_URL}}}",
+            "headers": {
+                "api-key": "{{AZURE_COGNITIVE_API_KEY}}",
+                "Content-Type": "application/json"
+            },
+            "requestsPerSecond": 10
+        },
+        "oai-gpt5-chat": {
+            "type": "OPENAI-VISION",
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "gpt-5-chat-latest"
+                    },
+                    "requestsPerSecond": 50
+                }
+            ],
+            "maxTokenLength": 128000,
+            "maxReturnTokens": 16384,
+            "supportsStreaming": true
+        },
+        "oai-gpt5": {
+            "type": "OPENAI-REASONING-VISION",
+            "emulateOpenAIChatModel": "gpt-5",
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "gpt-5"
+                    },
+                    "requestsPerSecond": 50
+                }
+            ],
+            "maxTokenLength": 400000,
+            "maxReturnTokens": 128000,
+            "supportsStreaming": true
+        },
+        "oai-gpt5-mini": {
+            "type": "OPENAI-REASONING-VISION",
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "gpt-5-mini"
+                    },
+                    "requestsPerSecond": 50
+                }
+            ],
+            "maxTokenLength": 400000,
+            "maxReturnTokens": 128000,
+            "supportsStreaming": true
+        },
+        "oai-gpt4o-mini": {
+            "type": "OPENAI-VISION",
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "gpt-4o-mini"
+                    },
+                    "requestsPerSecond": 50
+                }
+            ],
+            "maxTokenLength": 131072,
+            "maxReturnTokens": 4096,
+            "supportsStreaming": true
+        },
+        "oai-o1": {
+            "type": "OPENAI-REASONING",
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "o1"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 200000,
+            "maxReturnTokens": 100000,
+            "supportsStreaming": false
+        },
+        "oai-o3-mini": {
+            "type": "OPENAI-REASONING",
+            "emulateOpenAIChatModel": "o3-mini",
+            "restStreaming": {
+                "enableDuplicateRequests": false
+            },
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "o3-mini"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 200000,
+            "maxReturnTokens": 100000,
+            "supportsStreaming": true
+        },
+        "google-cse": {
+            "type": "GOOGLE-CSE",
+            "url": "https://www.googleapis.com/customsearch/v1",
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "requestsPerSecond": 10,
+            "maxTokenLength": 200000
+        },
+        "runware-flux-schnell": {
+            "type": "RUNWARE-AI",
+            "url": "https://api.runware.ai/v1",
+            "headers": {
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-seedance-1-pro": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/bytedance/seedance-1-pro/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-seedance-1.5-pro": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/bytedance/seedance-1.5-pro/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-flux-11-pro": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
+            "headers": {
+                "Prefer": "wait=60",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-flux-1-schnell": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
+            "headers": {
+                "Prefer": "wait=10",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-flux-1-dev": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-dev/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-recraft-v3": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/recraft-ai/recraft-v3/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-flux-kontext-pro": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-kontext-pro/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-flux-kontext-max": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-kontext-max/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-multi-image-kontext-max": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/flux-kontext-apps/multi-image-kontext-max/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-qwen-image": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/qwen/qwen-image/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-qwen-image-edit-plus": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/qwen/qwen-image-edit-plus/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-seedream-4": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "replicate-flux-2-dev": {
+            "type": "REPLICATE-API",
+            "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-dev/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "azure-video-translate": {
+            "type": "AZURE-VIDEO-TRANSLATE",
+            "url": "https://eastus.api.cognitive.microsoft.com/videotranslation",
+            "headers": {
+                "Content-Type": "application/json"
+            }
+        },
+        "ollama-chat": {
+            "type": "OLLAMA-CHAT",
+            "emulateOpenAIChatModel": "ollama-chat",
+            "restStreaming": {
+                "timeout": 300
+            },
+            "url": "{{ollamaUrl}}/api/chat",
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "requestsPerSecond": 10,
+            "maxTokenLength": 131072,
+            "supportsStreaming": true
+        },
+        "ollama-completion": {
+            "type": "OLLAMA-COMPLETION",
+            "emulateOpenAICompletionModel": "ollama-completion",
+            "restStreaming": {
+                "timeout": 300
+            },
+            "url": "{{ollamaUrl}}/api/generate",
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "requestsPerSecond": 10,
+            "maxTokenLength": 131072,
+            "supportsStreaming": true
+        },
+        "google-translate": {
+            "type": "GOOGLE-TRANSLATE",
+            "url": "https://translation.googleapis.com/language/translate/v2",
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "requestsPerSecond": 10
+        },
+        "groq-chat": {
+            "type": "GROQ-CHAT",
+            "url": "https://api.groq.com/openai/v1/chat/completions",
+            "headers": {
+                "Authorization": "Bearer {{GROQ_API_KEY}}",
+                "Content-Type": "application/json"
+            },
+            "params": {
+                "model": "meta-llama/llama-4-scout-17b-16e-instruct"
+            },
+            "requestsPerSecond": 10,
+            "maxTokenLength": 65536,
+            "maxReturnTokens": 4096,
+            "supportsStreaming": true
+        },
+        "xai-grok-3": {
+            "type": "GROK-VISION",
+            "endpoints": [
+                {
+                    "name": "XAI GROK-3",
+                    "url": "https://api.x.ai/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-3-latest"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 131072,
+            "maxReturnTokens": 32000,
+            "supportsStreaming": true
+        },
+        "xai-grok-4-responses": {
+            "type": "GROK-RESPONSES",
+            "emulateOpenAIChatModel": "grok-4-responses",
+            "restStreaming": {
+                "inputParameters": {
+                    "stream": true,
+                    "tools": "",
+                    "inline_citations": true
+                }
+            },
+            "endpoints": [
+                {
+                    "name": "XAI GROK-4-RESPONSES",
+                    "url": "https://api.x.ai/v1/responses",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-4"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 256000,
+            "maxReturnTokens": 128000,
+            "supportsStreaming": true
+        },
+        "azure-bing-agent": {
+            "type": "AZURE-FOUNDRY-AGENTS",
+            "url": "{{azureFoundryAgentUrl}}",
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "params": {
+                "api-version": "2025-05-01",
+                "assistant_id": "{{azureFoundryAgentId}}"
+            },
+            "requestsPerSecond": 10,
+            "maxTokenLength": 32768,
+            "maxReturnTokens": 4096,
+            "supportsStreaming": false
         }
     },
     "enableCache": true,
