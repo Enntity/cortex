@@ -526,11 +526,12 @@ export default {
 
         pathwayResolver.args = {...args};
 
-        // Continuity Memory context injection - only when using continuity backend
-        const continuityContextTemplate = useContinuityMemory ? 
-            `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n` : '';
+        // Core of the entity's DNA - either continuity memory or entity instructions
+        const entityDNA = useContinuityMemory 
+            ? `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n` 
+            : (entityInstructions ? entityInstructions + '\n\n' : '');
 
-        const instructionTemplates = `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n${continuityContextTemplate}{{renderTemplate AI_EXPERTISE}}\n\n`;
+        const instructionTemplates = `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n${entityDNA}{{renderTemplate AI_EXPERTISE}}\n\n`;
         const searchRulesTemplate = researchMode ? `{{renderTemplate AI_SEARCH_RULES}}\n\n` : '';
 
         const promptMessages = [
