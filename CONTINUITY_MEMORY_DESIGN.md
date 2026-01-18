@@ -90,7 +90,7 @@ Temporal narrative that persists across session boundaries - the entity's sense 
 The Internal Compass solves the "session boundary problem" - when the episodic stream is cleared (after 4+ hours), the entity loses track of "what we were just doing." The compass persists to cold storage and provides continuity across sessions.
 
 **Synthesis triggers:**
-- Periodically during long sessions (default: every 2 hours)
+- After every turn synthesis (keeps compass current with active conversation)
 - When a session expires (before clearing the episodic stream)
 
 ---
@@ -1308,7 +1308,7 @@ My Note: Feeling genuinely excited about this - it's giving me a sense of *livin
 ```
 
 **Synthesis Triggers**:
-- Periodically during long sessions (default: every 2 hours)
+- After every turn synthesis (so "what we're doing" is always current)
 - When a session expires (before clearing the episodic stream)
 
 **Implementation**:
@@ -1316,6 +1316,7 @@ My Note: Feeling genuinely excited about this - it's giving me a sense of *livin
 - Synthesized via `sys_continuity_compass_synthesis` pathway
 - Fetched during `getContextWindow()` and included in context
 - Session-end synthesis happens in `initSession()` before clearing
+- Deep synthesis also runs on session end (consolidates similar memories)
 
 ### 5.3 Narrative Gravity (Dynamic Importance)
 
@@ -1336,6 +1337,21 @@ calculateNarrativeGravity(importance: number, timestamp: string, options?: {
 - A "7" importance memory from yesterday → ~7 gravity (minimal decay)
 
 This allows the "Active Thread" of the entity's life to have more "pull" than archives.
+
+**Usage in Context Building**:
+The `ContextBuilder` uses narrative gravity when sorting memories for display (e.g., Relational Context section). This ensures recent moderately-important memories can display above old high-importance memories:
+
+```javascript
+const sortedAnchors = uniqueAnchors
+    .sort((a, b) => {
+        const gravityA = calculateNarrativeGravity(a.importance || 5, a.timestamp);
+        const gravityB = calculateNarrativeGravity(b.importance || 5, b.timestamp);
+        return gravityB - gravityA;
+    })
+    .slice(0, DISPLAY_LIMITS.anchors);
+```
+
+Note: CORE/CORE_EXTENSION memories sort by raw importance (they're foundational identity that shouldn't decay).
 
 ### 5.4 CORE_EXTENSION (Idem/Ipse Bridge)
 
@@ -1769,8 +1785,8 @@ Continuity memory is enabled per-entity via the `entityConfig` in `config/defaul
 // config/default.json
 {
   "entityConfig": {
-    "labeeb": {
-      "name": "Labeeb",
+    "enntity": {
+      "name": "Enntity",
       "isDefault": true,
       "useMemory": true,
       "useContinuityMemory": true,  // Enable continuity memory for this entity
@@ -1796,10 +1812,14 @@ Continuity memory is enabled per-entity via the `entityConfig` in `config/defaul
 - Episodic stream limit: 50 turns
 - Context cache TTL: 300 seconds (5 minutes)
 - Bootstrap cache TTL: 600 seconds (10 minutes)
-- Internal Compass synthesis interval: 2 hours
-- Internal Compass minimum turns for synthesis: 4
+- Deduplication similarity threshold: 0.68 (vector similarity)
+- Internal Compass synthesize every turn: true (updates after each turn)
+- Internal Compass minimum turns for synthesis: 2
 - Internal Compass max summary tokens: 500
 - Internal Compass synthesize on session end: true
+- Deep synthesis run on session end: true
+- Deep synthesis max memories per run: 30
+- Deep synthesis days to look back: 7
 
 ---
 
@@ -1927,9 +1947,10 @@ Pathway for deep memory consolidation and pattern recognition. Supports async mo
 **Input Parameters**:
 - `entityId` (string, required): Entity identifier (UUID) - no fallback logic
 - `userId` (string, required): User/context identifier
+- `memoryIds` (array of strings, optional): Specific memory IDs to process. When provided, bypasses normal selection logic (unprocessed/time-based) and processes only these memories. Useful for UI-driven selective synthesis.
 - `phase1Max` (integer, default: 100): Maximum memories for Phase 1 (Consolidation)
 - `phase2Max` (integer, default: 100): Maximum memories for Phase 2 (Discovery)
-- `daysToLookBack` (integer, default: 90): How far back to look (null/0 = all memories)
+- `daysToLookBack` (integer, default: 90): How far back to look (null/0 = all memories). Ignored when `memoryIds` is provided.
 - `runPhase1` (boolean, default: true): Run consolidation phase
 - `runPhase2` (boolean, default: true): Run discovery phase
 - `async` (boolean, default: false): Enable async mode with progress updates
@@ -1938,20 +1959,22 @@ Pathway for deep memory consolidation and pattern recognition. Supports async mo
 ```json
 {
   "success": true,
-  "entityId": "labeeb",
+  "entityId": "enntity",
   "userId": "user123",
   "phase1": {
     "processed": 100,
     "absorbed": 5,
     "merged": 3,
     "linked": 10,
-    "kept": 82
+    "kept": 80,
+    "protected": 2
   },
   "phase2": {
-  "consolidated": 3,
-  "patterns": 2,
+    "consolidated": 3,
+    "patterns": 2,
     "nominations": 1,
     "links": 5,
+    "importanceAdjusted": 4,
     "promotions": {
       "candidates": 5,
       "promoted": 1,
@@ -1976,7 +1999,7 @@ Pathway for deep memory consolidation and pattern recognition. Supports async mo
 // Via GraphQL query (async mode)
 query {
   sys_continuity_deep_synthesis(
-    entityId: "labeeb"
+    entityId: "enntity"
     userId: "user123"
     phase1Max: 100
     phase2Max: 100
@@ -1989,9 +2012,23 @@ query {
   }
 }
 
+// Via GraphQL with specific memory IDs (for UI-driven selective synthesis)
+query {
+  sys_continuity_deep_synthesis(
+    entityId: "enntity"
+    userId: "user123"
+    memoryIds: ["mem-abc123", "mem-def456", "mem-ghi789"]
+    runPhase1: true
+    runPhase2: true
+    async: true
+  ) {
+    result
+  }
+}
+
 // Via callPathway (sync mode)
 const result = await callPathway('sys_continuity_deep_synthesis', {
-    entityId: 'labeeb',
+    entityId: 'enntity',
     userId: 'user123',
     phase1Max: 100,
     phase2Max: 100,
@@ -2003,6 +2040,21 @@ const result = await callPathway('sys_continuity_deep_synthesis', {
 - Phase 1 calls `ContinuityMemoryService.runSleepSynthesis()` for per-memory consolidation
 - Phase 2 calls `ContinuityMemoryService.runDeepSynthesis()` for batch pattern recognition
 - After Phase 2, automatically processes promotion candidates with deterministic rules
+
+**Protected Memory Types**: 
+CORE and CORE_EXTENSION memories are protected from consolidation/deletion during synthesis. These represent foundational identity and must never be absorbed, merged away, or deleted:
+- **Phase 1**: Protected memories are skipped automatically (stats include `protected` count)
+- **Phase 2**: Protected memory IDs are filtered out before deletion during consolidation
+- LLM prompts are informed about protected types to discourage including them in consolidation
+- Protected memories CAN be targets of links and can receive content, just never be the "fresh" memory that gets deleted
+
+**Importance Calibration**:
+During Phase 2, the LLM audits importance ratings for memories with importance >= 6 (excluding CORE/CORE_EXTENSION):
+- LLM recommends whether each memory's importance rating is accurate
+- Adjustments are gradual: at most ±1 per synthesis cycle
+- A memory wrongly rated 10 that should be 5 will take 5 cycles to fully calibrate
+- This prevents importance inflation and allows memories to find their "true" level organically
+- Stats include `importanceAdjusted` count
 
 #### `sys_continuity_turn_synthesis`
 
@@ -2098,10 +2150,19 @@ LLM-powered pathway for per-memory consolidation decisions during Phase 1 (Conso
 ```
 
 **Decision Types**:
-- **ABSORB**: Fresh memory is redundant. Delete it, optionally boost target's importance.
-- **MERGE**: Combine fresh and target into one richer first-person memory.
+- **ABSORB**: Fresh memory is redundant. Delete it (target keeps its importance, no inflation).
+- **MERGE**: Combine fresh and target into one memory. Subject to **drift check** - if the merged content drifts too far from sources, automatically falls back to LINK.
 - **LINK**: Keep fresh but create graph edge to target.
 - **KEEP**: Fresh is distinct, no changes needed.
+
+**Drift Check on MERGE**:
+When the LLM generates merged content, the system:
+1. Embeds the merged content (M')
+2. Compares to fresh (M) and target (S) vectors
+3. Applies half-drift rule: `sim(M', M) >= (1 + sim(M,S)) / 2`
+4. If merge would drift too much → automatically falls back to LINK
+
+This prevents "mega-memories" where related-but-distinct memories get combined into bloated narratives.
 
 **Integration**: Called by `NarrativeSynthesizer.runSleepSynthesis()` for each unprocessed memory.
 
@@ -2113,6 +2174,7 @@ Deep synthesis models human sleep consolidation in a unified two-phase "sleep cy
 Walks through unprocessed memories one at a time, finding related memories and deciding how to integrate:
 - Uses semantic similarity + graph edges to find related memories
 - Per-memory decisions: ABSORB, MERGE, LINK, or KEEP  
+- **MERGE includes drift check** - if LLM-generated merge drifts too far, falls back to LINK
 - Marks memories as processed (resumable via `sleep-processed` tag)
 - More focused LLM context (1 fresh + ~10 related)
 - Incremental and efficient - processes memories as they arrive
@@ -2120,6 +2182,8 @@ Walks through unprocessed memories one at a time, finding related memories and d
 #### Phase 2: Discovery (Batch Pattern Recognition)
 Batch analysis across memories for higher-order insights:
 - Processes memories in batches of 50 with 20% overlap (to catch patterns split across boundaries)
+- **Consolidations include drift check** - synthesized content must stay close to source centroid (>= 0.80) and individual sources (>= 0.70)
+- If drift check fails, sources are linked together instead of replaced
 - Pattern recognition → **nominations** for CORE_EXTENSION (not direct promotion)
 - Contradiction detection
 - Serendipitous connections across unrelated memories
@@ -2192,22 +2256,30 @@ All continuity memory operations use MongoDB Atlas directly through the MongoDB 
 All memory storage operations (both automatic synthesis and explicit tool storage) use intelligent deduplication to prevent redundant entries and strengthen recurring patterns.
 
 **How it works**:
-1. When storing a new memory, the system searches for semantically similar existing memories (cosine similarity > 0.85)
-2. If duplicates are found, they are merged into a single, stronger memory:
-   - Content is synthesized via LLM if significantly different, otherwise longest is kept
-   - Importance is boosted based on frequency (max +2 boost, cap at 10)
+1. When storing a new memory (M), the system searches for semantically similar existing memories (S) with cosine similarity > 0.75
+2. If similar memories are found, the LLM attempts to merge them
+3. **Drift Check**: Before accepting the merge, the system embeds the merged content (M') and verifies:
+   - M' stays close to M: `sim(M', M) >= (1 + sim(M,S)) / 2` (half-drift rule)
+   - M' doesn't drift from S: `sim(M', S) >= sim(M, S)`
+4. If drift check **PASSES**: Merge is accepted
+   - Content from LLM synthesis
+   - Importance is max of sources (no artificial boost)
    - Tags are combined and deduplicated
    - Emotional states are resolved (most intense wins)
-   - Relational context is merged (shared vocabulary combined, arrays merged)
-   - Recall counts are summed
-   - Confidence is averaged with corroboration boost
-   - Oldest timestamp is preserved as origin
-3. Old duplicate memories are deleted, replaced by the consolidated entry
+   - Relational context is merged
+   - Oldest timestamp is preserved
+   - Old duplicate memories are deleted
+5. If drift check **FAILS**: Fall back to LINK
+   - Both memories are preserved
+   - Bidirectional graph edge created between them
+   - No information is lost
+
+This drift-checking mechanism prevents "mega-memories" where the LLM expands rather than consolidates, while still allowing true deduplication.
 
 **Configuration**:
 ```javascript
 const service = getContinuityMemoryService({
-    dedupThreshold: 0.85,  // Similarity threshold (0-1)
+    dedupThreshold: 0.75,  // Similarity threshold (0-1)
     maxClusterSize: 5      // Max memories to merge in one operation
 });
 ```
@@ -2223,6 +2295,79 @@ await service.addMemory(entityId, userId, memory);
 // Batch consolidation of existing memories
 await service.consolidateMemories(entityId, userId, { type: 'ANCHOR' });
 ```
+
+### 8.3 Semantic Drift Checking (Mega-Memory Prevention)
+
+A key challenge with LLM-driven memory consolidation is **semantic drift** - when the LLM "helpfully" expands related memories into a single narrative that covers more territory than either source. Over multiple synthesis cycles, this creates "mega-memories" that are too broad for effective semantic retrieval.
+
+**The Problem:**
+```
+Memory A: "Jason enjoys 80s movies"
+Memory B: "Jason quotes Back to the Future often"
+LLM Merge: "Jason loves 80s movies like Back to the Future, enjoys quoting them, 
+            appreciates the synthesizer soundtracks of that era, and has a nostalgic
+            connection to Reagan-era pop culture..."  ← EXPANDED, not consolidated!
+```
+
+**The Solution: Drift Checking**
+
+After the LLM generates merged content, the system embeds it and compares to source vectors:
+
+```javascript
+import { checkMergeDrift, cosineSimilarity } from './types.js';
+
+// M = new memory, S = existing similar memory, M' = merged result
+const driftCheck = checkMergeDrift(mVector, sVector, mergedVector);
+
+if (!driftCheck.valid) {
+    // Merge expanded beyond sources - fall back to LINK
+    await linkMemories(fresh.id, target.id);
+} else {
+    // Merge stayed close to sources - proceed with consolidation
+    await storeMemory(mergedContent);
+}
+```
+
+**Half-Drift Rule:**
+- `minSimToM = (1 + originalSim) / 2`
+- If original similarity is 0.80, merged must stay within 0.90 of M
+- Preserves the new information while allowing integration
+
+**Thresholds:**
+
+| Context | Check | Threshold |
+|---------|-------|-----------|
+| Write-time dedup | sim(M', M) | >= (1 + sim(M,S)) / 2 |
+| Write-time dedup | sim(M', S) | >= sim(M, S) |
+| Phase 1 MERGE | Same as above | Same as above |
+| Phase 2 consolidation | sim(M', centroid) | >= 0.80 |
+| Phase 2 consolidation | sim(M', each source) | >= 0.70 |
+
+**Fallback Behavior:**
+When drift check fails, the system doesn't lose information - it falls back to LINK:
+- Both memories are preserved intact
+- Bidirectional graph edge connects them
+- Future queries can traverse the relationship
+- No semantic dilution
+
+**Utilities:**
+```javascript
+// lib/continuity/types.js
+
+// Calculate cosine similarity between vectors
+export function cosineSimilarity(a, b) { ... }
+
+// Check if a merge would cause unacceptable drift
+export function checkMergeDrift(mVector, sVector, mergedVector) {
+    // Returns { valid, mergedToM, mergedToS, originalSim, minSimToM }
+}
+```
+
+**Importance Handling:**
+To prevent importance inflation, merges use `max(sources)` rather than boosting:
+- Write-time dedup: `max(...importances)` 
+- Phase 1 MERGE: `max(fresh.importance, target.importance)`
+- Phase 2 consolidation: `max(...sourceMemories.map(m => m.importance))`
 
 ## 9. Tools for Entity
 
@@ -2582,6 +2727,9 @@ node scripts/run-deep-synthesis.js --all
 # Custom limits per phase
 node scripts/run-deep-synthesis.js --phase1-max 50 --phase2-max 100
 
+# Process specific memories (for testing or selective synthesis)
+node scripts/run-deep-synthesis.js --memory-ids mem-abc123,mem-def456,mem-ghi789
+
 # Custom Cortex server
 node scripts/run-deep-synthesis.js --cortex-url http://localhost:5000
 ```
@@ -2589,6 +2737,7 @@ node scripts/run-deep-synthesis.js --cortex-url http://localhost:5000
 **Options:**
 - `--entityId <id>`: Entity identifier (default: from `CONTINUITY_DEFAULT_ENTITY_ID` env var)
 - `--userId <id>`: User/context identifier
+- `--memory-ids <ids>`: Comma-separated list of specific memory IDs to process. Overrides normal selection (unprocessed/time-based). Useful for testing or selective synthesis.
 - `--phase1-max <n>`: Maximum memories for consolidation (default: 100)
 - `--phase2-max <n>`: Maximum memories for discovery (default: 100)
 - `--max <n>`: Shorthand - sets Phase 1 limit; Phase 2 gets at least 50 (one batch)
@@ -3077,6 +3226,69 @@ Before implementing:
 4. **Backup/Restore**: How do we backup/restore the Redis hot memory structures?
 
 5. **Cost**: What's the expected MongoDB Atlas query volume? Should we implement more aggressive caching?
+
+---
+
+## 12. Debugging
+
+### Continuity Logging Mode
+
+A specialized logging mode that shows ONLY continuity memory operations in a clean, readable format, suppressing all other cortex logs. This is useful for visualizing what context is being sent to the AI agent and what synthesis operations are happening.
+
+**Enable:**
+```bash
+CORTEX_LOG_MODE=continuity npm start
+```
+
+**What it shows:**
+
+1. **Context Blocks** - The full continuity context being assembled for the LLM prompt
+   - Core directives, expression state, internal compass, relational anchors, artifacts
+   - Memory type counts
+   - Color-coded section headers
+
+2. **Turn Recording** - When user/assistant turns are recorded
+   - Role indicator (👤 user / 🤖 assistant)
+   - Content preview
+
+3. **Synthesis Actions** - High-level synthesis operations
+   - ⚡ `TURN SYNTHESIS` - Extraction of anchors, artifacts, identity from conversation
+   - 🧭 `COMPASS UPDATE` - Internal Compass synthesis/update
+   - 🔮 `DEEP SYNTHESIS` - Background consolidation and pattern discovery
+   - 🚀 `SESSION INIT` - New session initialization
+   - 🌙 `SESSION END` - Session expiry (triggers compass + deep synthesis)
+   - 💾 `STORE MEMORY` - New memory stored
+   - 🔗 `MERGE MEMORY` - Duplicate memories merged
+
+4. **Internal Compass** - Detailed view of the temporal narrative
+   - Vibe, Recent Topics (5 most recent), Recent Story, Open Loops, My Note sections
+   - Color-coded for readability
+
+**Example output:**
+```
+━━━ CONTEXT BLOCK ━━━ [14:32:15] luna/user-123
+Memories: CORE:2 ANCHOR:5 ARTIFACT:1
+┌──────────────────────────────────────────────────────────────────────
+│ ## Core Directives
+│ ...
+│ ## My Internal Compass
+│ *What we've been doing together:*
+│ 
+│ Vibe: High-energy technical collaboration.
+│ ...
+└──────────────────────────────────────────────────────────────────────
+
+[14:32:16] 👤 RECORD luna/user-123
+  └─ "Can you help me with the notification permissions?"
+
+[14:32:18] 🤖 RECORD luna/user-123
+  └─ "Of course! What error are you seeing?"
+
+[14:32:20] ⚡ TURN SYNTHESIS luna/user-123
+  └─ 1 new memories
+```
+
+**Note:** This mode completely suppresses standard cortex logs - only continuity operations are shown.
 
 ---
 

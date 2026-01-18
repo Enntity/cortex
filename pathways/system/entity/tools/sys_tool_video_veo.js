@@ -81,7 +81,7 @@ export default {
         icon: "🎬",
         function: {
             name: "GenerateVideo",
-            description: "Use when asked to create, generate, or produce video content. This tool generates short 8-second video clips from text descriptions and optional reference images using Google's Veo 3.1 Fast model. The videos are high quality with AI-generated audio. Perfect for creating promotional clips, visual demonstrations, animated scenes, or bringing still images to life. This tool does not display the video to the user - you need to do that with image markdown in your response. This is for SFW videos only - the safety filters are strict.",
+            description: "Use when asked to create, generate, or produce video content. This tool generates short 8-second video clips from text descriptions and optional reference images using Google's Veo 3.1 Fast model. The videos are high quality with AI-generated audio. Perfect for creating promotional clips, visual demonstrations, animated scenes, or bringing still images to life. This tool is slow and expensive so use it sparingly. This tool does not display the video to the user - you need to do that with image markdown in your response. This is for SFW videos only - the safety filters are strict.",
             parameters: {
                 type: "object",
                 properties: {

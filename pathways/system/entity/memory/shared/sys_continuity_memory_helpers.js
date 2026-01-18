@@ -146,17 +146,27 @@ export async function storeContinuityMemory({
         };
     }
     
+    // Build response message
+    let message;
+    if (result.merged) {
+        message = `Memory stored successfully and merged with ${result.mergedCount} similar existing memories. The consolidated memory has ID: ${result.id}`;
+    } else if (result.linked) {
+        message = `Memory stored successfully with ID: ${result.id} and linked to similar memory ${result.linkedTo}`;
+    } else {
+        message = `Memory stored successfully with ID: ${result.id}`;
+    }
+    
     // Build response
     const response = {
         success: true,
-        message: result.merged 
-            ? `Memory stored successfully and merged with ${result.mergedCount} similar existing memories. The consolidated memory has ID: ${result.id}`
-            : `Memory stored successfully with ID: ${result.id}`,
+        message,
         memoryId: result.id,
         type: memoryType,
         importance: memory.importance,
         merged: result.merged,
         mergedCount: result.mergedCount || 0,
+        linked: result.linked || false,
+        linkedTo: result.linkedTo || null,
         content: content.trim().substring(0, 100) + (content.length > 100 ? '...' : '') // Preview for confirmation
     };
     

@@ -7,8 +7,11 @@
  * PHASE 1: CONSOLIDATION - Per-memory processing (sleep-style)
  * PHASE 2: DISCOVERY - Batch pattern recognition
  * 
- * Input: entityId, userId, phase1Max, phase2Max, daysToLookBack, runPhase1, runPhase2
+ * Input: entityId, userId, phase1Max, phase2Max, daysToLookBack, runPhase1, runPhase2, memoryIds
  * Output: JSON with consolidation results
+ * 
+ * When memoryIds is provided, only those specific memories are processed,
+ * bypassing the normal selection logic (unprocessed/time-based).
  */
 
 import { getContinuityMemoryService } from '../../../../lib/continuity/index.js';
@@ -22,6 +25,7 @@ export default {
     inputParameters: {
         entityId: ``,       // Entity identifier (AI name)
         userId: ``,         // User/context identifier
+        memoryIds: { type: 'array', items: { type: 'string' }, default: [] },  // Specific memory IDs to process (overrides normal selection)
         phase1Max: { type: 'integer', default: 100 },  // Max memories for consolidation
         phase2Max: { type: 'integer', default: 100 },  // Max memories for discovery
         daysToLookBack: { type: 'integer', default: 90 }, // How far back to look (null/0 = all memories)
@@ -34,6 +38,7 @@ export default {
         const { 
             entityId, 
             userId, 
+            memoryIds = null,
             phase1Max = 100, 
             phase2Max = 100, 
             daysToLookBack = 90,
@@ -77,8 +82,11 @@ export default {
                 });
             }
             
-            logger.info(`Starting deep synthesis for ${entityId}/${userId} (Phase 1: ${runPhase1}, Phase 2: ${runPhase2})`);
-            publishProgress(0.05, null, { phase: 'initializing', message: 'Starting deep synthesis...' });
+            // Normalize memoryIds - treat empty array as null
+            const selectedIds = (memoryIds && memoryIds.length > 0) ? memoryIds : null;
+            
+            logger.info(`Starting deep synthesis for ${entityId}/${userId} (Phase 1: ${runPhase1}, Phase 2: ${runPhase2}${selectedIds ? `, selected: ${selectedIds.length} memories` : ''})`);
+            publishProgress(0.05, null, { phase: 'initializing', message: selectedIds ? `Processing ${selectedIds.length} selected memories...` : 'Starting deep synthesis...' });
             
             const results = {
                 phase1: null,
@@ -91,6 +99,7 @@ export default {
                 publishProgress(0.1, null, { phase: 'phase1', message: 'Starting consolidation phase...' });
                 
                 const phase1Result = await service.runSleepSynthesis(entityId, userId, {
+                    memoryIds: selectedIds,
                     maxToProcess: phase1Max,
                     maxLookbackDays: daysToLookBack === 0 || daysToLookBack === null ? null : daysToLookBack,
                     windowSize: 20,
@@ -112,6 +121,7 @@ export default {
                 publishProgress(0.55, null, { phase: 'phase2', message: 'Starting discovery phase...' });
                 
                 const phase2Result = await service.runDeepSynthesis(entityId, userId, {
+                    memoryIds: selectedIds,
                     maxMemories: phase2Max,
                     daysToLookBack: daysToLookBack === 0 || daysToLookBack === null ? null : daysToLookBack
                 });

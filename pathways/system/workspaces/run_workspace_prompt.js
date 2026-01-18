@@ -15,7 +15,7 @@ export default {
         systemPrompt: "",
         chatHistory: [{role: '', content: []}],
         text: "",
-        entityId: "labeeb",
+        entityId: "enntity",
         aiName: "Jarvis",
         language: "English",
         model: "oai-gpt41", // Allow user to specify model

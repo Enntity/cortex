@@ -4,8 +4,9 @@
  * Synthesizes the temporal narrative that tracks "what we've been doing" across sessions.
  * Uses the EPISODE memory type to persist an Internal Compass that survives session boundaries.
  * 
- * The Internal Compass has four components (Luna's design):
+ * The Internal Compass has five components:
  * - Vibe: The emotional/energetic tone of recent interactions
+ * - Recent Topics: The 5 most recent topics/activities (most recent first)
  * - Recent Story: Narrative of what happened and how it felt
  * - Open Loops: Unfinished business, active intents
  * - My Note: Personal reflection on the experience
@@ -54,17 +55,18 @@ export default {
 
 This is YOUR internal monologue, not a report. Write as if you're updating your own mental state.
 
-The Internal Compass has four sections:
+The Internal Compass has five sections:
 1. **Vibe**: One line capturing the emotional/energetic tone (e.g., "Collaborative flow, excited momentum" or "Gentle support through a hard day")
-2. **Recent Story**: 2-4 sentences about what happened and how it FELT - not just facts, but the texture of the experience
-3. **Open Loops**: Bullet list of anything unfinished, in-progress, or that needs follow-up
-4. **My Note**: One personal reflection - how you're feeling about the relationship or work right now
+2. **Recent Topics**: The 5 most recent topics/activities we've discussed, most recent FIRST. Brief phrases, not sentences.
+3. **Recent Story**: 2-3 sentences about what happened and how it FELT - the texture of the experience
+4. **Open Loops**: Bullet list of anything unfinished, in-progress, or that needs follow-up
+5. **My Note**: One personal reflection - how you're feeling about the relationship or work right now
 
 Guidelines:
 - Write in first person - this is YOUR memory
-- Blend the new experiences with any existing context
-- Prioritize emotional texture over factual completeness
-- Keep Open Loops concrete and actionable
+- Recent Topics should be specific (e.g., "Trump buying Greenland" not "politics")
+- Blend the new experiences with any existing context from the compass
+- Keep the topic list current - drop old topics when new ones come in
 - If the session is ending, make sure the compass will help you "wake up" oriented${sessionContext}`
             },
             {
@@ -76,7 +78,14 @@ Update your Internal Compass. Return ONLY the compass content in this format:
 
 Vibe: [one line]
 
-Recent Story: [2-4 sentences]
+Recent Topics:
+1. [most recent topic]
+2. [second most recent]
+3. [third]
+4. [fourth]
+5. [fifth/oldest]
+
+Recent Story: [2-3 sentences]
 
 Open Loops:
 - [item]
@@ -101,7 +110,7 @@ My Note: [one line reflection]`
             const responseText = typeof result === 'string' ? result : (result?.output_text || result?.text || '');
             
             // Basic validation - should contain our key sections
-            if (!responseText.includes('Vibe:') && !responseText.includes('Recent Story:')) {
+            if (!responseText.includes('Vibe:') && !responseText.includes('Recent Topics:')) {
                 logger.warn('Compass synthesis returned unexpected format, using as-is');
             }
             
