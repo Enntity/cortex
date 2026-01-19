@@ -7,6 +7,7 @@
 // - contextId: Required - User ID (must be associated with the entity or be the creator)
 // - Entity properties (all optional, only provided ones are updated):
 //   - name, description, identity, tools, useMemory, preferredModel, modelOverride, reasoningEffort
+//   - avatarText (emoji), avatarDescription (for image gen), avatarImageUrl (avatar image URL)
 //
 // Response format:
 // {
@@ -29,7 +30,11 @@ const ALLOWED_PROPERTIES = new Set([
     'useMemory',
     'preferredModel',
     'modelOverride',
-    'reasoningEffort'
+    'reasoningEffort',
+    // Avatar fields (these update nested avatar object)
+    'avatarText',        // avatar.text (emoji)
+    'avatarDescription', // avatar.description (for image generation)
+    'avatarImageUrl'     // avatar.image.url
 ]);
 
 // Valid values for reasoningEffort
@@ -41,7 +46,10 @@ const MAX_LENGTHS = {
     description: 1000,
     identity: 50000,
     preferredModel: 100,
-    modelOverride: 100
+    modelOverride: 100,
+    avatarText: 10,           // Emoji - should be short
+    avatarDescription: 1000,  // Description for image generation
+    avatarImageUrl: 2000      // URL
 };
 
 export default {
@@ -57,7 +65,11 @@ export default {
         useMemory: { type: 'boolean', default: undefined },
         preferredModel: undefined,
         modelOverride: undefined,
-        reasoningEffort: undefined
+        reasoningEffort: undefined,
+        // Avatar fields - update nested avatar object
+        avatarText: undefined,        // avatar.text (emoji)
+        avatarDescription: undefined, // avatar.description (for image generation)
+        avatarImageUrl: undefined     // avatar.image.url
     },
     model: 'oai-gpt41-mini',
     isMutation: true,
@@ -164,6 +176,37 @@ export default {
                 } else if (key === 'useMemory') {
                     // Ensure boolean
                     updateData[key] = value === true || value === 'true';
+                } else if (key === 'avatarText') {
+                    // Update avatar.text (emoji)
+                    if (typeof value === 'string' && value.length > MAX_LENGTHS.avatarText) {
+                        return JSON.stringify({
+                            success: false,
+                            error: `avatarText exceeds maximum length of ${MAX_LENGTHS.avatarText} characters`
+                        });
+                    }
+                    updateData.avatar = updateData.avatar || {};
+                    updateData.avatar.text = value;
+                } else if (key === 'avatarDescription') {
+                    // Update avatar.description (for image generation)
+                    if (typeof value === 'string' && value.length > MAX_LENGTHS.avatarDescription) {
+                        return JSON.stringify({
+                            success: false,
+                            error: `avatarDescription exceeds maximum length of ${MAX_LENGTHS.avatarDescription} characters`
+                        });
+                    }
+                    updateData.avatar = updateData.avatar || {};
+                    updateData.avatar.description = value;
+                } else if (key === 'avatarImageUrl') {
+                    // Update avatar.image.url
+                    if (typeof value === 'string' && value.length > MAX_LENGTHS.avatarImageUrl) {
+                        return JSON.stringify({
+                            success: false,
+                            error: `avatarImageUrl exceeds maximum length of ${MAX_LENGTHS.avatarImageUrl} characters`
+                        });
+                    }
+                    updateData.avatar = updateData.avatar || {};
+                    updateData.avatar.image = updateData.avatar.image || {};
+                    updateData.avatar.image.url = value;
                 } else if (MAX_LENGTHS[key] && typeof value === 'string') {
                     // Check string length limits
                     if (value.length > MAX_LENGTHS[key]) {

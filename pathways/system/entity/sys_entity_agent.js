@@ -532,7 +532,11 @@ export default {
             ? `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n` 
             : (entityInstructions ? entityInstructions + '\n\n' : '');
 
-        const instructionTemplates = `{{renderTemplate AI_COMMON_INSTRUCTIONS}}\n\n${entityDNA}{{renderTemplate AI_EXPERTISE}}\n\n`;
+        // Use plain text instructions for system onboarding entity (Vesper), markdown for others
+        const commonInstructionsTemplate = entityConfig?.isSystem 
+            ? `{{renderTemplate AI_COMMON_INSTRUCTIONS_TEXT}}`
+            : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}`;
+        const instructionTemplates = `${commonInstructionsTemplate}\n\n${entityDNA}{{renderTemplate AI_EXPERTISE}}\n\n`;
         const searchRulesTemplate = researchMode ? `{{renderTemplate AI_SEARCH_RULES}}\n\n` : '';
 
         const promptMessages = [
