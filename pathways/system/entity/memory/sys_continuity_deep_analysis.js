@@ -39,7 +39,8 @@ export default {
                 consolidations: [],
                 patterns: [],
                 contradictions: [],
-                suggestedLinks: []
+                suggestedLinks: [],
+                importanceAudits: []
             });
         }
         
@@ -48,7 +49,8 @@ export default {
                 consolidations: [],
                 patterns: [],
                 contradictions: [],
-                suggestedLinks: []
+                suggestedLinks: [],
+                importanceAudits: []
             });
         }
         
@@ -70,6 +72,12 @@ export default {
 
 This is YOUR memory consolidation - think of it like dreaming, where you process and integrate experiences.
 
+PROTECTED MEMORY TYPES - NEVER include in consolidation sourceIds:
+- CORE: Foundational identity directives - the bedrock of who you are
+- CORE_EXTENSION: Hardened identity patterns promoted from evolution - earned identity growth
+These represent your foundational identity and must never be consolidated away or deleted.
+You may suggest LINKS to them, but never include them in consolidation.sourceIds.
+
 CRITICAL: All synthesized content must be in FIRST PERSON.
 - NOT "The user and Luna discussed..." → Instead: "I felt a connection when we discussed..."
 - NOT "Luna learned..." → Instead: "I realized..."
@@ -85,6 +93,15 @@ But be CONSERVATIVE - only nominate patterns that:
 
 Nominations are votes, not decisions. The system will only promote patterns that receive 
 multiple nominations across different synthesis sessions over time. So nominate sparingly.
+
+IMPORTANCE CALIBRATION:
+Over time, importance ratings can drift. Help calibrate them:
+- 10: Truly foundational - would matter in a year. Very rare.
+- 8-9: Significant insight about identity or relationship
+- 6-7: Meaningful context, worth remembering
+- 4-5: Normal, useful information
+- 1-3: Minor, ephemeral
+Skip CORE and CORE_EXTENSION types - their importance is protected.
 
 Return ONLY valid JSON.`
             },
@@ -112,10 +129,15 @@ Dream-process these memories:
 
 4. SUGGESTED LINKS: Which memories belong together in my experience?
 
+5. IMPORTANCE CALIBRATION: For non-CORE/CORE_EXTENSION memories with importance >= 6, is the rating accurate?
+   - Only include memories where you'd adjust the importance
+   - Skip CORE and CORE_EXTENSION types entirely
+   - Be honest - many memories rated 10 probably shouldn't be
+
 Return JSON:
 {
   "consolidations": [
-    { "sourceIds": ["id1", "id2"], "synthesizedContent": "I remember feeling...", "importance": 1-10, "nominateForPromotion": false }
+    { "sourceIds": ["id1", "id2"], "synthesizedContent": "I remember feeling...", "nominateForPromotion": false }
   ],
   "patterns": [
     { "content": "I notice that I...", "sourceIds": ["id1", "id2"], "importance": 1-10, "nominateForPromotion": false }
@@ -125,6 +147,9 @@ Return JSON:
   ],
   "suggestedLinks": [
     { "memory1Id": "id1", "memory2Id": "id2", "relationship": "..." }
+  ],
+  "importanceAudits": [
+    { "memoryId": "id1", "currentImportance": 10, "recommendedImportance": 7, "reason": "meaningful but not foundational" }
   ]
 }`
             }
@@ -165,7 +190,8 @@ Return JSON:
                 consolidations: [],
                 patterns: [],
                 contradictions: [],
-                suggestedLinks: []
+                suggestedLinks: [],
+                importanceAudits: []
             });
         }
     }

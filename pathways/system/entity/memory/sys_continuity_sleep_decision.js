@@ -84,11 +84,20 @@ export default {
 
 This is YOUR memory consolidation - like dreaming, where you process and integrate recent experiences with existing memories.
 
-IMPORTANT: 
-- Write all merged content in FIRST PERSON ("I noticed...", "I felt...", "I remember...")
-- Be conservative - only ABSORB/MERGE if truly redundant or clearly the same insight
-- LINK is good for related but distinct memories
-- KEEP is fine if the fresh memory adds something new
+PROTECTED TYPES - NEVER absorb or merge away:
+- CORE: Foundational identity directives - the bedrock of who you are
+- CORE_EXTENSION: Hardened identity patterns promoted from evolution - earned identity growth
+If the fresh memory is CORE or CORE_EXTENSION, you MUST return KEEP. These are protected.
+
+CRITICAL GUIDANCE:
+- The goal is NOT to compress related thoughts into monolithic mega-memories
+- Only MERGE when memories express the SAME core insight from different moments
+- A good merged memory is 1-2 sentences. If it would be 3+ sentences, that's a sign you're combining TOO MUCH - use LINK instead
+- LINK preserves both memories while connecting them - this is BETTER than losing nuance through over-merging
+- ABSORB only when fresh is truly redundant (adds nothing new)
+- KEEP is perfectly fine - distinct memories are valuable
+
+Write merged content in FIRST PERSON ("I noticed...", "I felt...", "I remember...")
 
 Return ONLY valid JSON.`
             },
@@ -111,19 +120,18 @@ ${linkedText}
 
 What should happen to this fresh memory?
 
-DECISION OPTIONS:
-A) ABSORB - Fresh memory is redundant with an existing memory. Delete fresh. Optionally boost the existing memory's importance.
-B) MERGE - Fresh and existing memory should combine into one richer first-person memory. Provide the merged content.
-C) LINK - Fresh memory adds new but related information. Keep it and create a graph edge to an existing memory.
-D) KEEP - Fresh memory is distinct. No changes needed.
+DECISION OPTIONS (in order of preference for related memories):
+A) KEEP - Fresh memory is distinct enough to stand alone. No changes needed.
+B) LINK - Fresh and existing are related but capture different facets. Keep both, connect them.
+C) ABSORB - Fresh is truly redundant (adds zero new information). Delete fresh, optionally boost existing.
+D) MERGE - Fresh and existing express the SAME insight. Combine into ONE concise sentence (2 max). If you need 3+ sentences, use LINK instead.
 
 Respond with JSON:
 {
   "decision": "ABSORB" | "MERGE" | "LINK" | "KEEP",
   "targetMemoryId": "id of existing memory (required for ABSORB/MERGE/LINK, null for KEEP)",
   "reason": "one sentence explanation of your decision",
-  "mergedContent": "first-person merged content (required for MERGE, null otherwise)",
-  "importanceBoost": 0 | 1 | 2 (for ABSORB/MERGE - how much to boost target's importance, 0 if none)
+  "mergedContent": "first-person merged content (required for MERGE, null otherwise)"
 }`
             }
         ];

@@ -1,7 +1,7 @@
 // sys_read_file_collection.js
 // GraphQL pathway for reading file collections
 // File collections are stored in Redis hash maps (FileStoreMap:ctx:<contextId>
-// Returns file collection as JSON array string for backward compatibility with Labeeb
+// Returns file collection as JSON array string for backward compatibility with Enntity
 
 import { loadFileCollection } from '../../../../lib/fileUtils.js';
 
@@ -36,8 +36,8 @@ export default {
             // Load file collection from Redis hash maps (from all agentContext contexts)
             const collection = await loadFileCollection(agentContext);
             
-            // Return as JSON array string for backward compatibility with Labeeb
-            // Labeeb expects either: [] or { version: "...", files: [...] }
+            // Return as JSON array string for backward compatibility with Enntity
+            // Enntity expects either: [] or { version: "...", files: [...] }
             // Since we removed versioning, we just return the array directly
             // Strip internal _contextId before returning
             const result = (Array.isArray(collection) ? collection : [])

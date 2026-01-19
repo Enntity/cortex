@@ -173,8 +173,8 @@ export default {
                     throw new Error(`Entity not found: ${entityIdForAvatar}`);
                 }
                 
-                // Use flux-2-klein-4b for all avatar generation (fastest option)
-                model = "replicate-flux-2-klein-4b";
+                // Use qwen-image-edit-2511 for all avatar generation (better quality image editing)
+                model = "replicate-qwen-image-edit-2511";
                 
                 // Get base avatar image from entity record
                 const baseAvatar = entityConfig.avatar?.image;
@@ -220,19 +220,17 @@ export default {
                 stream: false,
             };
             
-            // Configure avatar generation settings - flux-2-klein-4b fastest config
+            // Configure avatar generation settings - qwen-image-edit-2511 config
             if (isAvatar) {
                 params.aspectRatio = "1:1"; // Square aspect ratio for avatars
                 params.output_format = "webp"; // WebP for smaller file size
-                params.output_quality = 80; // Good quality but not max for speed
-                // Benchmark: go_fast + 0.25 MP was fastest for klein
-                params.output_megapixels = "0.25"; // Smallest/fastest option (~512px)
-                params.go_fast = true;
+                params.output_quality = 80; // Good quality
+                params.go_fast = true; // Run faster predictions with optimizations
                 params.disable_safety_checker = true;
                 
-                // If editing existing avatar, pass reference image
+                // If editing existing avatar, pass reference image as array (qwen expects image array)
                 if (resolvedBaseAvatarImage) {
-                    params.image = resolvedBaseAvatarImage;
+                    params.input_image = resolvedBaseAvatarImage;
                 }
             }
             

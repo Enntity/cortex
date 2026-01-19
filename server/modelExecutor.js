@@ -23,7 +23,6 @@ import Gemini3ImagePlugin from './plugins/gemini3ImagePlugin.js';
 import Gemini3ReasoningVisionPlugin from './plugins/gemini3ReasoningVisionPlugin.js';
 import Claude4VertexPlugin from './plugins/claude4VertexPlugin.js';
 import ClaudeAnthropicPlugin from './plugins/claudeAnthropicPlugin.js';
-import NeuralSpacePlugin from './plugins/neuralSpacePlugin.js';
 import RunwareAiPlugin from './plugins/runwareAiPlugin.js';
 import ReplicateApiPlugin from './plugins/replicateApiPlugin.js';
 import AzureVideoTranslatePlugin from './plugins/azureVideoTranslatePlugin.js';
@@ -69,9 +68,6 @@ class ModelExecutor {
                 break;
             case 'OPENAI-WHISPER':
                 plugin = new OpenAIWhisperPlugin(pathway, model);
-                break;
-            case 'NEURALSPACE':
-                plugin = new NeuralSpacePlugin(pathway, model);
                 break;
             case 'LOCAL-CPP-MODEL':
                 plugin = new LocalModelPlugin(pathway, model);

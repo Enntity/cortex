@@ -51,6 +51,7 @@ function parseArgs() {
     const args = {
         entityId: DEFAULTS.entityId,
         userId: DEFAULTS.userId,
+        memoryIds: null,
         phase1Max: null,
         phase2Max: null,
         daysToLookBack: DEFAULTS.daysToLookBack,
@@ -76,6 +77,11 @@ function parseArgs() {
                 break;
             case '--userId':
                 args.userId = process.argv[++i];
+                break;
+            case '--memory-ids':
+            case '--memoryIds':
+                // Accept comma-separated list of memory IDs
+                args.memoryIds = process.argv[++i].split(',').map(id => id.trim()).filter(id => id);
                 break;
             case '--phase1-max':
                 args.phase1Max = parseInt(process.argv[++i], 10);
@@ -139,6 +145,9 @@ OPTIONS:
   --phase1-only           Run consolidation only (skip discovery)
   --phase2-only           Run discovery only (skip consolidation)
   
+  --memory-ids <ids>      Process only these specific memory IDs (comma-separated)
+                          Overrides normal selection (unprocessed/time-based)
+  
   --phase1-max <n>        Max memories for consolidation (default: ${DEFAULTS.phase1Max})
   --phase2-max <n>        Max memories for discovery (default: ${DEFAULTS.phase2Max})
   --max <n>               Set Phase 1 limit; Phase 2 gets at least 50 (one batch)
@@ -164,6 +173,9 @@ EXAMPLES:
   
   # Just consolidation
   node scripts/run-deep-synthesis.js --phase1-only
+  
+  # Process specific memories
+  node scripts/run-deep-synthesis.js --memory-ids mem-abc123,mem-def456,mem-ghi789
   
   # Process everything
   node scripts/run-deep-synthesis.js --all
@@ -196,6 +208,7 @@ async function callDeepSynthesis(graphqlUrl, args) {
         query DeepSynthesis(
             $entityId: String!
             $userId: String!
+            $memoryIds: [String]
             $phase1Max: Int
             $phase2Max: Int
             $daysToLookBack: Int
@@ -206,6 +219,7 @@ async function callDeepSynthesis(graphqlUrl, args) {
             sys_continuity_deep_synthesis(
                 entityId: $entityId
                 userId: $userId
+                memoryIds: $memoryIds
                 phase1Max: $phase1Max
                 phase2Max: $phase2Max
                 daysToLookBack: $daysToLookBack
@@ -221,6 +235,7 @@ async function callDeepSynthesis(graphqlUrl, args) {
     const variables = {
         entityId: args.entityId,
         userId: args.userId,
+        memoryIds: args.memoryIds,
         phase1Max: args.phase1Max,
         phase2Max: args.phase2Max,
         daysToLookBack: args.daysToLookBack,
@@ -365,6 +380,9 @@ function displayStats(stats, phase) {
         console.log(`  Merged:    ${stats.merged || 0} (combined)`);
         console.log(`  Linked:    ${stats.linked || 0} (new connections)`);
         console.log(`  Kept:      ${stats.kept || 0} (distinct)`);
+        if (stats.shorthandsConsolidated > 0) {
+            console.log(`  Shorthands: ${stats.shorthandsConsolidated} consolidated (${stats.shorthandsDeleted || 0} deleted)`);
+        }
         if (stats.errors > 0) {
             console.log(`  Errors:    ${stats.errors}`);
         }
@@ -373,6 +391,9 @@ function displayStats(stats, phase) {
         console.log(`  Patterns:     ${stats.patterns || 0} (new insights)`);
         console.log(`  Nominations:  ${stats.nominations || 0} (identity candidates)`);
         console.log(`  Links:        ${stats.links || 0} (new connections)`);
+        if (stats.shorthandsConsolidated > 0) {
+            console.log(`  Shorthands:   ${stats.shorthandsConsolidated} consolidated`);
+        }
         
         if (stats.promotions) {
             const p = stats.promotions;
@@ -415,7 +436,11 @@ async function main() {
     console.log(`Cortex:  ${args.cortexUrl}`);
     console.log(`Entity:  ${args.entityId}`);
     console.log(`User:    ${args.userId}`);
-    console.log(`Lookback: ${args.daysToLookBack === null ? 'ALL' : args.daysToLookBack + ' days'}`);
+    if (args.memoryIds) {
+        console.log(`Selected: ${args.memoryIds.length} specific memories`);
+    } else {
+        console.log(`Lookback: ${args.daysToLookBack === null ? 'ALL' : args.daysToLookBack + ' days'}`);
+    }
     console.log(`Phases:  ${args.runPhase1 ? '1 (Consolidation)' : ''}${args.runPhase1 && args.runPhase2 ? ' + ' : ''}${args.runPhase2 ? '2 (Discovery)' : ''}`);
     console.log('');
     

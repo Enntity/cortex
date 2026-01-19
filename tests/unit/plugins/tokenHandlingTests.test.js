@@ -26,7 +26,7 @@ test('token count estimation accuracy', async (t) => {
   const plugin = new Claude3VertexPlugin(pathway, model);
   
   // Load large content from file (or use fallback if file doesn't exist)
-  const largeContent = loadTestData('largeContent.txt');
+  const largeContent = loadTestData('largecontent.txt');
   
   // Calculate the estimated token count using the sampling method
   const estimatedTokens = plugin.safeGetEncodedLength(largeContent);
@@ -64,7 +64,7 @@ test('safeGetEncodedLength with various content types', async (t) => {
   const plugin = new ModelPlugin(pathway, model);
   
   // Test with mixed content that might tokenize differently
-  const mixedContent = loadTestData('mixedContent.txt');
+  const mixedContent = loadTestData('largecontent.txt');
   
   // Split the mixed content into chunks to test with different segments
   const chunks = mixedContent.split('===').filter(chunk => chunk.trim().length > 0);
@@ -97,7 +97,7 @@ test('truncateMessagesToTargetLength preserves recent content', async (t) => {
   const plugin = new Claude3VertexPlugin(pathway, model);
   
   // Load test content
-  const largeContent = loadTestData('largeContent.txt');
+  const largeContent = loadTestData('largecontent.txt');
   
   // Create a conversation with mixed message sizes
   const messages = [
@@ -143,7 +143,7 @@ test('truncateMessagesToTargetLength preserves recent content', async (t) => {
 // Test getFirstNToken function
 test('getFirstNToken truncates text accurately', (t) => {
   // Load test content
-  const largeContent = loadTestData('largeContent.txt');
+  const largeContent = loadTestData('largecontent.txt');
   
   // Test with different token counts
   const tokenCounts = [100, 500, 1000, 100000];
@@ -335,7 +335,7 @@ Third paragraph with more content.`;
 // Test getFirstNTokenSingle with large content file
 test('getFirstNTokenSingle handles large content file', (t) => {
   // Load large content
-  const largeContent = loadTestData('largeContent.txt');
+  const largeContent = loadTestData('largecontent.txt');
   
   // Test with different token counts
   const tokenCounts = [100, 500, 1000, 2000];
@@ -381,7 +381,7 @@ test('handles messages exceeding token limit', async (t) => {
   plugin.promptParameters.manageTokenLength = true;
   
   // Load large content
-  const largeContent = loadTestData('largeContent.txt');
+  const largeContent = loadTestData('largecontent.txt');
   
   // Create a simple text prompt for testing
   class TestPrompt {
@@ -453,7 +453,7 @@ test('truncateMessagesToTargetLength handles very long content', async (t) => {
   const plugin = new Claude3VertexPlugin(pathway, model);
   
   // Load large content
-  const largeContent = loadTestData('largeContent.txt');
+  const largeContent = loadTestData('largecontent.txt');
   
   // Create a conversation with very long content
   const messages = [
@@ -524,7 +524,7 @@ test('truncateMessagesToTargetLength handles very long content for per message t
   const plugin = new Claude3VertexPlugin(pathway, model);
   
   // Load large content
-  const largeContent = loadTestData('largeContent.txt');
+  const largeContent = loadTestData('largecontent.txt');
   
   // Create a conversation with very long content
   const messages = [

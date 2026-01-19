@@ -37,7 +37,7 @@ test('should format cortex pathway arguments correctly with existing chatHistory
     
     // Mock pathway data
     const pathway = {
-        model: 'labeeb-agent',
+        model: 'enntity-agent',
         systemPrompt: 'Test system prompt'
     };
     
@@ -56,7 +56,7 @@ test('should format cortex pathway arguments correctly with existing chatHistory
     
     // Simulate the transformation logic from the executePathwayWithFallback function
     const cortexArgs = {
-        model: pathway.model || pathwayArgs.model || "labeeb-agent",
+        model: pathway.model || pathwayArgs.model || "enntity-agent",
         chatHistory: [],
         systemPrompt: pathway.systemPrompt
     };
@@ -106,7 +106,7 @@ test('should format cortex pathway arguments correctly with existing chatHistory
     }
     
     // Verify the transformation
-    t.is(cortexArgs.model, 'labeeb-agent');
+    t.is(cortexArgs.model, 'enntity-agent');
     t.is(cortexArgs.systemPrompt, 'Test system prompt');
     t.is(cortexArgs.chatHistory.length, 1);
     
@@ -137,7 +137,7 @@ test('should create new user message when no existing chatHistory', (t) => {
     
     // Mock pathway data
     const pathway = {
-        model: 'labeeb-agent',
+        model: 'enntity-agent',
         systemPrompt: 'Test system prompt'
     };
     
@@ -148,7 +148,7 @@ test('should create new user message when no existing chatHistory', (t) => {
     
     // Simulate the transformation logic from the executePathwayWithFallback function
     const cortexArgs = {
-        model: pathway.model || pathwayArgs.model || "labeeb-agent",
+        model: pathway.model || pathwayArgs.model || "enntity-agent",
         chatHistory: [],
         systemPrompt: pathway.systemPrompt
     };
@@ -198,7 +198,7 @@ test('should create new user message when no existing chatHistory', (t) => {
     }
     
     // Verify the transformation
-    t.is(cortexArgs.model, 'labeeb-agent');
+    t.is(cortexArgs.model, 'enntity-agent');
     t.is(cortexArgs.systemPrompt, 'Test system prompt');
     t.is(cortexArgs.chatHistory.length, 1);
     
@@ -234,11 +234,11 @@ test('should use default model when pathway model is not specified', (t) => {
     
     // Simulate the transformation logic
     const cortexArgs = {
-        model: pathway.model || pathwayArgs.model || "labeeb-agent",
+        model: pathway.model || pathwayArgs.model || "enntity-agent",
         chatHistory: [],
         systemPrompt: pathway.systemPrompt
     };
     
     // Verify default model is used
-    t.is(cortexArgs.model, 'labeeb-agent');
+    t.is(cortexArgs.model, 'enntity-agent');
 });

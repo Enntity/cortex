@@ -90,7 +90,7 @@ const executePathwayWithFallback = async (pathway, pathwayArgs, contextValue, in
         // Spread all pathway args first, then override specific fields
         const cortexArgs = {
             ...pathwayArgs, // Spread all pathway args
-            model: pathway.model || pathwayArgs.model || "labeeb-agent", // Use pathway model or default
+            model: pathway.model || pathwayArgs.model || "oai-gpt41", // Use pathway model or default
             chatHistory: pathwayArgs.chatHistory ? JSON.parse(JSON.stringify(pathwayArgs.chatHistory)) : [],
             systemPrompt: pathway.systemPrompt || pathwayArgs.systemPrompt
         };

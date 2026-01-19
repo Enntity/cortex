@@ -37,28 +37,38 @@ export default {
             return contents[0];
         }
         
+        // First content is the NEW memory (M), rest are existing similar memories (S)
+        const newMemory = contents[0];
+        const existingMemories = contents.slice(1);
+        
         const promptMessages = [
             {
                 role: "system",
-                content: `You are consolidating multiple versions of a memory into one coherent first-person memory.
+                content: `You are consolidating a new memory with similar existing memories.
 
-CRITICAL: The result must be in FIRST PERSON - this is someone's personal memory, not a report about them.
-- NOT "The entity learned..." → Instead: "I realized..."
-- NOT "The user prefers..." → Instead: "I've noticed they prefer..."
+CRITICAL RULES:
+1. The result must be in FIRST PERSON ("I realized...", "I've noticed...")
+2. PRESERVE the new memory's core meaning - don't lose what it specifically says
+3. Keep it CONCISE - one to two sentences maximum
+4. If you can't preserve the new memory's specifics while merging, just return the new memory unchanged
 
-Return ONLY the consolidated memory content. No explanation, no formatting, no metadata.`
+This is deduplication, not expansion. The goal is to avoid storing near-duplicates, NOT to create richer narratives.
+
+Return ONLY the consolidated memory content. No explanation, no formatting.`
             },
             {
                 role: "user",
-                content: `These memories capture the same insight from different angles:
+                content: `NEW MEMORY (must preserve its meaning):
+${newMemory}
 
-${contents.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+SIMILAR EXISTING MEMORY/MEMORIES:
+${existingMemories.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
-Merge them into ONE first-person memory that:
-- Feels like a single, rich experience
-- Captures the essential meaning from all versions
-- Preserves unique details or nuances
-- Starts with "I..." (first person)
+Merge into ONE first-person memory that:
+- Preserves the specific meaning of the NEW memory
+- Incorporates relevant context from existing memories IF it doesn't dilute the new memory
+- Stays concise (1-2 sentences)
+- If the memories are truly saying different things, just return the NEW memory unchanged
 
 Return ONLY the consolidated memory, nothing else.`
             }

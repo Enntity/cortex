@@ -999,10 +999,10 @@ test('updateFileMetadata should allow updating inCollection', async (t) => {
         t.is(success3, true);
         
         // Verify file still exists but inCollection is undefined (not in collection)
-        // When loading without chatIds, undefined files are included (Labeeb uploads, etc.)
+        // When loading without chatIds, undefined files are included (Enntity uploads, etc.)
         const collection4 = await loadFileCollection(contextId, { useCache: false });
         const file4 = collection4.find(f => f.id === fileId);
-        t.truthy(file4, 'File should still exist (false → undefined, treated same as Labeeb uploads)');
+        t.truthy(file4, 'File should still exist (false → undefined, treated same as Enntity uploads)');
         t.falsy(file4.inCollection, 'File should have undefined inCollection (not in collection)');
         
         // Not in chat-specific collection (undefined files don't match any chatId)
@@ -1127,25 +1127,25 @@ test('File collection: syncAndStripFilesFromChatHistory only strips collection f
     }
 });
 
-test('File collection: syncAndStripFilesFromChatHistory finds and syncs files without inCollection (Labeeb uploads)', async t => {
+test('File collection: syncAndStripFilesFromChatHistory finds and syncs files without inCollection (Enntity uploads)', async t => {
     const contextId = createTestContext();
     const chatId = `test-chat-${Date.now()}`;
     
     try {
         const { syncAndStripFilesFromChatHistory, writeFileDataToRedis, getRedisClient, loadFileCollection } = await import('../../../../lib/fileUtils.js');
         
-        // Create 3 files directly in Redis without inCollection set (simulating Labeeb uploads)
+        // Create 3 files directly in Redis without inCollection set (simulating Enntity uploads)
         const redisClient = await getRedisClient();
         t.truthy(redisClient, 'Redis client should be available');
         
         const contextMapKey = `FileStoreMap:ctx:${contextId}`;
         
         const file1 = {
-            url: 'https://example.com/labeeb-file-1.txt',
-            gcs: 'gs://bucket/labeeb-file-1.txt',
-            hash: 'hash-labeeb-1',
-            filename: 'labeeb-file-1.txt',
-            displayFilename: 'labeeb-file-1.txt',
+            url: 'https://example.com/enntity-file-1.txt',
+            gcs: 'gs://bucket/enntity-file-1.txt',
+            hash: 'hash-enntity-1',
+            filename: 'enntity-file-1.txt',
+            displayFilename: 'enntity-file-1.txt',
             mimeType: 'text/plain',
             addedDate: new Date().toISOString(),
             lastAccessed: new Date().toISOString(),
@@ -1156,11 +1156,11 @@ test('File collection: syncAndStripFilesFromChatHistory finds and syncs files wi
         };
         
         const file2 = {
-            url: 'https://example.com/labeeb-file-2.txt',
-            gcs: 'gs://bucket/labeeb-file-2.txt',
-            hash: 'hash-labeeb-2',
-            filename: 'labeeb-file-2.txt',
-            displayFilename: 'labeeb-file-2.txt',
+            url: 'https://example.com/enntity-file-2.txt',
+            gcs: 'gs://bucket/enntity-file-2.txt',
+            hash: 'hash-enntity-2',
+            filename: 'enntity-file-2.txt',
+            displayFilename: 'enntity-file-2.txt',
             mimeType: 'text/plain',
             addedDate: new Date().toISOString(),
             lastAccessed: new Date().toISOString(),
@@ -1171,11 +1171,11 @@ test('File collection: syncAndStripFilesFromChatHistory finds and syncs files wi
         };
         
         const file3 = {
-            url: 'https://example.com/labeeb-file-3.txt',
-            gcs: 'gs://bucket/labeeb-file-3.txt',
-            hash: 'hash-labeeb-3',
-            filename: 'labeeb-file-3.txt',
-            displayFilename: 'labeeb-file-3.txt',
+            url: 'https://example.com/enntity-file-3.txt',
+            gcs: 'gs://bucket/enntity-file-3.txt',
+            hash: 'hash-enntity-3',
+            filename: 'enntity-file-3.txt',
+            displayFilename: 'enntity-file-3.txt',
             mimeType: 'text/plain',
             addedDate: new Date().toISOString(),
             lastAccessed: new Date().toISOString(),

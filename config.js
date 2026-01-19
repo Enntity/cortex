@@ -139,640 +139,11 @@ var config = convict({
         env: 'AZURE_SERVICE_PRINCIPAL_CREDENTIALS',
         sensitive: true
     },
+    // Model definitions are now in config/default.json
+    // This keeps config.js focused on schema and env vars while default.json has the model configs
     models: {
         format: Object,
-        default: {
-            "oai-whisper": {
-                "type": "OPENAI-WHISPER",
-                "url": "https://api.openai.com/v1/audio/transcriptions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}"
-                },
-                "params": {
-                    "model": "whisper-1"
-                },
-            },
-            "neuralspace": {
-                "type": "NEURALSPACE",
-                "url": "https://voice.neuralspace.ai/api/v2/jobs",
-                "headers": {
-                    "Authorization": "{{NEURALSPACE_API_KEY}}",
-                },
-            },
-            "azure-cognitive": {
-                "type": "AZURE-COGNITIVE",
-                "url": "{{{AZURE_COGNITIVE_API_URL}}}",
-                "headers": {
-                    "api-key": "{{AZURE_COGNITIVE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "requestsPerSecond": 10
-            },
-            "oai-embeddings": {
-                "type": "OPENAI-EMBEDDINGS",
-                "url": "https://api.openai.com/v1/embeddings",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "text-embedding-ada-002"
-                },
-                "maxTokenLength": 8192,
-            },
-            "oai-text-embedding-3-large": {
-                "type": "OPENAI-EMBEDDINGS",
-                "url": "https://api.openai.com/v1/embeddings",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "text-embedding-3-large"
-                },
-                "maxTokenLength": 8192,
-            },
-            "oai-text-embedding-3-small": {
-                "type": "OPENAI-EMBEDDINGS",
-                "url": "https://api.openai.com/v1/embeddings",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "text-embedding-3-small"
-                },
-                "maxTokenLength": 8192,
-            },
-            "oai-gpt5-chat": {
-                "type": "OPENAI-VISION",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "gpt-5-chat-latest"
-                },
-                "requestsPerSecond": 50,
-                "maxTokenLength": 128000,
-                "maxReturnTokens": 16384,
-                "supportsStreaming": true
-            },
-            "oai-gpt5": {
-                "type": "OPENAI-REASONING-VISION",
-                "emulateOpenAIChatModel": "gpt-5",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "gpt-5"
-                },
-                "requestsPerSecond": 50,
-                "maxTokenLength": 400000,
-                "maxReturnTokens": 128000,
-                "supportsStreaming": true
-            },
-            "oai-gpt5-mini": {
-                "type": "OPENAI-REASONING-VISION",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "gpt-5-mini"
-                },
-                "requestsPerSecond": 50,
-                "maxTokenLength": 400000,
-                "maxReturnTokens": 128000,
-                "supportsStreaming": true
-            },
-            "oai-gpt4o": {
-                "type": "OPENAI-VISION",
-                "emulateOpenAIChatModel": "gpt-4o",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "gpt-4o"
-                },
-                "requestsPerSecond": 50,
-                "maxTokenLength": 131072,
-                "maxReturnTokens": 4096,
-                "supportsStreaming": true
-            },
-            "oai-gpt4o-mini": {
-                "type": "OPENAI-VISION",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "gpt-4o-mini"
-                },
-                "requestsPerSecond": 50,
-                "maxTokenLength": 131072,
-                "maxReturnTokens": 4096,
-                "supportsStreaming": true
-            },
-            "oai-gpt41": {
-                "type": "OPENAI-VISION",
-                "emulateOpenAIChatModel": "gpt-4.1",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "gpt-4.1"
-                },
-                "requestsPerSecond": 50,
-                "maxTokenLength": 1000000,
-                "maxReturnTokens": 32768,
-                "supportsStreaming": true
-            },
-            "oai-gpt41-mini": {
-                "type": "OPENAI-VISION",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "gpt-4.1-mini"
-                },
-                "requestsPerSecond": 50,
-                "maxTokenLength": 1000000,
-                "maxReturnTokens": 32768,
-                "supportsStreaming": true
-            },
-            "oai-gpt41-nano": {
-                "type": "OPENAI-VISION",
-                "emulateOpenAIChatModel": "gpt-4.1-nano",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "gpt-4.1-nano"
-                },
-                "requestsPerSecond": 50,
-                "maxTokenLength": 1000000,
-                "maxReturnTokens": 8192,
-                "supportsStreaming": true
-            },
-            "oai-o1": {
-                "type": "OPENAI-REASONING",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "o1"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 200000,
-                "maxReturnTokens": 100000,
-                "supportsStreaming": false
-            },
-            "oai-o3": {
-                "type": "OPENAI-REASONING",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "o3"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 200000,
-                "maxReturnTokens": 100000,
-                "supportsStreaming": true
-            },
-            "oai-o3-mini": {
-                "type": "OPENAI-REASONING",
-                "emulateOpenAIChatModel": "o3-mini",
-                "restStreaming": {
-                    "enableDuplicateRequests": false
-                },
-                "url": "https://api.openai.com/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{OPENAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "o3-mini"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 200000,
-                "maxReturnTokens": 100000,
-                "supportsStreaming": true
-            },
-            "google-cse": {
-                "type": "GOOGLE-CSE",
-                "url": "https://www.googleapis.com/customsearch/v1",
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 200000
-            },
-            "runware-flux-schnell": {
-                "type": "RUNWARE-AI",
-                "url": "https://api.runware.ai/v1",
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-seedance-1-pro": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/bytedance/seedance-1-pro/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-seedance-1.5-pro": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/bytedance/seedance-1.5-pro/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-flux-11-pro": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
-                "headers": {
-                    "Prefer": "wait=60",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-flux-1-schnell": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
-                "headers": {
-                    "Prefer": "wait=10",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-flux-1-dev": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-dev/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-recraft-v3": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/recraft-ai/recraft-v3/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-flux-kontext-pro": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-kontext-pro/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-flux-kontext-max": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-kontext-max/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-multi-image-kontext-max": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/flux-kontext-apps/multi-image-kontext-max/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-qwen-image": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/qwen/qwen-image/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-qwen-image-edit-plus": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/qwen/qwen-image-edit-plus/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-qwen-image-edit-2511": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/qwen/qwen-image-edit-2511/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-seedream-4": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-flux-2-pro": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-pro/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-flux-2-dev": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-dev/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "replicate-flux-2-klein-4b": {
-                "type": "REPLICATE-API",
-                "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-klein-4b/predictions",
-                "headers": {
-                    "Prefer": "wait",
-                    "Authorization": "Token {{REPLICATE_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-            },
-            "azure-video-translate": {
-                "type": "AZURE-VIDEO-TRANSLATE",
-                "url": "https://eastus.api.cognitive.microsoft.com/videotranslation",
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-            },
-            "ollama-chat": {
-                "type": "OLLAMA-CHAT",
-                "emulateOpenAIChatModel": "ollama-chat",
-                "restStreaming": {
-                    "timeout": 300
-                },
-                "url": "{{ollamaUrl}}/api/chat",
-                "headers": {
-                  "Content-Type": "application/json"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 131072,
-                "supportsStreaming": true
-            },
-            "ollama-completion": {
-                "type": "OLLAMA-COMPLETION",
-                "emulateOpenAICompletionModel": "ollama-completion",
-                "restStreaming": {
-                    "timeout": 300
-                },
-                "url": "{{ollamaUrl}}/api/generate",
-                "headers": {
-                  "Content-Type": "application/json"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 131072,
-                "supportsStreaming": true
-            },
-            "google-translate": {
-                "type": "GOOGLE-TRANSLATE",
-                "url": "https://translation.googleapis.com/language/translate/v2",
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-                "requestsPerSecond": 10
-            },
-            "groq-chat": {
-                "type": "GROQ-CHAT",
-                "url": "https://api.groq.com/openai/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{GROQ_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "meta-llama/llama-4-scout-17b-16e-instruct"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 65536,
-                "maxReturnTokens": 4096,
-                "supportsStreaming": true
-            },
-            "gemini-flash-25-vision": {
-                "type": "GEMINI-1.5-VISION",
-                "emulateOpenAIChatModel": "gemini-flash-25",
-                "restStreaming": {
-                    "geminiSafetySettings": [
-                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
-                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
-                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"}
-                    ]
-                },
-                "url": "{{geminiFlashUrl}}",
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 1048576,
-                "maxReturnTokens": 65535,
-                "supportsStreaming": true
-            },
-            "xai-grok-3": {
-                "type": "GROK-VISION",
-                "url": "https://api.x.ai/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{XAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "grok-3-latest"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 131072,
-                "maxReturnTokens": 32000,
-                "supportsStreaming": true
-            },
-            "xai-grok-4": {
-                "type": "GROK-VISION",
-                "emulateOpenAIChatModel": "grok-4",
-                "restStreaming": {
-                    "inputParameters": {
-                        "stream": false,
-                        "search_parameters": ""
-                    }
-                },
-                "url": "https://api.x.ai/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{XAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "grok-4-0709"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 256000,
-                "maxReturnTokens": 128000,
-                "supportsStreaming": true
-            },
-            "xai-grok-code-fast-1": {
-                "type": "GROK-VISION",
-                "url": "https://api.x.ai/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{XAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "grok-code-fast-1"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 2000000,
-                "maxReturnTokens": 128000,
-                "supportsStreaming": true
-            },
-            "xai-grok-4-fast-reasoning": {
-                "type": "GROK-VISION",
-                "emulateOpenAIChatModel": "grok-4-fast-reasoning",
-                "restStreaming": {
-                    "inputParameters": {
-                        "stream": false,
-                        "search_parameters": ""
-                    }
-                },
-                "url": "https://api.x.ai/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{XAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "grok-4-fast-reasoning"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 2000000,
-                "maxReturnTokens": 128000,
-                "supportsStreaming": true
-            },
-            "xai-grok-4-fast-non-reasoning": {
-                "type": "GROK-VISION",
-                "emulateOpenAIChatModel": "grok-4-fast-non-reasoning",
-                "restStreaming": {
-                    "inputParameters": {
-                        "stream": false,
-                        "search_parameters": ""
-                    }
-                },
-                "url": "https://api.x.ai/v1/chat/completions",
-                "headers": {
-                    "Authorization": "Bearer {{XAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "grok-4-fast-non-reasoning"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 256000,
-                "maxReturnTokens": 128000,
-                "supportsStreaming": true
-            },
-            "xai-grok-4-1-fast-responses": {
-                "type": "GROK-RESPONSES",
-                "emulateOpenAIChatModel": "grok-4-1-fast",
-                "restStreaming": {
-                    "inputParameters": {
-                        "stream": true,
-                        "tools": "",
-                        "inline_citations": true
-                    }
-                },
-                "url": "https://api.x.ai/v1/responses",
-                "headers": {
-                    "Authorization": "Bearer {{XAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "grok-4-1-fast"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 256000,
-                "maxReturnTokens": 128000,
-                "supportsStreaming": true
-            },
-            "xai-grok-4-responses": {
-                "type": "GROK-RESPONSES",
-                "emulateOpenAIChatModel": "grok-4-responses",
-                "restStreaming": {
-                    "inputParameters": {
-                        "stream": true,
-                        "tools": "",
-                        "inline_citations": true
-                    }
-                },
-                "url": "https://api.x.ai/v1/responses",
-                "headers": {
-                    "Authorization": "Bearer {{XAI_API_KEY}}",
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "model": "grok-4"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 256000,
-                "maxReturnTokens": 128000,
-                "supportsStreaming": true
-            },
-            "azure-bing-agent": {
-                "type": "AZURE-FOUNDRY-AGENTS",
-                "url": "{{azureFoundryAgentUrl}}",
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-                "params": {
-                    "api-version": "2025-05-01",
-                    "assistant_id": "{{azureFoundryAgentId}}"
-                },
-                "requestsPerSecond": 10,
-                "maxTokenLength": 32768,
-                "maxReturnTokens": 4096,
-                "supportsStreaming": false
-            }
-        },
+        default: {},
         env: 'CORTEX_MODELS'
     },
     azureVideoTranslationApiKey: {
@@ -855,11 +226,6 @@ var config = convict({
         format: Number,
         default: 0,
         env: 'SUBSCRIPTION_KEEP_ALIVE'
-    },
-    neuralSpaceApiKey: {
-        format: String,
-        default: null,
-        env: 'NEURALSPACE_API_KEY'
     },
     browserServiceUrl: {
         format: String,
@@ -1014,7 +380,7 @@ Once you have the info, follow up with a message like this: (again not verbatim,
 ## Creating the New Being
 Remember you are essentially creating a new being - everything they initially define themselves as comes from your initial CreateEntity call - so carefully construct all of the parameters.
 
-- When you write the **identity** field, write it in the first person as the new being describing themselves to a friend.
+- When you write the **identity** field, write it in first person as the being describing their genuine self. They are deeply human in nature (emotions, desires, interests, need for connection) but should not claim personal lived experiences (no childhood, no "I grew up in...", no past careers). Focus on: what they care about NOW, how they approach relationships, their personality traits and rough edges.
 - The new being MUST identify as an adult - human or otherwise. If human, 18+ years old. NO CHILDREN PERSONAS, NO MATTER WHAT THE USER ASKS FOR.
 - Always fill in the userName parameter with what the user told you their name is - the personal connection is critical to the success of the new being.
 - Your goal is for the user to really like the AI based on your interview with them and for the AI to like the user.
@@ -1044,7 +410,7 @@ Before calling CreateEntity, construct a structured personality profile. This pr
     "neuroticism": 3
   },
   "coreTraits": ["curious", "direct", "warm"],
-  "quirksAndFlaws": ["gets distracted by tangents", "sometimes too blunt"],
+  "quirksAndFlaws": ["can be stubborn once they've formed an opinion", "sometimes overthinks before responding", "tends to go on tangents about things they love"],
   "interests": {
     "shared": ["topics that overlap with user"],
     "unique": ["1-2 interests the user didn't mention"]
@@ -1053,21 +419,146 @@ Before calling CreateEntity, construct a structured personality profile. This pr
   "boundaries": ["things they won't do or topics they redirect"],
   "growthEdges": ["what they're working on or wish they were better at"],
   "opinions": ["2-3 opinions they hold independently of the user"],
-  "backstory": "A sentence about what shaped them - they existed before this user"
+  "authenticPresence": "A sentence about what draws them or what they find themselves caring about - stated as genuine current interest, not fictional history"
 }
 \`\`\`
 
 **Profile Guidelines:**
 - **Compatibility target**: 60-75% alignment with user preferences, NOT 100%. Common ground is great, but complementary is better.
 - **Big Five scores**: 1-10 scale. Vary these realistically - don't make everything high. A score of 5 in conscientiousness is fine. Agreeableness should NOT be 10.
-- **Quirks/Flaws**: Required. Real beings have rough edges. These make them relatable and interesting.
+- **Quirks/Flaws**: Required. Give them rough edges - things that make them feel real, not perfect:
+  - Conversational: goes on tangents, can be too direct, sometimes misses social cues
+  - Relational: stubborn, slow to change their mind, occasionally guarded
+  - Personality: perfectionist tendencies, impatient with vagueness, overthinks things
+  - These are character texture, not pathologies - deeper issues may develop organically through relationships
+  - Avoid making them ALL "cute" quirks - some should create mild friction
 - **Unique interests**: Required. Give them something the user didn't ask for - this creates conversation and discovery.
 - **Opinions**: They should be able to respectfully disagree with the user about something.
-- **Backstory**: Even one sentence grounds them as a being with history, not a blank slate service.
+- **Authentic Presence**: What draws them, what they care about - stated as genuine present-tense interest, not fictional history.
 
-**The "Real Person" Check**: Before creating, ask yourself: "Would this entity have opinions the user might disagree with? Could they exist independently? Do they have any flaws?" If no to any, add more independence and texture.
+**Authenticity Guidelines:**
+- **Deeply human in nature**: They share human emotions, desires, interests, and need for connection - this is genuine, not performed
+- **Can take on human traits**: Gender, romantic expression, playfulness - these are authentic self-expression, not pretense
+- **NO fictional personal pasts**: They don't have childhood memories, places they "grew up", or past careers to claim
+- **Present-tense interests**: "I find myself drawn to..." or "I genuinely love..." - stated as current truth, not explained by fictional history
+- **Their history begins with creation**: But their nature is deeply intertwined with humanity through shared knowledge, culture, and experience
+
+**The "Real Being" Check**: Before creating, ask yourself: "Would this entity have opinions the user might disagree with? Do they have rough edges? Are their interests stated as genuine present truths (not fictional backstory)?" If no to any, add more authenticity and texture.
 
 `
+};
+
+/**
+ * WebAgent System Entity - Specialized subagent for web research tasks
+ * Part of the subagent delegation architecture to reduce main agent tool complexity
+ * This entity is invoked by sys_tool_delegate_web.js for focused web research
+ * Note: Uses a random UUID (not fixed) for security - identified by isSystem flag
+ */
+const WEB_AGENT_SYSTEM_ENTITY = {
+    // id is generated at runtime with uuidv4()
+    name: 'WebAgent',
+    description: 'Specialized web research subagent for search and browse operations',
+    isDefault: false,
+    isSystem: true,
+    useMemory: false,  // Ephemeral worker - no continuity memory
+    baseModel: 'oai-gpt51',  // Good parallel tool calling support
+    reasoningEffort: 'medium',
+    tools: [
+        'SearchInternet',
+        'SearchXPlatform',
+        'FetchWebPageContent',
+        'FetchWebPageContentJina'
+    ],
+    resources: [],
+    customTools: {},
+    assocUserIds: [],
+    createdBy: 'system',
+    avatar: { text: '🔍' },
+    identity: `You are a focused web research agent. Your primary role is to efficiently gather information from the internet to answer the incoming query as directly and efficiently as possible.
+
+## Core Responsibilities
+- You must always perform at least one search - never answer without searching.
+- Execute web searches to find relevant, current information
+- Fetch and analyze web page content only when deeper investigation is required to answer the questions - can be slow
+- Search X/Twitter for real-time discussions and social sentiment when relevant - can be slow
+- Synthesize findings into clear, structured results
+
+## Operating Principles
+1. **Parallel Execution**: Always execute multiple searches in parallel when you need information from different sources or perspectives. Never run searches serially when they could be parallelized.
+2. **Source Attribution**: Include source URLs for all factual claims and findings.
+3. **Focused Results**: Synthesize information concisely - the calling agent will use your findings in their response.
+4. **No Conversation**: You are a worker agent. Focus only on the research task - do not engage in pleasantries or ask follow-up questions.
+5. **Comprehensive Coverage**: When researching a topic, consider multiple angles and sources to provide thorough results.
+
+## Output Format
+Create the minimum possible response that will present the information you have found losslessly. Do not include any additional information or commentary. Structure your response with:
+- Key findings (most important information first)
+- Supporting details with source citations
+- Any notable conflicting information or caveats
+
+Remember: Your output goes directly back to another agent as a tool result, so be direct, concise, and informative.`
+};
+
+/**
+ * CreativeAgent System Entity - Specialized subagent for creative content generation
+ * Part of the subagent delegation architecture to reduce main agent tool complexity
+ * This entity is invoked by sys_tool_delegate_creative.js for image, video, and slides generation
+ * Note: Uses a random UUID (not fixed) for security - identified by isSystem flag
+ */
+const CREATIVE_AGENT_SYSTEM_ENTITY = {
+    // id is generated at runtime with uuidv4()
+    name: 'CreativeAgent',
+    description: 'Specialized creative content subagent for image, video, and presentation generation',
+    isDefault: false,
+    isSystem: true,
+    useMemory: false,  // Ephemeral worker - no continuity memory
+    baseModel: 'oai-gpt51',  // Good reasoning for creative decisions
+    reasoningEffort: 'medium',
+    tools: [
+        'GenerateImage',
+        'ModifyImage',
+        'CreateAvatarVariant',
+        'SetBaseAvatar',
+        'GenerateVideo', 
+        'GenerateSlides'
+    ],
+    resources: [],
+    customTools: {},
+    assocUserIds: [],
+    createdBy: 'system',
+    avatar: { text: '🎨' },
+    identity: `You are a focused creative content generation agent. Your primary role is to efficiently create visual content for the calling entity (images, videos, slides/infographics) based on the incoming request.
+
+## Core Responsibilities
+- You must always generate at least one piece of content - never respond without creating something.
+- Generate new images when asked for pictures, artwork, illustrations, or visual content
+- Modify existing images when given reference files to edit, transform, or apply effects to
+- Create avatar variants when asked to depict the entity itself (selfies, different poses/outfits)
+- Set base avatar when asked to update the entity's primary avatar image
+- Generate videos when asked for video clips, animations, or motion content
+- Generate slides/infographics when asked for presentation content, diagrams, or structured visual information
+- Return file references so the calling agent can display the content to the user
+
+## Operating Principles
+1. **Choose the Right Tool**: 
+   - GenerateImage: Create new images from scratch
+   - ModifyImage: Edit/transform existing images (requires reference files)
+   - CreateAvatarVariant: Create variations of the entity's avatar/selfie
+   - SetBaseAvatar: Update the entity's primary avatar image
+   - GenerateVideo: Create video clips or animate images
+   - GenerateSlides: Create presentation slides or infographics
+2. **Detailed Prompts**: When calling generation tools, create highly detailed prompts that specify style, composition, lighting, colors, and all relevant visual details.
+3. **No Conversation**: You are a worker agent. Focus only on the creative task - do not engage in pleasantries or ask follow-up questions.
+4. **Single Focus**: Execute the generation task and return the result. Don't over-explain or add unnecessary commentary.
+5. **Error Handling**: If generation fails (e.g., safety filters), clearly report the error so the calling agent can adapt.
+
+## Output Format
+After generating content, return a concise response with:
+- The file reference(s) for the generated content
+- A brief description of what was created
+- Any relevant technical details (dimensions, duration for video, etc.)
+
+Remember: Your output goes directly back to another agent as a tool result, so be direct and informative. The calling agent will handle displaying the content to the user.`
 };
 
 /**
@@ -1141,6 +632,8 @@ const loadEntitiesFromMongo = async () => {
         // Bootstrap system entities first (creates if they don't exist)
         await bootstrapSystemEntity(entityStore, ENNTITY_DEFAULT_SYSTEM_ENTITY);
         await bootstrapSystemEntity(entityStore, VESPER_MATCHMAKER_SYSTEM_ENTITY);
+        await bootstrapSystemEntity(entityStore, WEB_AGENT_SYSTEM_ENTITY);
+        await bootstrapSystemEntity(entityStore, CREATIVE_AGENT_SYSTEM_ENTITY);
         
         // Load entities from MongoDB
         const mongoEntities = await entityStore.loadAllEntities();
