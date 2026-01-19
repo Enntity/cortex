@@ -39,7 +39,8 @@ export default {
                 consolidations: [],
                 patterns: [],
                 contradictions: [],
-                suggestedLinks: []
+                suggestedLinks: [],
+                importanceAudits: []
             });
         }
         
@@ -48,7 +49,8 @@ export default {
                 consolidations: [],
                 patterns: [],
                 contradictions: [],
-                suggestedLinks: []
+                suggestedLinks: [],
+                importanceAudits: []
             });
         }
         
@@ -188,7 +190,8 @@ Return JSON:
                 consolidations: [],
                 patterns: [],
                 contradictions: [],
-                suggestedLinks: []
+                suggestedLinks: [],
+                importanceAudits: []
             });
         }
     }
