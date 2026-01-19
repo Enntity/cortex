@@ -56,21 +56,14 @@ export const getToolsForEntity = (entityConfig) => {
     
     // Merge system tools with custom tools (custom tools override system tools)
     const allTools = { ...normalizedSystemTools, ...normalizedCustomTools, ...normalizedCUSTOM_TOOLS };
-    
-    const toolExclusions = Array.isArray(entityConfig?.toolExclusions)
-        ? entityConfig.toolExclusions.map(name => name.toLowerCase())
-        : [];
 
-    const applyExclusions = (toolsMap) => Object.fromEntries(
-        Object.entries(toolsMap).filter(([toolName]) => !toolExclusions.includes(toolName.toLowerCase()))
-    );
-
-    // If no tools property specified or array contains *, return all tools (minus exclusions)
+    // If no tools property specified or array contains *, return all tools
+    // Note: ['*'] is supported for backward compatibility but should be phased out
+    // New entities should use explicit tool lists
     if (!entityConfig?.tools || entityConfig.tools.includes('*')) {
-        const allToolsExcluding = applyExclusions(allTools);
         return {
-            entityTools: allToolsExcluding,
-            entityToolsOpenAiFormat: Object.entries(allToolsExcluding)
+            entityTools: allTools,
+            entityToolsOpenAiFormat: Object.entries(allTools)
                 .map(([toolName, tool]) => sanitizeOpenAiToolDefinition(tool.definition, toolName))
                 .filter(Boolean)
         };
@@ -89,11 +82,11 @@ export const getToolsForEntity = (entityConfig) => {
     }
     
     // Filter the tools to only include those specified for this entity
-    const filteredTools = applyExclusions(Object.fromEntries(
+    const filteredTools = Object.fromEntries(
         Object.entries(allTools).filter(([toolName]) =>
             entityToolNames.includes(toolName.toLowerCase())
         )
-    ));
+    );
 
     return {
         entityTools: filteredTools,

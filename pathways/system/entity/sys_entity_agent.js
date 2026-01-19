@@ -462,6 +462,7 @@ export default {
         // Load input parameters and information into args
         const { entityId, voiceResponse, chatId, researchMode } = { ...pathwayResolver.pathway.inputParameters, ...args };
         
+        // Load entity config - cache is kept in sync by MongoEntityStore._syncConfigCache()
         const entityConfig = loadEntityConfig(entityId);
         const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
         // Support both new field name (identity) and legacy (instructions)

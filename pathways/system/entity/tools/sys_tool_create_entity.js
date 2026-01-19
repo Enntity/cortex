@@ -231,8 +231,36 @@ Required information before calling:
                 isDefault: false,
                 isSystem: false,
                 useMemory: true,
-                tools: ['*'], // Full tool access
-                toolExclusions: ['createentity'], // Never allow entity creation
+                // Explicit tool list (lowercase, alpha sorted) - excludes createentity to prevent recursive entity creation
+                tools: [
+                    'addfiletocollection',
+                    'analyzepdf',
+                    'analyzevideo',
+                    'createavatarvariant',
+                    'createchart',
+                    'editfilebyline',
+                    'editfilebysearchandreplace',
+                    'fetchwebpagecontentjina',
+                    'generateimage',
+                    'generateslides',
+                    'generatevideo',
+                    'listfilecollection',
+                    'modifyimage',
+                    'readtextfile',
+                    'removefilefromcollection',
+                    'searchfilecollection',
+                    'searchinternet',
+                    'searchmemory',
+                    'searchxplatform',
+                    'sendpushnotification',
+                    'setbaseavatar',
+                    'showavataroverlay',
+                    'storecontinuitymemory',
+                    'updatefilemetadata',
+                    'validateurl',
+                    'viewimages',
+                    'writefile'
+                ],
                 resources: [],
                 customTools: {},
                 assocUserIds: [userId], // Associate with the creating user
