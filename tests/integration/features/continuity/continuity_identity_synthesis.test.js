@@ -681,68 +681,63 @@ test('cosineSimilarity: handles mismatched lengths', (t) => {
 
 // ==================== MERGE DRIFT CHECK TESTS ====================
 
-test('checkMergeDrift: identical merge passes (true dedup)', (t) => {
-    // M and S are very similar (0.95), M' is also very similar
-    const m = [0.8, 0.2, 0.1, 0.3];
-    const s = [0.79, 0.21, 0.11, 0.29];  // Very similar to m
-    const merged = [0.795, 0.205, 0.105, 0.295];  // Between m and s
-    
-    const result = checkMergeDrift(m, s, merged);
-    
-    t.true(result.valid, 'Merge of near-identical memories should be valid');
-    t.true(result.originalSim > 0.95, `Original similarity should be high, got ${result.originalSim}`);
-    t.true(result.mergedToM > 0.95, `Merged should stay close to M, got ${result.mergedToM}`);
-    t.true(result.mergedToS > 0.95, `Merged should stay close to S, got ${result.mergedToS}`);
-});
-
-test('checkMergeDrift: expansion fails (mega-memory prevention)', (t) => {
-    // M and S are related (0.75), but M' drifts away from both
-    const m = [0.9, 0.1, 0.0, 0.0];      // Topic A
-    const s = [0.7, 0.3, 0.0, 0.0];      // Related to A
-    const merged = [0.5, 0.5, 0.3, 0.3]; // Expanded to cover more territory
-    
-    const result = checkMergeDrift(m, s, merged);
-    
-    t.false(result.valid, 'Merge that expands semantically should be rejected');
-    t.log(`Original sim: ${result.originalSim.toFixed(3)}, minSimToM: ${result.minSimToM.toFixed(3)}`);
-    t.log(`Merged->M: ${result.mergedToM.toFixed(3)}, Merged->S: ${result.mergedToS.toFixed(3)}`);
-});
-
-test('checkMergeDrift: half-drift rule is enforced', (t) => {
-    // If original similarity is 0.80, minSimToM should be 0.90
-    const m = [1, 0, 0, 0];
-    const s = [0.8, 0.6, 0, 0]; // Roughly 0.8 similarity with m (not exactly)
-    
-    const originalSim = cosineSimilarity(m, s);
-    const expectedMinSimToM = (1 + originalSim) / 2;
-    
-    const result = checkMergeDrift(m, s, m); // Merged = m (best case)
-    
-    t.is(result.minSimToM, expectedMinSimToM, 'minSimToM should follow half-drift formula');
-    t.log(`Original sim: ${originalSim.toFixed(3)} -> minSimToM: ${expectedMinSimToM.toFixed(3)}`);
-});
-
-test('checkMergeDrift: merge staying close to M passes', (t) => {
+test('checkMergeDrift: good merge - M\' between M and S, closer to M', (t) => {
+    // M and S are similar, M' is between them but closer to M
     const m = [0.9, 0.1, 0.0, 0.0];
-    const s = [0.7, 0.3, 0.1, 0.0];
-    const merged = [0.88, 0.12, 0.02, 0.0]; // Stays very close to M
+    const s = [0.8, 0.2, 0.0, 0.0];
+    const merged = [0.87, 0.13, 0.0, 0.0]; // Between, closer to M
     
     const result = checkMergeDrift(m, s, merged);
     
-    t.log(`Valid: ${result.valid}, Merged->M: ${result.mergedToM.toFixed(3)}, minSimToM: ${result.minSimToM.toFixed(3)}`);
-    // This should pass because merged stays close to M
-    t.true(result.mergedToM >= result.minSimToM, 'Merge close to M should satisfy minSimToM threshold');
+    t.log(`sim(M,S)=${result.originalSim.toFixed(3)}, sim(M',M)=${result.mergedToM.toFixed(3)}, sim(M',S)=${result.mergedToS.toFixed(3)}`);
+    t.true(result.mergedToM >= result.mergedToS, 'M\' should be closer to M than S');
+    t.true(result.mergedToS >= result.originalSim, 'M\' should be at least as close to S as M was');
+    t.true(result.valid, 'Good merge should pass');
+    t.is(result.reason, null, 'No failure reason for valid merge');
 });
 
-test('checkMergeDrift: merge drifting toward S but away from M fails', (t) => {
+test('checkMergeDrift: bad merge - did not incorporate S (just rephrased M)', (t) => {
+    // M' is very close to M but further from S than M was
+    // This happens when LLM just rephrases M without incorporating S
+    const m = [0.9, 0.1, 0.0, 0.0];
+    const s = [0.8, 0.2, 0.0, 0.0];
+    const merged = [0.91, 0.09, 0.0, 0.0]; // Very close to M, further from S
+    
+    const result = checkMergeDrift(m, s, merged);
+    
+    t.log(`sim(M,S)=${result.originalSim.toFixed(3)}, sim(M',M)=${result.mergedToM.toFixed(3)}, sim(M',S)=${result.mergedToS.toFixed(3)}`);
+    t.true(result.mergedToM >= result.mergedToS, 'M\' is closer to M (favors new info)');
+    t.false(result.mergedToS >= result.originalSim, 'M\' is further from S than M was (did not incorporate)');
+    t.false(result.valid, 'Bad merge should fail');
+    t.is(result.reason, 'did_not_incorporate', 'Should indicate S was not incorporated');
+});
+
+test('checkMergeDrift: bad merge - pulled toward S (lost M)', (t) => {
+    // M' is closer to S than to M - the merge lost the new information
     const m = [0.9, 0.1, 0.0, 0.0];
     const s = [0.5, 0.5, 0.3, 0.3];
-    const merged = [0.55, 0.45, 0.25, 0.25]; // Drifted toward S, away from M
+    const merged = [0.55, 0.45, 0.25, 0.25]; // Much closer to S than M
     
     const result = checkMergeDrift(m, s, merged);
     
-    t.false(result.valid, 'Merge that drifts away from M (new info) should fail');
-    t.log(`Merged->M: ${result.mergedToM.toFixed(3)} < minSimToM: ${result.minSimToM.toFixed(3)}`);
+    t.log(`sim(M,S)=${result.originalSim.toFixed(3)}, sim(M',M)=${result.mergedToM.toFixed(3)}, sim(M',S)=${result.mergedToS.toFixed(3)}`);
+    t.false(result.mergedToM >= result.mergedToS, 'M\' is closer to S than M (lost new info)');
+    t.false(result.valid, 'Bad merge should fail');
+    t.is(result.reason, 'pulled_toward_existing', 'Should indicate merge pulled toward existing');
+});
+
+test('checkMergeDrift: identical memories - M\' same as M passes', (t) => {
+    // When M and S are nearly identical, keeping M unchanged is valid
+    const m = [0.8, 0.2, 0.1, 0.3];
+    const s = [0.79, 0.21, 0.11, 0.29];  // Very similar to m
+    const merged = m; // M' = M (LLM kept M unchanged)
+    
+    const result = checkMergeDrift(m, s, merged);
+    
+    t.log(`sim(M,S)=${result.originalSim.toFixed(3)}, sim(M',M)=${result.mergedToM.toFixed(3)}, sim(M',S)=${result.mergedToS.toFixed(3)}`);
+    // When M' = M: sim(M',M) = 1.0, sim(M',S) = sim(M,S)
+    // So: 1.0 >= sim(M,S) >= sim(M,S) ✓
+    t.true(result.valid, 'Keeping M unchanged when M≈S should be valid');
 });
 
 // ==================== DRIFT CHECK INTEGRATION TESTS ====================
