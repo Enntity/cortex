@@ -517,9 +517,11 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
             if (!sentFinalChunk) {
                 // If we have tool calls, include them in the finish chunk
                 // (Gemini often sends functionCall and finishReason in the same event)
-                if (this.hadToolCalls && this.toolCallsBuffer.length > 0) {
+                // Filter out undefined elements before mapping
+                const validToolCallsForChunk = this.toolCallsBuffer.filter(tc => tc && tc.function);
+                if (this.hadToolCalls && validToolCallsForChunk.length > 0) {
                     requestProgress.data = JSON.stringify(createChunk({
-                        tool_calls: this.toolCallsBuffer.map((tc, index) => ({
+                        tool_calls: validToolCallsForChunk.map((tc, index) => ({
                             index,
                             id: tc.id,
                             type: tc.type,
