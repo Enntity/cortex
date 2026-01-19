@@ -207,7 +207,14 @@ export const getAvailableEntities = (options = {}) => {
                 avatar: entity.avatar || null,
                 createdAt: entity.createdAt ? (entity.createdAt instanceof Date ? entity.createdAt.toISOString() : entity.createdAt) : null,
                 updatedAt: entity.updatedAt ? (entity.updatedAt instanceof Date ? entity.updatedAt.toISOString() : entity.updatedAt) : null,
-                activeTools: Object.keys(entityTools) // Just return array of tool names
+                activeTools: Object.keys(entityTools), // Just return array of tool names
+                // Additional fields for entity settings UI
+                tools: entity.tools || [], // Original tools array (may include '*' for legacy)
+                preferredModel: entity.preferredModel || null,
+                modelOverride: entity.modelOverride || null,
+                baseModel: entity.baseModel || null,
+                reasoningEffort: entity.reasoningEffort || 'medium'
+                // Note: assocUserIds and createdBy intentionally not exposed for privacy
             };
         });
     } catch (error) {
