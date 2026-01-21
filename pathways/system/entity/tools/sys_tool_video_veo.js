@@ -309,7 +309,8 @@ export default {
                                     null,
                                     pathwayResolver,
                                     true, // permanent => retention=permanent
-                                    chatId
+                                    chatId,
+                                    args.entityId || null
                                 );
                                 
                                 // Use the file entry data for the return message

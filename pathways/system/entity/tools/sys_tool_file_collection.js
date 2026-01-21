@@ -352,7 +352,8 @@ export default {
                     fileUrl,
                     resolver,
                     permanent,
-                    chatId
+                    chatId,
+                    args.entityId || null
                 );
 
                 resolver.tool = JSON.stringify({ toolUsed: "AddFileToCollection" });

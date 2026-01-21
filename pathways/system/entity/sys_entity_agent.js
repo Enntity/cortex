@@ -569,7 +569,7 @@ export default {
         // - Files in collection (all agentContext contexts): stripped, accessible via tools
         // - Files not in collection: left in message for model to see directly
         const { chatHistory: strippedHistory, availableFiles } = await syncAndStripFilesFromChatHistory(
-            args.chatHistory, args.agentContext, chatId
+            args.chatHistory, args.agentContext, chatId, entityId
         );
         args.chatHistory = strippedHistory;
 

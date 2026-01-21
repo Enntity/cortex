@@ -7,7 +7,9 @@ import {
     formatFilesForTemplate,
     extractFilenameFromUrl,
     ensureFilenameExtension,
-    determineMimeTypeFromUrl
+    determineMimeTypeFromUrl,
+    getInCollectionValue,
+    addChatIdToInCollection
 } from '../../../lib/fileUtils.js';
 
 // Test extractFilesFromChatHistory
@@ -599,4 +601,80 @@ test('syncAndStripFilesFromChatHistory should preserve non-file content', async 
     t.is(processedHistory[1].content, 'I see an image');
 });
 
+
+// Test getInCollectionValue - entityId fallback behavior
+test('getInCollectionValue should return chatId when provided', t => {
+    const result = getInCollectionValue('chat-123', null);
+    t.deepEqual(result, ['chat-123']);
+});
+
+test('getInCollectionValue should return entityId when no chatId provided', t => {
+    const result = getInCollectionValue(null, 'entity-456');
+    t.deepEqual(result, ['entity-456']);
+});
+
+test('getInCollectionValue should prefer chatId over entityId', t => {
+    const result = getInCollectionValue('chat-123', 'entity-456');
+    t.deepEqual(result, ['chat-123']);
+});
+
+test('getInCollectionValue should return global when neither chatId nor entityId provided', t => {
+    const result = getInCollectionValue(null, null);
+    t.deepEqual(result, ['*']);
+});
+
+test('getInCollectionValue should handle empty strings as null', t => {
+    t.deepEqual(getInCollectionValue('', null), ['*']);
+    t.deepEqual(getInCollectionValue('', 'entity-456'), ['entity-456']);
+    t.deepEqual(getInCollectionValue('   ', 'entity-456'), ['entity-456']);
+    t.deepEqual(getInCollectionValue(null, ''), ['*']);
+    t.deepEqual(getInCollectionValue(null, '   '), ['*']);
+});
+
+// Test addChatIdToInCollection - entityId fallback behavior
+test('addChatIdToInCollection should add chatId when provided', t => {
+    const result = addChatIdToInCollection(['existing-chat'], 'new-chat', null);
+    t.deepEqual(result, ['existing-chat', 'new-chat']);
+});
+
+test('addChatIdToInCollection should add entityId when no chatId provided', t => {
+    const result = addChatIdToInCollection(['existing-chat'], null, 'entity-456');
+    t.deepEqual(result, ['existing-chat', 'entity-456']);
+});
+
+test('addChatIdToInCollection should prefer chatId over entityId', t => {
+    const result = addChatIdToInCollection(['existing-chat'], 'new-chat', 'entity-456');
+    t.deepEqual(result, ['existing-chat', 'new-chat']);
+});
+
+test('addChatIdToInCollection should return global when no existing and no chatId/entityId', t => {
+    const result = addChatIdToInCollection([], null, null);
+    t.deepEqual(result, ['*']);
+});
+
+test('addChatIdToInCollection should return existing when no chatId/entityId but existing exists', t => {
+    const result = addChatIdToInCollection(['existing-chat'], null, null);
+    t.deepEqual(result, ['existing-chat']);
+});
+
+test('addChatIdToInCollection should not add duplicates', t => {
+    const result = addChatIdToInCollection(['chat-123'], 'chat-123', null);
+    t.deepEqual(result, ['chat-123']);
+    
+    const result2 = addChatIdToInCollection(['entity-456'], null, 'entity-456');
+    t.deepEqual(result2, ['entity-456']);
+});
+
+test('addChatIdToInCollection should keep global if already global', t => {
+    const result = addChatIdToInCollection(['*'], 'chat-123', 'entity-456');
+    t.deepEqual(result, ['*']);
+});
+
+test('addChatIdToInCollection should handle undefined existing as empty array', t => {
+    const result = addChatIdToInCollection(undefined, 'chat-123', null);
+    t.deepEqual(result, ['chat-123']);
+    
+    const result2 = addChatIdToInCollection(undefined, null, 'entity-456');
+    t.deepEqual(result2, ['entity-456']);
+});
 
