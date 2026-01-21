@@ -1,36 +1,10 @@
 // sys_tool_codingagent.js
-// Entity tool that provides code execution capabilities through a queue-based system
+// Entity tool that executes code via Claude Code HTTP service
 
-import { QueueServiceClient } from '@azure/storage-queue';
 import logger from '../../../../lib/logger.js';
 import { resolveFileParameter } from '../../../../lib/fileUtils.js';
 
-const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
-let queueClient;
-
-if (connectionString) {
-    const queueName = process.env.AUTOGEN_MESSAGE_QUEUE || "autogen-message-queue";
-    const queueClientService = QueueServiceClient.fromConnectionString(connectionString);
-    queueClient = queueClientService.getQueueClient(queueName);
-} else {
-    logger.warn("Azure Storage connection string is not provided. Queue operations will be unavailable.");
-}
-
-async function sendMessageToQueue(data) {
-    try {
-        if(!queueClient){
-            logger.warn("Azure Storage connection string is not provided. Queue operations will be unavailable.");
-            return;
-        }
-        const encodedMessage = Buffer.from(JSON.stringify(data)).toString('base64');
-        const result = await queueClient.sendMessage(encodedMessage);
-        logger.info(`Message added to queue: ${JSON.stringify(result)}`);
-        return result.messageId;
-    } catch (error) {
-        logger.error(`Error sending message: ${error instanceof Error ? error.stack || error.message : JSON.stringify(error)}`);
-        throw error;
-    }
-}
+const CLAUDE_CODE_URL = process.env.CLAUDE_CODE_URL || 'http://localhost:8080';
 
 export default {
     inputParameters: {
@@ -46,114 +20,139 @@ export default {
     timeout: 600,
     toolDefinition: [{
         type: "function",
-        enabled: false,
+        enabled: true,
         icon: "🤖",
-        handoff: true, // This tool hands off to an async agent, so skip task completion check
+        handoff: true,
         function: {
             name: "CodeExecution",
-            description: "This tool allows you to asynchronously engage an agent to write and execute code in a sandbox to perform a task on your behalf. Use when explicitly asked to run or execute code, or when a coding agent is needed to perform specific tasks - examples include data analysis, file manipulation, or other tasks that require code execution. With this tool you can read and write files and also access internal databases and query them directly. This will start a background task and return results directly to the user.  You will not receive the response.",
+            description: "Execute code autonomously using Claude Code. Use for tasks requiring code execution, data analysis, file generation, web scraping, calculations, or any programming task. Returns results directly - simple answers come back instantly, file outputs include download links.",
             parameters: {
                 type: "object",
                 properties: {
                     codingTask: {
                         type: "string",
-                        description: "Detailed task description for the coding agent. Include all necessary information as this is the only message the coding agent receives. Let the agent decide how to solve it without making assumptions about its capabilities. IMPORTANT: The coding agent does not share your context, so you must provide it with all the information in this message."
+                        description: "Complete task description. Be specific about what you want. The coding agent can write and execute code, install packages, access the internet, create files, and perform calculations. Include all context needed."
                     },
                     inputFiles: {
                         type: "array",
-                        items: {
-                            type: "string"
-                        },
-                        description: "A list of input files (from Available Files section or ListFileCollection or SearchFileCollection) that the coding agent must use to complete the task. Each file should be the hash or filename. Omit this parameter if no input files are needed."
+                        items: { type: "string" },
+                        description: "Optional list of input files (hash or filename from Available Files). The agent will download these before starting."
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message to notify the user that a coding task is being handled"
-                    },
-                    codingTaskKeywords: {
-                        type: "string",
-                        description: "Keywords for the coding agent's internal Azure Cognitive Search index to help the coding agent find relevant code snippets"
+                        description: "Brief message to show the user while the task runs"
                     }
                 },
-                required: ["codingTask", "userMessage", "codingTaskKeywords"]
+                required: ["codingTask", "userMessage"]
             }
         }
     }],
 
     executePathway: async ({args, resolver}) => {
         try {
-            const { codingTask, userMessage, inputFiles, codingTaskKeywords, contextId } = args;
+            const { codingTask, userMessage, inputFiles, contextId } = args;
 
             if (!contextId) {
-                throw new Error("contextId is required. It should be provided via agentContext or contextId parameter.");
+                throw new Error("contextId is required");
             }
 
-            let taskSuffix = "";
-            if (inputFiles && Array.isArray(inputFiles) && inputFiles.length > 0) {
-                if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
-                    throw new Error("agentContext is required when using the 'inputFiles' parameter. Use ListFileCollection or SearchFileCollection to find available files.");
+            // Build task content with input file URLs
+            let taskContent = codingTask;
+            
+            if (inputFiles?.length > 0) {
+                if (!args.agentContext?.length) {
+                    throw new Error("agentContext required when using inputFiles");
                 }
-                
-                // Resolve file parameters to URLs
-                // inputFiles is an array of strings (file hashes or filenames)
-                const fileReferences = inputFiles.map(ref => String(ref).trim()).filter(ref => ref.length > 0);
-                
+
                 const resolvedUrls = [];
                 const failedFiles = [];
-                
-                for (const fileRef of fileReferences) {
-                    // Try to resolve each file reference
-                    const resolvedUrl = await resolveFileParameter(fileRef, args.agentContext);
-                    if (resolvedUrl) {
-                        resolvedUrls.push(resolvedUrl);
+
+                for (const fileRef of inputFiles) {
+                    const url = await resolveFileParameter(String(fileRef).trim(), args.agentContext);
+                    if (url) {
+                        resolvedUrls.push(url);
                     } else {
                         failedFiles.push(fileRef);
                     }
                 }
-                
-                // Fail early if any files couldn't be resolved
+
                 if (failedFiles.length > 0) {
-                    const fileList = failedFiles.length === 1 
-                        ? `"${failedFiles[0]}"` 
-                        : failedFiles.map(f => `"${f}"`).join(', ');
-                    throw new Error(`File(s) not found: ${fileList}. Use ListFileCollection or SearchFileCollection to find available files.`);
+                    throw new Error(`Files not found: ${failedFiles.join(', ')}`);
                 }
-                
+
                 if (resolvedUrls.length > 0) {
-                    taskSuffix = `You must use the following files as input to complete the task: ${resolvedUrls.join(', ')}.`
+                    taskContent += `\n\nDownload and use these input files:\n${resolvedUrls.join('\n')}`;
                 }
             }
 
+            // Generate unique task ID
+            const taskId = `cc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-            // Send the task to the queue
-            const codeRequestId = await sendMessageToQueue({
-                message: `${codingTask}\n\n${taskSuffix}`,
-                contextId,
-                keywords: codingTaskKeywords
-            });
+            logger.info(`Executing claude-code task: ${taskId}`);
 
-            // Set the tool response
-            resolver.tool = JSON.stringify({
-                toolUsed: "coding",
-                codeRequestId,
-                toolCallbackName: "coding",
-                toolCallbackId: codeRequestId,
-                toolCallbackMessage: userMessage
-            });
+            // Call Claude Code service synchronously
+            let response;
+            try {
+                // Set UI message only after we start the request (so it doesn't show if service is down)
+                resolver.tool = JSON.stringify({
+                    toolUsed: "coding",
+                    codeRequestId: taskId,
+                    toolCallbackName: "coding",
+                    toolCallbackMessage: userMessage
+                });
 
-            // Return explicit message that task has started but is not complete yet
-            const statusMessage = "⚠️ **Task Status**: The coding task has been started and is now running in the background. Don't make up any information about the task or task results - just say that it has been started and is running. The user will be able to see the progress and results of the task, but you will not receive the response. No further action is required from you or the user.";         
-            return statusMessage;
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            logger.error(`Error in coding agent tool: ${error instanceof Error ? error.stack || error.message : JSON.stringify(error)}`);
+                response = await fetch(`${CLAUDE_CODE_URL}/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        task: taskContent,
+                        contextId,
+                        taskId
+                    })
+                });
+            } catch (fetchError) {
+                // Connection failed - service not running or unreachable
+                const isConnectionRefused = fetchError.cause?.code === 'ECONNREFUSED' || 
+                                           fetchError.message?.includes('ECONNREFUSED') ||
+                                           fetchError.message?.includes('fetch failed');
+                if (isConnectionRefused) {
+                    throw new Error(`Claude Code service not reachable at ${CLAUDE_CODE_URL}. Is the service running?`);
+                }
+                throw new Error(`Failed to connect to Claude Code service: ${fetchError.message}`);
+            }
+
+            if (!response.ok) {
+                const errorText = await response.text().catch(() => '');
+                throw new Error(`Claude Code service returned error ${response.status}: ${errorText || response.statusText}`);
+            }
+
+            const result = await response.json();
+
+            if (!result.success) {
+                throw new Error(`Code execution failed: ${result.error || 'Unknown error'}`);
+            }
+
+            // Format response
+            let output = result.result || '';
             
-            // Return error as JSON string instead of throwing, so it can be properly detected by the tool execution layer
-            resolver.tool = JSON.stringify({ toolUsed: "coding" });
-            return JSON.stringify({ 
-                error: errorMessage,
-                recoveryMessage: "The coding task could not be started. Please check that all required parameters are provided and try again."
-            });
+            // Add artifacts if any
+            if (result.artifacts?.length > 0) {
+                output += '\n\n**Files Created:**\n';
+                for (const artifact of result.artifacts) {
+                    output += `- [${artifact.filename}](${artifact.url})\n`;
+                }
+            }
+
+            logger.info(`Task ${taskId} completed in ${result.duration_ms}ms`);
+
+            return output;
+
+        } catch (error) {
+            logger.error(`CodeExecution error: ${error.stack || error.message}`);
+            resolver.tool = JSON.stringify({ toolUsed: "coding", error: true });
+            
+            // Return clear error for the calling agent
+            return `**Code Execution Failed**\n\nError: ${error.message}\n\nPlease inform the user of this error. If this is a service connectivity issue, the coding service may need to be started.`;
         }
     }
-}; 
+};
