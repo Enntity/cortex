@@ -177,7 +177,8 @@ export default {
                         null, // fileUrl - not needed since we already uploaded
                         resolver,
                         true, // permanent => retention=permanent
-                        chatId || null
+                        chatId || null,
+                        args.entityId || null
                     );
                 } catch (collectionError) {
                     // Log but don't fail - file collection is optional
