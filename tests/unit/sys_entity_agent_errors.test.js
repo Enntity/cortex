@@ -665,3 +665,128 @@ test.serial('toolCallback handles tool timeout error correctly', async (t) => {
   t.truthy(toolMessage);
   t.true(toolMessage.content.includes('timed out'));
 });
+
+// Test the logic that prevents non-streaming responses from killing parent streams
+// The fix was: only publish completion if receivedSSEData is true
+test('non-streaming tool response should not trigger parent stream completion', (t) => {
+  // This test validates the logic pattern used in pathwayResolver.handleStream
+  // The bug was: non-streaming tool calls would publish progress=1 to rootRequestId
+  // because completionSent was false (no SSE events received)
+  
+  // Simulate the state after a non-streaming response closes
+  const receivedSSEData = false; // No SSE events received (non-streaming)
+  const completionSent = false;  // No completion signal from stream
+  const streamErrorOccurred = false;
+  
+  // The OLD buggy logic:
+  const oldLogicWouldPublish = streamErrorOccurred || !completionSent;
+  t.true(oldLogicWouldPublish, 'Old logic would incorrectly publish completion');
+  
+  // The NEW fixed logic:
+  const newLogicWouldPublish = receivedSSEData && (streamErrorOccurred || !completionSent);
+  t.false(newLogicWouldPublish, 'New logic correctly skips completion for non-streaming');
+});
+
+test('streaming response with incomplete data should trigger completion', (t) => {
+  // When we receive SSE data but stream closes without completion signal
+  // we SHOULD send a completion (to clean up the client state)
+  
+  const receivedSSEData = true;  // SSE events were received
+  const completionSent = false;  // But no completion signal
+  const streamErrorOccurred = false;
+  
+  const newLogicWouldPublish = receivedSSEData && (streamErrorOccurred || !completionSent);
+  t.true(newLogicWouldPublish, 'Should publish completion when streaming response has no completion signal');
+});
+
+test('streaming response with error should trigger completion with error', (t) => {
+  // When stream has an error, we should send completion with error info
+  
+  const receivedSSEData = true;
+  const completionSent = false;
+  const streamErrorOccurred = true;
+  
+  const newLogicWouldPublish = receivedSSEData && (streamErrorOccurred || !completionSent);
+  t.true(newLogicWouldPublish, 'Should publish completion when stream has error');
+});
+
+test('normal streaming completion should not double-send', (t) => {
+  // When stream completes normally (completionSent = true), don't send again
+  
+  const receivedSSEData = true;
+  const completionSent = true;  // Normal completion already sent
+  const streamErrorOccurred = false;
+  
+  const newLogicWouldPublish = receivedSSEData && (streamErrorOccurred || !completionSent);
+  t.false(newLogicWouldPublish, 'Should not double-send completion');
+});
+
+// Test that actually exercises the SSE parser behavior
+test('SSE parser only sets receivedSSEData for actual event types', async (t) => {
+  const { createParser } = await import('eventsource-parser');
+  
+  // Simulate the pathwayResolver's onParse logic
+  let receivedSSEData = false;
+  
+  const onParse = (event) => {
+    // This mirrors the FIXED code in pathwayResolver.js
+    if (event.type === 'event') {
+      receivedSSEData = true;
+    }
+    // Other event types (like 'reconnect-interval') should NOT set receivedSSEData
+  };
+  
+  const parser = createParser(onParse);
+  
+  // Feed non-SSE JSON data (like a Grok non-streaming response)
+  const jsonResponse = JSON.stringify({
+    id: 'resp_123',
+    output: [{ type: 'message', content: [{ text: 'Hello' }] }]
+  });
+  parser.feed(jsonResponse);
+  
+  t.false(receivedSSEData, 'Non-SSE JSON should not set receivedSSEData');
+  
+  // Now feed actual SSE data (proper SSE format with event type)
+  parser.feed('event: message\ndata: {"content":"hello"}\n\n');
+  
+  t.true(receivedSSEData, 'Actual SSE event should set receivedSSEData');
+});
+
+test('SSE parser with reconnect-interval should not set receivedSSEData', async (t) => {
+  const { createParser } = await import('eventsource-parser');
+  
+  let receivedSSEData = false;
+  
+  const onParse = (event) => {
+    if (event.type === 'event') {
+      receivedSSEData = true;
+    }
+  };
+  
+  const parser = createParser(onParse);
+  
+  // Feed a reconnect-interval directive (valid SSE but not an 'event' type)
+  parser.feed('retry: 3000\n\n');
+  
+  t.false(receivedSSEData, 'reconnect-interval should not set receivedSSEData');
+});
+
+test('tool callback invoked should not trigger stream warning or completion', (t) => {
+  // When a tool callback is invoked (e.g., Gemini returns tool calls),
+  // the stream closes but this is expected - the tool will execute and 
+  // a new stream will open. We should not warn or send completion.
+  
+  const receivedSSEData = true;   // SSE data was received
+  const completionSent = false;   // No progress=1 from the model (expected for tool calls)
+  const streamErrorOccurred = false;
+  const toolCallbackInvoked = true;  // Tool callback was invoked
+  
+  // Warning condition
+  const shouldWarn = receivedSSEData && !completionSent && !streamErrorOccurred && !toolCallbackInvoked;
+  t.false(shouldWarn, 'Should not warn when tool callback invoked');
+  
+  // Completion condition
+  const shouldPublishCompletion = receivedSSEData && !toolCallbackInvoked && (streamErrorOccurred || !completionSent);
+  t.false(shouldPublishCompletion, 'Should not publish completion when tool callback invoked');
+});

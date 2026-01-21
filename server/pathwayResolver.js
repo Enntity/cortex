@@ -281,6 +281,8 @@ class PathwayResolver {
         let streamErrorOccurred = false;
         let streamErrorMessage = null;
         let completionSent = false;
+        let receivedSSEData = false; // Track if we actually received SSE events
+        let toolCallbackInvoked = false; // Track if a tool callback was invoked (stream close is expected)
         // Accumulate streamed content for continuity memory
         this.streamedContent = '';
         const requestId = this.rootRequestId || this.requestId;
@@ -303,6 +305,8 @@ class PathwayResolver {
                         logger.debug(`name: ${event.name || '<none>'}`)
                         logger.debug(`data: ${event.data}`)
                         
+                        receivedSSEData = true; // Only mark SSE data when we get actual 'event' type
+                        
                         // Check for error events in the stream data
                         try {
                             const eventData = JSON.parse(event.data);
@@ -320,6 +324,10 @@ class PathwayResolver {
 
                     try {
                         requestProgress = this.modelExecutor.plugin.processStreamEvent(event, requestProgress);
+                        // Check if plugin signaled a tool callback was invoked
+                        if (requestProgress.toolCallbackInvoked) {
+                            toolCallbackInvoked = true;
+                        }
                     } catch (error) {
                         streamErrorOccurred = true;
                         streamErrorMessage = error instanceof Error ? error.message : String(error);
@@ -356,7 +364,6 @@ class PathwayResolver {
                 const sseParser = createParser(onParse);
 
                 const processStream = (data) => {
-                    //logger.warn(`RECEIVED DATA: ${JSON.stringify(data.toString())}`);
                     sseParser.feed(data.toString());
                 }
 
@@ -381,8 +388,9 @@ class PathwayResolver {
                                 reject(err);
                             });
                             incomingMessage.on('close', () => {
-                                // Stream closed - could be normal or abnormal
-                                if (!completionSent && !streamErrorOccurred) {
+                                // Stream closed - only warn if we received SSE data but no completion
+                                // Skip warning if: non-streaming (no SSE), tool callback invoked (expected close), or error occurred
+                                if (receivedSSEData && !completionSent && !streamErrorOccurred && !toolCallbackInvoked) {
                                     logger.warn('Stream closed without completion signal');
                                 }
                                 resolve();
@@ -402,7 +410,10 @@ class PathwayResolver {
             }
 
             // Ensure completion is sent if not already done
-            if (streamErrorOccurred || !completionSent) {
+            // Only send completion if we were actually streaming (received SSE data)
+            // Non-streaming responses (tool calls) should not send completion to parent
+            // Don't send completion if a tool callback was invoked (stream will resume)
+            if (receivedSSEData && !toolCallbackInvoked && (streamErrorOccurred || !completionSent)) {
                 if (streamErrorOccurred) {
                     logger.error(`Stream read failed: ${streamErrorMessage}`);
                 }
