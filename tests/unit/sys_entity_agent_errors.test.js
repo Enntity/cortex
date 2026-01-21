@@ -2,6 +2,7 @@ import test from 'ava';
 import sysEntityAgent from '../../pathways/system/entity/sys_entity_agent.js';
 import { config } from '../../config.js';
 import { getToolsForEntity } from '../../pathways/system/entity/tools/shared/sys_entity_tools.js';
+import { withTimeout } from '../../lib/pathwayTools.js';
 
 const buildToolDefinition = (name, pathwayName, overrides = {}) => ({
   pathwayName,
@@ -407,4 +408,183 @@ test.serial('toolCallback injects max tool call message once limit reached', asy
   ));
 
   t.truthy(systemMessage);
+});
+
+// === NEW TESTS FOR ROBUSTNESS FEATURES ===
+
+test('withTimeout resolves when promise completes before timeout', async (t) => {
+  const result = await withTimeout(
+    Promise.resolve('success'),
+    1000,
+    'Should not timeout'
+  );
+  t.is(result, 'success');
+});
+
+test('withTimeout rejects when promise takes longer than timeout', async (t) => {
+  const slowPromise = new Promise((resolve) => setTimeout(() => resolve('too late'), 200));
+  
+  const error = await t.throwsAsync(
+    withTimeout(slowPromise, 50, 'Operation timed out after 50ms')
+  );
+  
+  t.is(error.message, 'Operation timed out after 50ms');
+});
+
+test('withTimeout clears timeout when promise resolves', async (t) => {
+  // This test ensures no memory leaks from dangling timeouts
+  const result = await withTimeout(
+    Promise.resolve('quick'),
+    10000, // Long timeout that should be cleared
+    'Should not timeout'
+  );
+  t.is(result, 'quick');
+});
+
+test('withTimeout clears timeout when promise rejects', async (t) => {
+  const error = await t.throwsAsync(
+    withTimeout(
+      Promise.reject(new Error('Original error')),
+      10000,
+      'Should not timeout'
+    )
+  );
+  t.is(error.message, 'Original error');
+});
+
+test.serial('toolCallback truncates oversized tool results', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  // Create a tool that returns a very large result
+  const largeResultPathways = {
+    ...config.get('pathways'),
+    test_tool_large_result: {
+      rootResolver: async () => ({
+        // Create a result larger than MAX_TOOL_RESULT_LENGTH (50000)
+        result: JSON.stringify({ data: 'x'.repeat(60000) }),
+      }),
+    },
+  };
+  config.load({ pathways: largeResultPathways });
+
+  const tools = {
+    ...config.get('entityConfig')[originals.entityId].customTools,
+    largeresult: buildToolDefinition('LargeResult', 'test_tool_large_result'),
+  };
+
+  const entityConfig = {
+    [originals.entityId]: {
+      ...config.get('entityConfig')[originals.entityId],
+      tools: [...config.get('entityConfig')[originals.entityId].tools, 'largeresult'],
+      customTools: tools,
+    },
+  };
+
+  config.get = (key) => {
+    if (key === 'entityConfig') {
+      return entityConfig;
+    }
+    return originals.originalGet(key);
+  };
+
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig[originals.entityId]);
+
+  let promptArgs;
+  const resolver = buildResolver({
+    promptAndParse: async (args) => {
+      promptArgs = args;
+      return 'tool-handled';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'use large tool' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+  };
+
+  const message = { tool_calls: [buildToolCall('LargeResult')] };
+  await sysEntityAgent.toolCallback(args, message, resolver);
+
+  // Find the tool result message in chatHistory
+  const toolMessage = promptArgs.chatHistory.find((entry) => entry.role === 'tool');
+  t.truthy(toolMessage);
+  
+  // Verify the content was truncated (should be less than 60000 chars)
+  t.true(toolMessage.content.length < 60000);
+  
+  // Verify truncation message was added
+  t.true(toolMessage.content.includes('[Content truncated due to length]'));
+});
+
+test.serial('toolCallback handles tool timeout error correctly', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  // Create a tool that simulates a timeout
+  const timeoutPathways = {
+    ...config.get('pathways'),
+    test_tool_slow: {
+      rootResolver: async () => {
+        // Simulate a slow tool that would timeout
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return { result: 'completed' };
+      },
+    },
+  };
+  config.load({ pathways: timeoutPathways });
+
+  const tools = {
+    ...config.get('entityConfig')[originals.entityId].customTools,
+    slowtool: {
+      ...buildToolDefinition('SlowTool', 'test_tool_slow'),
+      definition: {
+        ...buildToolDefinition('SlowTool', 'test_tool_slow').definition,
+        // Set a very short timeout to trigger timeout
+        timeout: 10,
+      },
+    },
+  };
+
+  const entityConfig = {
+    [originals.entityId]: {
+      ...config.get('entityConfig')[originals.entityId],
+      tools: [...config.get('entityConfig')[originals.entityId].tools, 'slowtool'],
+      customTools: tools,
+    },
+  };
+
+  config.get = (key) => {
+    if (key === 'entityConfig') {
+      return entityConfig;
+    }
+    return originals.originalGet(key);
+  };
+
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig[originals.entityId]);
+
+  let promptArgs;
+  const resolver = buildResolver({
+    promptAndParse: async (args) => {
+      promptArgs = args;
+      return 'tool-handled';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'use slow tool' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+  };
+
+  const message = { tool_calls: [buildToolCall('SlowTool')] };
+  const result = await sysEntityAgent.toolCallback(args, message, resolver);
+
+  t.is(result, 'tool-handled');
+  
+  // Find the tool result message - should contain timeout error
+  const toolMessage = promptArgs.chatHistory.find((entry) => entry.role === 'tool');
+  t.truthy(toolMessage);
+  t.true(toolMessage.content.includes('timed out'));
 });

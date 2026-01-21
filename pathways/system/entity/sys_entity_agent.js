@@ -1,8 +1,10 @@
 // sys_entity_agent.js
 // Agentic extension of the entity system that uses OpenAI's tool calling API
 const MAX_TOOL_CALLS = 50;
+const TOOL_TIMEOUT_MS = 120000; // 2 minute timeout per tool call
+const MAX_TOOL_RESULT_LENGTH = 50000; // Truncate oversized tool results to prevent context overflow
 
-import { callPathway, callTool, say, sendToolStart, sendToolFinish } from '../../../lib/pathwayTools.js';
+import { callPathway, callTool, say, sendToolStart, sendToolFinish, withTimeout } from '../../../lib/pathwayTools.js';
 import logger from '../../../lib/logger.js';
 import { config } from '../../../config.js';
 import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
@@ -122,13 +124,17 @@ export default {
                 const validToolCalls = tool_calls.filter(tc => tc && tc.function && tc.function.name);
                 
                 const toolResults = await Promise.all(validToolCalls.map(async (toolCall) => {
+                    // Get tool info for error handling even if early failure
+                    const toolFunction = toolCall?.function?.name?.toLowerCase() || 'unknown';
+                    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+                    const toolCallId = toolCall?.id;
+                    
                     try {
                         if (!toolCall?.function?.arguments) {
                             throw new Error('Invalid tool call structure: missing function arguments');
                         }
 
                         const toolArgs = JSON.parse(toolCall.function.arguments);
-                        const toolFunction = toolCall.function.name.toLowerCase();
                         
                         // Create an isolated copy of messages for this tool
                         const toolMessages = JSON.parse(JSON.stringify(preToolCallMessages));
@@ -138,12 +144,13 @@ export default {
                         const toolIcon = toolDefinition?.icon || '🛠️';
                         const hideExecution = toolDefinition?.hideExecution === true;
                         
+                        // Get timeout from tool definition or use default
+                        const toolTimeout = toolDefinition?.timeout || TOOL_TIMEOUT_MS;
+                        
                         // Get the user message for the tool
                         const toolUserMessage = toolArgs.userMessage || `Executing tool: ${toolCall.function.name}`;
                         
                         // Send tool start message (unless execution is hidden)
-                        const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
-                        const toolCallId = toolCall.id;
                         if (!hideExecution) {
                             try {
                                 await sendToolStart(requestId, toolCallId, toolIcon, toolUserMessage, toolCall.function.name, toolArgs);
@@ -153,14 +160,19 @@ export default {
                             }
                         }
 
-                        const toolResult = await callTool(toolFunction, {
-                            ...args,
-                            ...toolArgs,
-                            toolFunction,
-                            chatHistory: toolMessages,
-                            stream: false,
-                            useMemory: false  // Disable memory synthesis for tool calls
-                        }, entityTools, pathwayResolver);
+                        // Wrap tool call with timeout to prevent hanging
+                        const toolResult = await withTimeout(
+                            callTool(toolFunction, {
+                                ...args,
+                                ...toolArgs,
+                                toolFunction,
+                                chatHistory: toolMessages,
+                                stream: false,
+                                useMemory: false  // Disable memory synthesis for tool calls
+                            }, entityTools, pathwayResolver),
+                            toolTimeout,
+                            `Tool ${toolCall.function.name} timed out after ${toolTimeout / 1000}s`
+                        );
 
                         // Tool calls and results need to be paired together in the message history
                         // Add the tool call to the isolated message history
@@ -312,13 +324,13 @@ export default {
                             messages: toolMessages
                         };
                     } catch (error) {
-                        logger.error(`Error executing tool ${toolCall?.function?.name || 'unknown'}: ${error.message}`);
+                        // Detect if this is a timeout error for clearer logging
+                        const isTimeout = error.message?.includes('timed out');
+                        logger.error(`${isTimeout ? 'Timeout' : 'Error'} executing tool ${toolCall?.function?.name || 'unknown'}: ${error.message}`);
                         
                         // Send tool finish message (error) - unless execution is hidden
-                        // Get requestId and toolCallId if not already defined (in case error occurred before they were set)
-                        const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
-                        const toolCallId = toolCall.id;
-                        const errorToolDefinition = entityTools[toolCall?.function?.name?.toLowerCase()]?.definition;
+                        // requestId, toolCallId, and toolFunction are defined at the start of this block
+                        const errorToolDefinition = entityTools[toolFunction]?.definition;
                         const hideExecution = errorToolDefinition?.hideExecution === true;
                         if (!hideExecution) {
                             try {
@@ -333,14 +345,16 @@ export default {
                         const errorMessages = JSON.parse(JSON.stringify(preToolCallMessages));
                         // Preserve thoughtSignature for Gemini 3+ models
                         const errorToolCallEntry = {
-                            id: toolCall.id,
+                            id: toolCall?.id,
                             type: "function",
                             function: {
-                                name: toolCall.function.name,
-                                arguments: JSON.stringify(toolCall.function.arguments)
+                                name: toolCall?.function?.name || toolFunction,
+                                arguments: typeof toolCall?.function?.arguments === 'string' 
+                                    ? toolCall.function.arguments 
+                                    : JSON.stringify(toolCall?.function?.arguments || {})
                             }
                         };
-                        if (toolCall.thoughtSignature) {
+                        if (toolCall?.thoughtSignature) {
                             errorToolCallEntry.thoughtSignature = toolCall.thoughtSignature;
                         }
                         errorMessages.push({
@@ -350,8 +364,8 @@ export default {
                         });
                         errorMessages.push({
                             role: "tool",
-                            tool_call_id: toolCall.id,
-                            name: toolCall.function.name,
+                            tool_call_id: toolCall?.id || toolCallId,
+                            name: toolCall?.function?.name || toolFunction,
                             content: `Error: ${error.message}`
                         });
 
@@ -359,8 +373,12 @@ export default {
                             success: false, 
                             error: error.message,
                             toolCall,
-                            toolArgs: toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {},
-                            toolFunction: toolCall?.function?.name?.toLowerCase() || 'unknown',
+                            toolArgs: toolCall?.function?.arguments ? 
+                                (typeof toolCall.function.arguments === 'string' 
+                                    ? JSON.parse(toolCall.function.arguments) 
+                                    : toolCall.function.arguments) 
+                                : {},
+                            toolFunction,
                             messages: errorMessages
                         };
                     }
@@ -417,7 +435,17 @@ export default {
                 );
             }
 
-            args.chatHistory = finalMessages;
+            // Truncate oversized tool results to prevent context overflow
+            args.chatHistory = finalMessages.map(msg => {
+                if (msg.role === 'tool' && msg.content && msg.content.length > MAX_TOOL_RESULT_LENGTH) {
+                    logger.warn(`Truncating oversized tool result (${msg.content.length} chars) for ${msg.name || 'unknown tool'}`);
+                    return {
+                        ...msg,
+                        content: msg.content.substring(0, MAX_TOOL_RESULT_LENGTH) + '\n\n[Content truncated due to length]'
+                    };
+                }
+                return msg;
+            });
 
             // clear any accumulated pathwayResolver errors from the tools
             pathwayResolver.errors = [];
@@ -591,7 +619,10 @@ export default {
 
             // Handle null response (can happen when ModelExecutor catches an error)
             if (!response) {
-                throw new Error('Model execution returned null - the model request likely failed');
+                const errorDetails = pathwayResolver.errors.length > 0 
+                    ? `: ${pathwayResolver.errors.join(', ')}` 
+                    : '';
+                throw new Error(`Model execution returned null - the model request likely failed${errorDetails}`);
             }
 
             let toolCallback = pathwayResolver.pathway.toolCallback;
@@ -718,11 +749,9 @@ export default {
             logger.error(`Error in sys_entity_agent: ${e.message}`);
             
             // Generate a smart error response instead of throwing
-            // Note: We don't call logError here because generateErrorResponse will clear errors
-            // and we want to handle the error gracefully rather than tracking it
             const errorResponse = await generateErrorResponse(e, args, pathwayResolver);
             
-            // Ensure errors are cleared before returning (in case any were added during error response generation)
+            // Ensure errors are cleared before returning
             pathwayResolver.errors = [];
             
             return errorResponse;
