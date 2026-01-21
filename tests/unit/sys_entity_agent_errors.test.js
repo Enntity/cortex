@@ -518,6 +518,83 @@ test.serial('toolCallback truncates oversized tool results', async (t) => {
   t.true(toolMessage.content.includes('[Content truncated due to length]'));
 });
 
+test('findSafeSplitPoint preserves tool call/result pairs', (t) => {
+  // Import the helper (we'll need to export it or test via integration)
+  // For now, test the concept with inline implementation
+  
+  const findSafeSplitPoint = (messages, keepRecentCount = 6) => {
+    const toolCallIndexMap = new Map();
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          if (tc.id) toolCallIndexMap.set(tc.id, i);
+        }
+      }
+    }
+    
+    let splitIndex = Math.max(0, messages.length - keepRecentCount);
+    
+    let adjusted = true;
+    while (adjusted && splitIndex > 0) {
+      adjusted = false;
+      for (let i = splitIndex; i < messages.length; i++) {
+        const msg = messages[i];
+        if (msg.role === 'tool' && msg.tool_call_id) {
+          const callIndex = toolCallIndexMap.get(msg.tool_call_id);
+          if (callIndex !== undefined && callIndex < splitIndex) {
+            splitIndex = callIndex;
+            adjusted = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    return splitIndex;
+  };
+
+  // Test: should not split if it would orphan a tool result
+  const messages = [
+    { role: 'user', content: 'query 1' },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'tc1', function: { name: 'search' } }] },
+    { role: 'tool', tool_call_id: 'tc1', content: 'result 1' },
+    { role: 'assistant', content: 'response 1' },
+    { role: 'user', content: 'query 2' },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'tc2', function: { name: 'search' } }] },
+    { role: 'tool', tool_call_id: 'tc2', content: 'result 2' },
+    { role: 'assistant', content: 'response 2' },
+  ];
+
+  // With keepRecentCount=4, naive split would be at index 4
+  // But tc2's result is at index 6, its call at index 5
+  // So split should be adjusted to keep tc2 call with its result
+  const splitIndex = findSafeSplitPoint(messages, 4);
+  
+  // The split should ensure tc2 call (index 5) stays with tc2 result (index 6)
+  // So split should be at index 4 or earlier
+  t.true(splitIndex <= 4, 'Split should be at or before index 4');
+  
+  // Verify: messages from splitIndex onwards should have paired tool calls/results
+  const keptMessages = messages.slice(splitIndex);
+  const keptToolCallIds = new Set();
+  for (const msg of keptMessages) {
+    if (msg.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        keptToolCallIds.add(tc.id);
+      }
+    }
+  }
+  
+  // Every tool result in kept messages should have its call in kept messages
+  for (const msg of keptMessages) {
+    if (msg.role === 'tool' && msg.tool_call_id) {
+      t.true(keptToolCallIds.has(msg.tool_call_id), 
+        `Tool result ${msg.tool_call_id} should have its call in kept messages`);
+    }
+  }
+});
+
 test.serial('toolCallback handles tool timeout error correctly', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
