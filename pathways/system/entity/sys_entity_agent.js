@@ -2,7 +2,7 @@
 // Agentic extension of the entity system that uses OpenAI's tool calling API
 const MAX_TOOL_CALLS = 50;
 const TOOL_TIMEOUT_MS = 120000; // 2 minute timeout per tool call
-const MAX_TOOL_RESULT_LENGTH = 50000; // Truncate oversized tool results to prevent context overflow
+const MAX_TOOL_RESULT_LENGTH = 150000; // Truncate oversized tool results to prevent context overflow
 const CONTEXT_COMPRESSION_THRESHOLD = 0.7; // Compress when context reaches 70% of model limit
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000; // Default context limit if not available from model
 

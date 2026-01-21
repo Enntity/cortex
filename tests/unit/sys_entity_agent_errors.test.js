@@ -461,8 +461,8 @@ test.serial('toolCallback truncates oversized tool results', async (t) => {
     ...config.get('pathways'),
     test_tool_large_result: {
       rootResolver: async () => ({
-        // Create a result larger than MAX_TOOL_RESULT_LENGTH (50000)
-        result: JSON.stringify({ data: 'x'.repeat(60000) }),
+        // Create a result larger than MAX_TOOL_RESULT_LENGTH (150000)
+        result: JSON.stringify({ data: 'x'.repeat(160000) }),
       }),
     },
   };
@@ -511,8 +511,8 @@ test.serial('toolCallback truncates oversized tool results', async (t) => {
   const toolMessage = promptArgs.chatHistory.find((entry) => entry.role === 'tool');
   t.truthy(toolMessage);
   
-  // Verify the content was truncated (should be less than 60000 chars)
-  t.true(toolMessage.content.length < 60000);
+  // Verify the content was truncated (should be less than 160000 chars)
+  t.true(toolMessage.content.length < 160000);
   
   // Verify truncation message was added
   t.true(toolMessage.content.includes('[Content truncated due to length]'));
