@@ -1,8 +1,13 @@
 // sys_entity_agent.js
 // Agentic extension of the entity system that uses OpenAI's tool calling API
 const MAX_TOOL_CALLS = 50;
+const TOOL_TIMEOUT_MS = 120000; // 2 minute timeout per tool call
+const MAX_TOOL_RESULT_LENGTH = 150000; // Truncate oversized tool results to prevent context overflow
+const CONTEXT_COMPRESSION_THRESHOLD = 0.7; // Compress when context reaches 70% of model limit
+const DEFAULT_MODEL_CONTEXT_LIMIT = 128000; // Default context limit if not available from model
 
-import { callPathway, callTool, say, sendToolStart, sendToolFinish } from '../../../lib/pathwayTools.js';
+import { callPathway, callTool, say, sendToolStart, sendToolFinish, withTimeout } from '../../../lib/pathwayTools.js';
+import { encode } from '../../../lib/encodeCache.js';
 import logger from '../../../lib/logger.js';
 import { config } from '../../../config.js';
 import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
@@ -54,6 +59,239 @@ function insertSystemMessage(messages, text, requestId = null) {
     });
     
     return filteredMessages;
+}
+
+// Estimate token count for messages (rough approximation using tiktoken)
+function estimateTokens(messages) {
+    if (!messages || !Array.isArray(messages)) return 0;
+    
+    let totalTokens = 0;
+    for (const msg of messages) {
+        // Add overhead for message structure
+        totalTokens += 4;
+        
+        if (typeof msg.content === 'string') {
+            totalTokens += encode(msg.content).length;
+        } else if (Array.isArray(msg.content)) {
+            for (const part of msg.content) {
+                if (typeof part === 'string') {
+                    totalTokens += encode(part).length;
+                } else if (part?.text) {
+                    totalTokens += encode(part.text).length;
+                } else if (part?.type === 'image_url') {
+                    totalTokens += 85; // Image token overhead
+                }
+            }
+        }
+        
+        // Tool calls add significant tokens
+        if (msg.tool_calls) {
+            for (const tc of msg.tool_calls) {
+                totalTokens += 10; // Tool call overhead
+                if (tc.function?.name) totalTokens += encode(tc.function.name).length;
+                if (tc.function?.arguments) totalTokens += encode(tc.function.arguments).length;
+            }
+        }
+    }
+    
+    return totalTokens;
+}
+
+// Find a safe split point that doesn't orphan tool results from their tool calls
+// Returns the index where we can safely split: messages before this can be summarized
+function findSafeSplitPoint(messages, keepRecentCount = 6) {
+    // Build map of tool_call_id -> index of message containing that tool_call
+    const toolCallIndexMap = new Map();
+    for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        if (msg.tool_calls) {
+            for (const tc of msg.tool_calls) {
+                if (tc.id) toolCallIndexMap.set(tc.id, i);
+            }
+        }
+    }
+    
+    // Start with keeping the last N messages
+    let splitIndex = Math.max(0, messages.length - keepRecentCount);
+    
+    // Move split point back if any tool result in "to keep" references a tool call in "to summarize"
+    let adjusted = true;
+    while (adjusted && splitIndex > 0) {
+        adjusted = false;
+        for (let i = splitIndex; i < messages.length; i++) {
+            const msg = messages[i];
+            if (msg.role === 'tool' && msg.tool_call_id) {
+                const callIndex = toolCallIndexMap.get(msg.tool_call_id);
+                if (callIndex !== undefined && callIndex < splitIndex) {
+                    // This tool result's call is in the "to summarize" section
+                    // Move split point back to include the call in "to keep"
+                    splitIndex = callIndex;
+                    adjusted = true;
+                    break;
+                }
+            }
+        }
+    }
+    
+    return splitIndex;
+}
+
+// Format messages for compression prompt
+function formatMessagesForCompression(messages) {
+    let text = '';
+    
+    for (const msg of messages) {
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+            // Format tool calls
+            const toolsText = msg.tool_calls.map(tc => {
+                const name = tc.function?.name || 'unknown';
+                let args = tc.function?.arguments || '{}';
+                try {
+                    const parsed = JSON.parse(args);
+                    const userMsg = parsed.userMessage || parsed.q || '';
+                    args = userMsg ? `Goal: ${userMsg}` : JSON.stringify(parsed, null, 2);
+                } catch { /* keep as is */ }
+                return `Tool: ${name}\n${args}`;
+            }).join('\n\n');
+            text += `[Tool Calls]:\n${toolsText}\n\n`;
+        } else if (msg.role === 'tool') {
+            // Format tool results
+            const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+            text += `[Tool Result - ${msg.name || 'unknown'}]:\n${content}\n\n`;
+        } else if (msg.role === 'user') {
+            // Include user messages for context
+            const content = typeof msg.content === 'string' ? msg.content : 
+                (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            if (content && !content.startsWith('[system message')) {
+                text += `[User]: ${content}\n\n`;
+            }
+        }
+    }
+    
+    return text;
+}
+
+// Compress chat history when approaching context limits
+async function compressContextIfNeeded(messages, pathwayResolver, args) {
+    // Get model context limit
+    let maxTokens = DEFAULT_MODEL_CONTEXT_LIMIT;
+    if (pathwayResolver.modelExecutor?.plugin?.getModelMaxPromptTokens) {
+        try {
+            maxTokens = pathwayResolver.modelExecutor.plugin.getModelMaxPromptTokens();
+        } catch { /* use default */ }
+    }
+    
+    const currentTokens = estimateTokens(messages);
+    const threshold = maxTokens * CONTEXT_COMPRESSION_THRESHOLD;
+    
+    if (currentTokens <= threshold) {
+        return messages; // No compression needed
+    }
+    
+    logger.info(`Context compression triggered: ${currentTokens} tokens (${((currentTokens/maxTokens)*100).toFixed(0)}% of ${maxTokens} limit)`);
+    
+    // Separate system messages (always keep)
+    const systemMessages = messages.filter(m => m.role === 'system');
+    const nonSystemMessages = messages.filter(m => m.role !== 'system');
+    
+    // Find safe split point
+    const splitIndex = findSafeSplitPoint(nonSystemMessages);
+    
+    if (splitIndex < 3) {
+        logger.debug('Not enough messages to compress');
+        return messages; // Not enough to compress
+    }
+    
+    const toCompress = nonSystemMessages.slice(0, splitIndex);
+    const toKeep = nonSystemMessages.slice(splitIndex);
+    
+    // Count tool-related messages to compress
+    const toolMessages = toCompress.filter(m => m.tool_calls || m.role === 'tool');
+    if (toolMessages.length < 2) {
+        logger.debug('Not enough tool messages to compress');
+        return messages; // Not enough tool data to warrant compression
+    }
+    
+    // Extract original user query
+    let originalQuery = null;
+    for (const msg of toCompress) {
+        if (msg.role === 'user') {
+            const content = typeof msg.content === 'string' ? msg.content :
+                (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            if (content && !content.startsWith('[system message') && !content.startsWith('[Context Summary')) {
+                originalQuery = content;
+                break;
+            }
+        }
+    }
+    
+    // Send tool UI message
+    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+    const compressId = `compress-${Date.now()}`;
+    try {
+        await sendToolStart(requestId, compressId, '🗜️', 'Compacting conversation context...', 'ContextCompression');
+    } catch { /* continue even if UI message fails */ }
+    
+    try {
+        // Format messages for compression
+        const researchContent = formatMessagesForCompression(toCompress);
+        
+        // Call compression pathway
+        const summary = await withTimeout(
+            callPathway('sys_compress_context', {
+                ...args,
+                researchContent,
+                stream: false
+            }, pathwayResolver),
+            60000,
+            'Context compression timed out'
+        );
+        
+        // Build summary message
+        const toolCallCount = toCompress.filter(m => m.tool_calls).length;
+        const toolResultCount = toCompress.filter(m => m.role === 'tool').length;
+        const summaryText = typeof summary === 'string' ? summary : JSON.stringify(summary);
+        const contextSummary = `[Context Summary: The following summarizes ${toolCallCount} tool calls and ${toolResultCount} results from earlier in this conversation. Key findings, URLs, and citations have been preserved.]\n\n${summaryText}`;
+        
+        // Validate toKeep doesn't have orphaned tool results
+        const toolCallsInKeep = new Set();
+        for (const msg of toKeep) {
+            if (msg.tool_calls) {
+                for (const tc of msg.tool_calls) {
+                    if (tc.id) toolCallsInKeep.add(tc.id);
+                }
+            }
+        }
+        
+        const validatedToKeep = toKeep.filter(msg => {
+            if (msg.role === 'tool' && msg.tool_call_id) {
+                if (!toolCallsInKeep.has(msg.tool_call_id)) {
+                    logger.warn(`Removing orphaned tool result ${msg.tool_call_id} during compression`);
+                    return false;
+                }
+            }
+            return true;
+        });
+        
+        // Reconstruct history
+        const compressed = [
+            ...systemMessages,
+            ...(originalQuery ? [{ role: 'user', content: originalQuery }] : []),
+            { role: 'user', content: contextSummary },
+            ...validatedToKeep
+        ];
+        
+        const newTokens = estimateTokens(compressed);
+        logger.info(`Context compressed: ${currentTokens} -> ${newTokens} tokens (${toolMessages.length} tool messages summarized)`);
+        
+        await sendToolFinish(requestId, compressId, true, null, 'ContextCompression');
+        
+        return compressed;
+    } catch (error) {
+        logger.error(`Context compression failed: ${error.message}`);
+        await sendToolFinish(requestId, compressId, false, error.message, 'ContextCompression');
+        return messages; // Return original on failure
+    }
 }
 
 export default {
@@ -122,13 +360,17 @@ export default {
                 const validToolCalls = tool_calls.filter(tc => tc && tc.function && tc.function.name);
                 
                 const toolResults = await Promise.all(validToolCalls.map(async (toolCall) => {
+                    // Get tool info for error handling even if early failure
+                    const toolFunction = toolCall?.function?.name?.toLowerCase() || 'unknown';
+                    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+                    const toolCallId = toolCall?.id;
+                    
                     try {
                         if (!toolCall?.function?.arguments) {
                             throw new Error('Invalid tool call structure: missing function arguments');
                         }
 
                         const toolArgs = JSON.parse(toolCall.function.arguments);
-                        const toolFunction = toolCall.function.name.toLowerCase();
                         
                         // Create an isolated copy of messages for this tool
                         const toolMessages = JSON.parse(JSON.stringify(preToolCallMessages));
@@ -138,12 +380,13 @@ export default {
                         const toolIcon = toolDefinition?.icon || '🛠️';
                         const hideExecution = toolDefinition?.hideExecution === true;
                         
+                        // Get timeout from tool definition or use default
+                        const toolTimeout = toolDefinition?.timeout || TOOL_TIMEOUT_MS;
+                        
                         // Get the user message for the tool
                         const toolUserMessage = toolArgs.userMessage || `Executing tool: ${toolCall.function.name}`;
                         
                         // Send tool start message (unless execution is hidden)
-                        const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
-                        const toolCallId = toolCall.id;
                         if (!hideExecution) {
                             try {
                                 await sendToolStart(requestId, toolCallId, toolIcon, toolUserMessage, toolCall.function.name, toolArgs);
@@ -153,14 +396,19 @@ export default {
                             }
                         }
 
-                        const toolResult = await callTool(toolFunction, {
-                            ...args,
-                            ...toolArgs,
-                            toolFunction,
-                            chatHistory: toolMessages,
-                            stream: false,
-                            useMemory: false  // Disable memory synthesis for tool calls
-                        }, entityTools, pathwayResolver);
+                        // Wrap tool call with timeout to prevent hanging
+                        const toolResult = await withTimeout(
+                            callTool(toolFunction, {
+                                ...args,
+                                ...toolArgs,
+                                toolFunction,
+                                chatHistory: toolMessages,
+                                stream: false,
+                                useMemory: false  // Disable memory synthesis for tool calls
+                            }, entityTools, pathwayResolver),
+                            toolTimeout,
+                            `Tool ${toolCall.function.name} timed out after ${toolTimeout / 1000}s`
+                        );
 
                         // Tool calls and results need to be paired together in the message history
                         // Add the tool call to the isolated message history
@@ -312,13 +560,13 @@ export default {
                             messages: toolMessages
                         };
                     } catch (error) {
-                        logger.error(`Error executing tool ${toolCall?.function?.name || 'unknown'}: ${error.message}`);
+                        // Detect if this is a timeout error for clearer logging
+                        const isTimeout = error.message?.includes('timed out');
+                        logger.error(`${isTimeout ? 'Timeout' : 'Error'} executing tool ${toolCall?.function?.name || 'unknown'}: ${error.message}`);
                         
                         // Send tool finish message (error) - unless execution is hidden
-                        // Get requestId and toolCallId if not already defined (in case error occurred before they were set)
-                        const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
-                        const toolCallId = toolCall.id;
-                        const errorToolDefinition = entityTools[toolCall?.function?.name?.toLowerCase()]?.definition;
+                        // requestId, toolCallId, and toolFunction are defined at the start of this block
+                        const errorToolDefinition = entityTools[toolFunction]?.definition;
                         const hideExecution = errorToolDefinition?.hideExecution === true;
                         if (!hideExecution) {
                             try {
@@ -333,14 +581,16 @@ export default {
                         const errorMessages = JSON.parse(JSON.stringify(preToolCallMessages));
                         // Preserve thoughtSignature for Gemini 3+ models
                         const errorToolCallEntry = {
-                            id: toolCall.id,
+                            id: toolCall?.id,
                             type: "function",
                             function: {
-                                name: toolCall.function.name,
-                                arguments: JSON.stringify(toolCall.function.arguments)
+                                name: toolCall?.function?.name || toolFunction,
+                                arguments: typeof toolCall?.function?.arguments === 'string' 
+                                    ? toolCall.function.arguments 
+                                    : JSON.stringify(toolCall?.function?.arguments || {})
                             }
                         };
-                        if (toolCall.thoughtSignature) {
+                        if (toolCall?.thoughtSignature) {
                             errorToolCallEntry.thoughtSignature = toolCall.thoughtSignature;
                         }
                         errorMessages.push({
@@ -350,8 +600,8 @@ export default {
                         });
                         errorMessages.push({
                             role: "tool",
-                            tool_call_id: toolCall.id,
-                            name: toolCall.function.name,
+                            tool_call_id: toolCall?.id || toolCallId,
+                            name: toolCall?.function?.name || toolFunction,
                             content: `Error: ${error.message}`
                         });
 
@@ -359,8 +609,12 @@ export default {
                             success: false, 
                             error: error.message,
                             toolCall,
-                            toolArgs: toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {},
-                            toolFunction: toolCall?.function?.name?.toLowerCase() || 'unknown',
+                            toolArgs: toolCall?.function?.arguments ? 
+                                (typeof toolCall.function.arguments === 'string' 
+                                    ? JSON.parse(toolCall.function.arguments) 
+                                    : toolCall.function.arguments) 
+                                : {},
+                            toolFunction,
                             messages: errorMessages
                         };
                     }
@@ -399,12 +653,13 @@ export default {
                 });
 
                 // Inject challenge message after tools are executed to encourage task completion
-                // Only inject in research mode - in normal mode, let the model be more decisive
+                // Only inject in research mode for the first few iterations - after that, let the model decide
                 // Skip this check if a hand-off tool was used (async agents handle their own completion)
-                if (!hasHandoffTool && args.researchMode) {
+                const RESEARCH_ENCOURAGEMENT_LIMIT = 3; // Stop pushing after this many tool call rounds
+                if (!hasHandoffTool && args.researchMode && pathwayResolver.toolCallCount <= RESEARCH_ENCOURAGEMENT_LIMIT) {
                     const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
                     finalMessages = insertSystemMessage(finalMessages, 
-                        "Review the tool results above. If your task is incomplete or requires additional steps or information, call the necessary tools now. Adapt your approach and re-plan if you are not finding the information you need. Only respond to the user once the task is complete and sufficient information has been gathered.",
+                        "Review the tool results above. If the information gathered is clearly insufficient for the task, call additional tools. If you have gathered reasonable information from multiple sources, proceed to respond to the user.",
                         requestId
                     );
                 }
@@ -417,7 +672,27 @@ export default {
                 );
             }
 
-            args.chatHistory = finalMessages;
+            // Truncate oversized individual tool results
+            let processedMessages = finalMessages.map(msg => {
+                if (msg.role === 'tool' && msg.content && msg.content.length > MAX_TOOL_RESULT_LENGTH) {
+                    logger.warn(`Truncating oversized tool result (${msg.content.length} chars) for ${msg.name || 'unknown tool'}`);
+                    return {
+                        ...msg,
+                        content: msg.content.substring(0, MAX_TOOL_RESULT_LENGTH) + '\n\n[Content truncated due to length]'
+                    };
+                }
+                return msg;
+            });
+
+            // Compress context if approaching model limits
+            try {
+                processedMessages = await compressContextIfNeeded(processedMessages, pathwayResolver, args);
+            } catch (compressionError) {
+                logger.error(`Context compression error: ${compressionError.message}`);
+                // Continue with uncompressed messages
+            }
+            
+            args.chatHistory = processedMessages;
 
             // clear any accumulated pathwayResolver errors from the tools
             pathwayResolver.errors = [];
@@ -573,8 +848,12 @@ export default {
         );
         args.chatHistory = strippedHistory;
 
-        // truncate the chat history in case there is really long content
-        const truncatedChatHistory = resolver.modelExecutor.plugin.truncateMessagesToTargetLength(args.chatHistory, null, 1000);
+        // Compress context if approaching model limits (initial check before first model call)
+        try {
+            args.chatHistory = await compressContextIfNeeded(args.chatHistory, pathwayResolver, args);
+        } catch (compressionError) {
+            logger.warn(`Initial context compression failed: ${compressionError.message}`);
+        }
       
         try {
             let currentMessages = JSON.parse(JSON.stringify(args.chatHistory));
@@ -591,7 +870,10 @@ export default {
 
             // Handle null response (can happen when ModelExecutor catches an error)
             if (!response) {
-                throw new Error('Model execution returned null - the model request likely failed');
+                const errorDetails = pathwayResolver.errors.length > 0 
+                    ? `: ${pathwayResolver.errors.join(', ')}` 
+                    : '';
+                throw new Error(`Model execution returned null - the model request likely failed${errorDetails}`);
             }
 
             let toolCallback = pathwayResolver.pathway.toolCallback;
@@ -718,11 +1000,9 @@ export default {
             logger.error(`Error in sys_entity_agent: ${e.message}`);
             
             // Generate a smart error response instead of throwing
-            // Note: We don't call logError here because generateErrorResponse will clear errors
-            // and we want to handle the error gracefully rather than tracking it
             const errorResponse = await generateErrorResponse(e, args, pathwayResolver);
             
-            // Ensure errors are cleared before returning (in case any were added during error response generation)
+            // Ensure errors are cleared before returning
             pathwayResolver.errors = [];
             
             return errorResponse;
