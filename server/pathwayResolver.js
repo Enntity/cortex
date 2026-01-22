@@ -417,10 +417,14 @@ class PathwayResolver {
             }
 
             // Ensure completion is sent if not already done
-            // Only send completion if we were actually streaming (received SSE data)
-            // Non-streaming responses (tool calls) should not send completion to parent
+            // Send completion if:
+            // 1. Stream error occurred (always notify client of errors)
+            // 2. OR we received SSE data but no completion was sent (and no tool callback)
             // Don't send completion if a tool callback was invoked (stream will resume)
-            if (receivedSSEData && !toolCallbackInvoked && (streamErrorOccurred || !completionSent)) {
+            const shouldSendCompletion = !toolCallbackInvoked && !completionSent && 
+                (streamErrorOccurred || receivedSSEData);
+            
+            if (shouldSendCompletion) {
                 if (streamErrorOccurred) {
                     logger.error(`Stream read failed: ${streamErrorMessage}`);
                 }
