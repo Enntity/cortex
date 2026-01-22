@@ -701,10 +701,14 @@ export default {
             await say(pathwayResolver.rootRequestId || pathwayResolver.requestId, `\n`, 1000, false, false);
 
             try {
+                // Use configured reasoning effort for post-tool calls (synthesis/decisions)
+                // Skip memory reload - it was already loaded on the first call
                 const result = await pathwayResolver.promptAndParse({
                     ...args,
                     tools: entityToolsOpenAiFormat,
                     tool_choice: "auto",
+                    reasoningEffort: args.configuredReasoningEffort || 'low',
+                    skipMemoryLoad: true,  // Don't reload memory on intermediate tool calls (context already loaded)
                 });
                 
                 // Check if promptAndParse returned null (model call failed)
@@ -858,12 +862,16 @@ export default {
         try {
             let currentMessages = JSON.parse(JSON.stringify(args.chatHistory));
 
+            // Store configured reasoning effort for use after tool calls
+            // First call uses 'low' for fast tool selection, subsequent calls use configured value
+            args.configuredReasoningEffort = reasoningEffort;
+
             let response = await runAllPrompts({
                 ...args,
                 modelOverride,
                 chatHistory: currentMessages,
                 availableFiles,
-                reasoningEffort,
+                reasoningEffort: 'low',  // Fast first call - just selecting tools
                 tools: entityToolsOpenAiFormat,
                 tool_choice: "auto"
             });
@@ -950,9 +958,10 @@ export default {
                             assistantResponse = response.output_text || response.content || JSON.stringify(response);
                         }
                         
-                        // Record user turn
+                        // Record turns and trigger synthesis - all fire and forget
+                        // No need to block response for Redis writes
                         if (userMessage) {
-                            await continuityService.recordTurn(
+                            continuityService.recordTurn(
                                 pathwayResolver.continuityEntityId,
                                 pathwayResolver.continuityUserId,
                                 {
@@ -963,9 +972,8 @@ export default {
                             );
                         }
                         
-                        // Record assistant turn
                         if (assistantResponse) {
-                            await continuityService.recordTurn(
+                            continuityService.recordTurn(
                                 pathwayResolver.continuityEntityId,
                                 pathwayResolver.continuityUserId,
                                 {
@@ -976,7 +984,6 @@ export default {
                             );
                         }
                         
-                        // Trigger background synthesis (fire and forget)
                         continuityService.triggerSynthesis(
                             pathwayResolver.continuityEntityId,
                             pathwayResolver.continuityUserId,
