@@ -820,40 +820,45 @@ test.serial('deduplication drift check: LLM-generated mega-memory is rejected', 
     const { MemoryDeduplicator } = await import('../../../../lib/continuity/synthesis/MemoryDeduplicator.js');
     const { checkMergeDrift } = await import('../../../../lib/continuity/types.js');
     
-    // Simulate vectors for memories that are similar (0.85 similarity)
+    // Simulate vectors for memories that are similar (~0.85 similarity)
     // M = new memory about "80s movies"
     // S = existing memory about "80s movies" 
     // M' = LLM's "helpful" expanded version covering both + more
     
-    // These are simplified 4D vectors for illustration
-    const mVector = [0.8, 0.2, 0.1, 0.0];   // "Jason loves 80s movies"
-    const sVector = [0.75, 0.25, 0.12, 0.0]; // "Jason enjoys films from the 1980s" - similar!
+    // These vectors are designed so M and S have ~0.85 similarity (distinct enough to test properly)
+    // Using more orthogonal components to control similarity precisely
+    const mVector = [0.9, 0.3, 0.1, 0.0];   // "Jason loves 80s movies"
+    const sVector = [0.7, 0.5, 0.3, 0.2];   // "Jason enjoys films from the 1980s" - related but distinct
     
     // Original similarity check
     const originalSim = cosineSimilarity(mVector, sVector);
     t.log(`Original similarity M<->S: ${originalSim.toFixed(3)}`);
-    t.true(originalSim > 0.75, `M and S should be similar enough to trigger merge (got ${originalSim.toFixed(3)})`);
+    t.true(originalSim > 0.75 && originalSim < 0.95, `M and S should be similar but not too close (got ${originalSim.toFixed(3)})`);
     
-    // Scenario A: LLM generates a proper dedup (stays close to both)
-    const goodMergeVector = [0.77, 0.23, 0.11, 0.0];  // Between M and S
+    // Scenario A: LLM generates a proper dedup (stays close to M while incorporating S)
+    // A good merge should be closer to M than S, but also at least as close to S as M was
+    // This vector leans toward M but incorporates some of S's characteristics
+    const goodMergeVector = [0.85, 0.35, 0.15, 0.05];  // Closer to M, but incorporated S
     const goodResult = checkMergeDrift(mVector, sVector, goodMergeVector);
-    t.log(`Good merge: valid=${goodResult.valid}, M'->M=${goodResult.mergedToM.toFixed(3)}, M'->S=${goodResult.mergedToS.toFixed(3)}`);
+    t.log(`Good merge: valid=${goodResult.valid}, M'->M=${goodResult.mergedToM.toFixed(3)}, M'->S=${goodResult.mergedToS.toFixed(3)}, orig=${goodResult.originalSim.toFixed(3)}`);
     t.true(goodResult.valid, 'Good merge (staying close to both) should pass');
     
     // Scenario B: LLM generates a mega-memory that expands beyond both
     // This simulates: "Jason loves 80s movies like Back to the Future, enjoys quoting them, 
     // has a Ghostbusters poster, and appreciates the synthesizer soundtracks of that era"
-    const megaMemoryVector = [0.5, 0.4, 0.4, 0.3];  // Drifted to cover more territory
+    const megaMemoryVector = [0.4, 0.4, 0.5, 0.5];  // Drifted to cover more territory
     const badResult = checkMergeDrift(mVector, sVector, megaMemoryVector);
     t.log(`Mega-memory: valid=${badResult.valid}, M'->M=${badResult.mergedToM.toFixed(3)}, M'->S=${badResult.mergedToS.toFixed(3)}`);
-    t.log(`Required: M'->M >= ${badResult.minSimToM.toFixed(3)}, M'->S >= ${badResult.originalSim.toFixed(3)}`);
+    t.log(`Required: M'->M >= M'->S (${badResult.mergedToS.toFixed(3)}), M'->S >= originalSim (${badResult.originalSim.toFixed(3)})`);
     t.false(badResult.valid, 'Mega-memory (expanded beyond sources) should be REJECTED');
     
-    // Verify the specific failure mode
-    const driftedFromM = badResult.mergedToM < badResult.minSimToM;
-    const driftedFromS = badResult.mergedToS < badResult.originalSim;
-    t.true(driftedFromM || driftedFromS, 'Should fail due to drift from M or S');
-    t.log(`Rejection reason: drifted from M: ${driftedFromM}, drifted from S: ${driftedFromS}`);
+    // Verify the specific failure mode - should fail on one of the two conditions:
+    // 1. mergedToM < mergedToS (pulled toward existing, lost new info)
+    // 2. mergedToS < originalSim (didn't actually incorporate existing)
+    const pulledTowardS = badResult.mergedToM < badResult.mergedToS;
+    const didntIncorporateS = badResult.mergedToS < badResult.originalSim;
+    t.true(pulledTowardS || didntIncorporateS, 'Should fail due to drift');
+    t.log(`Rejection reason: ${badResult.reason}`);
 });
 
 test.serial('deduplication drift check: thematically related but distinct memories link instead of merge', async (t) => {

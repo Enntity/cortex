@@ -16,10 +16,17 @@ import { createParser } from 'eventsource-parser';
 import CortexResponse from '../lib/cortexResponse.js';
 // Continuity Memory Architecture (parallel system)
 import { getContinuityMemoryService } from '../lib/continuity/index.js';
+import { ContextBuilder } from '../lib/continuity/synthesis/ContextBuilder.js';
 // Shared context key registry for user-level encryption
 import { registerContextKey } from '../lib/contextKeyRegistry.js';
 
 const modelTypesExcludedFromProgressUpdates = ['OPENAI-DALLE2', 'OPENAI-DALLE3'];
+
+// Continuity context uses stale-while-revalidate caching in Redis:
+// - Any cached context is used immediately (even if old)
+// - Fresh time context is added on each request
+// - Background refresh updates cache for next request
+// - Only first-ever request for an entity/user blocks on cold storage
 
 class PathwayResolver {
     // Optional endpoints override parameter is for testing purposes
@@ -410,10 +417,14 @@ class PathwayResolver {
             }
 
             // Ensure completion is sent if not already done
-            // Only send completion if we were actually streaming (received SSE data)
-            // Non-streaming responses (tool calls) should not send completion to parent
+            // Send completion if:
+            // 1. Stream error occurred (always notify client of errors)
+            // 2. OR we received SSE data but no completion was sent (and no tool callback)
             // Don't send completion if a tool callback was invoked (stream will resume)
-            if (receivedSSEData && !toolCallbackInvoked && (streamErrorOccurred || !completionSent)) {
+            const shouldSendCompletion = !toolCallbackInvoked && !completionSent && 
+                (streamErrorOccurred || receivedSSEData);
+            
+            if (shouldSendCompletion) {
                 if (streamErrorOccurred) {
                     logger.error(`Stream read failed: ${streamErrorMessage}`);
                 }
@@ -575,26 +586,85 @@ class PathwayResolver {
                             // Initialize session
                             await continuityService.initSession(entityId, userId);
                             
-                            // Get narrative context window (layered: bootstrap + topic)
-                            const continuityContext = await continuityService.getContextWindow({
-                                entityId,
-                                userId,
-                                query: currentQuery,
-                                options: {
-                                    episodicLimit: 20,
-                                    topicMemoryLimit: 10,         // Topic-specific semantic search
-                                    bootstrapRelationalLimit: 10, // Top relationship anchors (always included)
-                                    bootstrapMinImportance: 5,    // Minimum importance for relational base
-                                    expandGraph: true
+                            // Stale-while-revalidate: check Redis cache first
+                            const cached = await continuityService.hotMemory?.getRenderedContextCache(entityId, userId);
+                            
+                            if (cached?.context) {
+                                // Use cached context immediately, but add fresh time context
+                                let context = cached.context || '';
+                                
+                                // Fetch expression state from Redis (fast) for fresh time data
+                                try {
+                                    const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
+                                    const timeContext = ContextBuilder.buildTimeContext(expressionState);
+                                    if (timeContext) {
+                                        context = context + '\n\n' + timeContext;
+                                    }
+                                } catch (timeErr) {
+                                    logger.debug(`Could not add time context: ${timeErr.message}`);
                                 }
-                            });
-                            
-                            // Store for injection into prompts
-                            this.continuityContext = continuityContext || '';
-                            this.continuityEntityId = entityId;
-                            this.continuityUserId = userId;
-                            
-                            logger.debug(`Loaded continuity context (${continuityContext?.length || 0} chars)`);
+                                
+                                this.continuityContext = context;
+                                this.continuityEntityId = entityId;
+                                this.continuityUserId = userId;
+                                logger.debug(`[PROFILE:mem] Using Redis cached context (${cached.context?.length || 0} chars, age: ${Date.now() - cached.timestamp}ms)`);
+                                
+                                // Refresh cache in background (fire-and-forget)
+                                continuityService.getContextWindow({
+                                    entityId,
+                                    userId,
+                                    query: currentQuery,
+                                    options: {
+                                        episodicLimit: 20,
+                                        topicMemoryLimit: 10,
+                                        bootstrapRelationalLimit: 10,
+                                        bootstrapMinImportance: 5,
+                                        expandGraph: true
+                                    }
+                                }).then(freshContext => {
+                                    // Update Redis cache
+                                    continuityService.hotMemory?.setRenderedContextCache(entityId, userId, freshContext || '');
+                                    logger.debug(`[PROFILE:mem] Background refresh complete (${freshContext?.length || 0} chars)`);
+                                }).catch(err => {
+                                    logger.warn(`Background continuity refresh failed: ${err.message}`);
+                                });
+                            } else {
+                                // No cache - must load synchronously (first request)
+                                const loadStart = Date.now();
+                                let continuityContext = await continuityService.getContextWindow({
+                                    entityId,
+                                    userId,
+                                    query: currentQuery,
+                                    options: {
+                                        episodicLimit: 20,
+                                        topicMemoryLimit: 10,
+                                        bootstrapRelationalLimit: 10,
+                                        bootstrapMinImportance: 5,
+                                        expandGraph: true
+                                    }
+                                });
+                                
+                                // Cache to Redis WITHOUT time-sensitive parts
+                                continuityService.hotMemory?.setRenderedContextCache(entityId, userId, continuityContext || '');
+                                
+                                // Add fresh time context for this request
+                                try {
+                                    const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
+                                    const timeContext = ContextBuilder.buildTimeContext(expressionState);
+                                    if (timeContext && continuityContext) {
+                                        continuityContext = continuityContext + '\n\n' + timeContext;
+                                    }
+                                } catch (timeErr) {
+                                    logger.debug(`Could not add time context: ${timeErr.message}`);
+                                }
+                                
+                                // Store for injection into prompts
+                                this.continuityContext = continuityContext || '';
+                                this.continuityEntityId = entityId;
+                                this.continuityUserId = userId;
+                                
+                                logger.debug(`[PROFILE:mem] Loaded continuity context (${continuityContext?.length || 0} chars) in ${Date.now() - loadStart}ms (cold)`);
+                            }
                         }
                     } catch (error) {
                         logger.warn(`Continuity memory load failed (non-fatal): ${error.message}`);
@@ -626,7 +696,11 @@ class PathwayResolver {
         let data = null;
         
         for (let retries = 0; retries < MAX_RETRIES; retries++) {
-            await loadMemory(); // Reset memory state on each retry
+            // Skip memory load if already loaded (e.g., intermediate tool calls)
+            // The continuityContext from the first call persists on the resolver
+            if (!args.skipMemoryLoad) {
+                await loadMemory(); // Reset memory state on each retry
+            }
             
             data = await this.processRequest(args);
             if (!data) {

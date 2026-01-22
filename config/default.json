@@ -121,7 +121,7 @@
                         "Content-Type": "application/json"
                     },
                     "params": {
-                        "model": "grok-4-1-fast"
+                        "model": "grok-4-1-fast-non-reasoning"
                     },
                     "requestsPerSecond": 10
                 }
