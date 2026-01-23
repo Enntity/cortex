@@ -8,6 +8,11 @@ export interface VoiceConfig {
     provider: VoiceProviderType;
     entityId: string;
     chatId?: string;
+    userId?: string;
+    contextId?: string;      // For continuity memory (user's context ID)
+    contextKey?: string;     // For continuity memory (user's context key)
+    aiName?: string;         // Entity display name
+    userName?: string;       // User display name
     voiceSample?: string;
     voiceId?: string;
     model?: string;
@@ -38,6 +43,7 @@ export interface MediaEvent {
 export interface AudioData {
     data: string; // Base64 encoded PCM16
     sampleRate: number;
+    trackId?: string; // For tracking sentence audio streams
 }
 
 export interface SessionState {
@@ -145,6 +151,11 @@ export type VoiceProviderFactory = (
  */
 export interface ICortexBridge {
     /**
+     * Set session context for sys_entity_agent calls
+     */
+    setSessionContext(config: VoiceConfig): void;
+
+    /**
      * Send a message to the entity agent and get a response
      */
     query(
@@ -154,19 +165,19 @@ export interface ICortexBridge {
     ): Promise<CortexAgentResponse>;
 
     /**
-     * Get voice sample for an entity
+     * Get voice sample for an entity (optional for streaming bridges)
      */
-    getVoiceSample(entityId: string): Promise<string | null>;
+    getVoiceSample?(entityId: string): Promise<string | null>;
 
     /**
      * Report tool execution status
      */
-    onToolStatus(callback: (event: ToolStatusEvent) => void): void;
+    onToolStatus?(callback: (event: ToolStatusEvent) => void): void;
 
     /**
      * Report media events
      */
-    onMedia(callback: (event: MediaEvent) => void): void;
+    onMedia?(callback: (event: MediaEvent) => void): void;
 }
 
 /**

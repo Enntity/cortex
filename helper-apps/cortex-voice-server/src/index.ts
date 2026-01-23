@@ -7,7 +7,8 @@
 
 import { createServer } from 'http';
 import { Hono } from 'hono';
-import { serve } from '@hono/node-server';
+// serve is unused - using native http createServer instead
+// import { serve } from '@hono/node-server';
 import { loadConfig, validateConfig } from './config.js';
 import { SocketServer } from './SocketServer.js';
 import { getAvailableProviders } from './providers/index.js';

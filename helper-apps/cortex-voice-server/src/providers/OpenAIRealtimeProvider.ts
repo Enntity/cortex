@@ -5,7 +5,7 @@
  * Supports voice-to-voice with server-side VAD and interruption handling.
  */
 
-import { RealtimeClient } from '@openai/realtime-api-beta';
+import WebSocket from 'ws';
 import { BaseVoiceProvider } from './BaseProvider.js';
 import {
     VoiceProviderType,
@@ -15,41 +15,85 @@ import {
     ICortexBridge,
 } from '../types.js';
 
-// Filler messages for tool execution
-const FILLER_MESSAGES = [
-    "Let me look that up for you.",
-    "One moment while I check that.",
-    "I'll find that information for you.",
-    "Give me just a second.",
-    "Let me see what I can find.",
-];
+const REALTIME_API_URL = 'wss://api.openai.com/v1/realtime';
+const MODEL = 'gpt-4o-realtime-preview-2024-12-17';
+
+interface RealtimeEvent {
+    type: string;
+    event_id?: string;
+    [key: string]: any;
+}
 
 export class OpenAIRealtimeProvider extends BaseVoiceProvider {
     readonly type: VoiceProviderType = 'openai-realtime';
 
-    private client: RealtimeClient | null = null;
+    private ws: WebSocket | null = null;
     private conversationHistory: ConversationMessage[] = [];
-    private currentTranscript: string = '';
-    private isProcessingTool: boolean = false;
-    private pendingToolResponse: string | null = null;
+    private eventId: number = 0;
 
     constructor(cortexBridge: ICortexBridge, private apiKey: string) {
         super(cortexBridge);
     }
 
+    private generateEventId(): string {
+        return `evt_${++this.eventId}`;
+    }
+
     async connect(config: VoiceConfig): Promise<void> {
         this._config = config;
 
-        try {
-            this.client = new RealtimeClient({
-                apiKey: this.apiKey,
+        return new Promise((resolve, reject) => {
+            const url = `${REALTIME_API_URL}?model=${MODEL}`;
+
+            this.ws = new WebSocket(url, {
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    'OpenAI-Beta': 'realtime=v1',
+                },
             });
 
-            // Configure session
-            await this.client.updateSession({
+            this.ws.on('open', () => {
+                console.log(`[OpenAI Realtime] WebSocket connected`);
+                this.setConnected(true);
+                this.configureSession(config);
+                resolve();
+            });
+
+            this.ws.on('message', (data: WebSocket.Data) => {
+                try {
+                    const event: RealtimeEvent = JSON.parse(data.toString());
+                    this.handleEvent(event);
+                } catch (error) {
+                    console.error('[OpenAI Realtime] Failed to parse message:', error);
+                }
+            });
+
+            this.ws.on('error', (error) => {
+                console.error('[OpenAI Realtime] WebSocket error:', error);
+                this.emitError(error);
+                reject(error);
+            });
+
+            this.ws.on('close', (code, reason) => {
+                console.log(`[OpenAI Realtime] WebSocket closed: ${code} ${reason}`);
+                this.setConnected(false);
+                this.setState('idle');
+            });
+        });
+    }
+
+    private configureSession(config: VoiceConfig): void {
+        // Available voices: alloy, ash, ballad, coral, sage, shimmer, verse, echo
+        // ash, coral, sage, verse are more natural/expressive
+        const voice = config.voiceId || 'verse';
+
+        const sessionConfig = {
+            event_id: this.generateEventId(),
+            type: 'session.update',
+            session: {
                 modalities: ['text', 'audio'],
                 instructions: this.buildSystemInstructions(config),
-                voice: 'alloy',
+                voice,
                 input_audio_format: 'pcm16',
                 output_audio_format: 'pcm16',
                 input_audio_transcription: {
@@ -61,40 +105,28 @@ export class OpenAIRealtimeProvider extends BaseVoiceProvider {
                     prefix_padding_ms: 300,
                     silence_duration_ms: 500,
                 },
-            });
-
-            // Add the cortex tool for entity agent queries
-            await this.client.addTool(
-                {
+                tools: [{
+                    type: 'function',
                     name: 'cortex_query',
-                    description: 'Query the Cortex entity agent for information, execute tools, and get responses. Use this for any request that requires accessing the entity\'s knowledge, executing actions, or getting intelligent responses.',
+                    description: 'Query the Cortex entity agent for information, execute tools, and get responses. Use this for any request that requires accessing entity knowledge, executing actions, or getting intelligent responses.',
                     parameters: {
                         type: 'object',
                         properties: {
                             query: {
                                 type: 'string',
-                                description: 'The user\'s query or request to process',
+                                description: 'The user query or request to process',
                             },
                         },
                         required: ['query'],
                     },
-                },
-                async ({ query }: { query: string }) => {
-                    return await this.handleCortexQuery(query);
-                }
-            );
+                }],
+                tool_choice: 'auto',
+                temperature: 0.8,
+                max_response_output_tokens: 4096,
+            },
+        };
 
-            this.setupEventHandlers();
-
-            await this.client.connect();
-            this.setConnected(true);
-            this.setState('idle');
-
-            console.log(`[OpenAI Realtime] Connected for entity: ${config.entityId}`);
-        } catch (error) {
-            this.emitError(error as Error);
-            throw error;
-        }
+        this.send(sessionConfig);
     }
 
     private buildSystemInstructions(config: VoiceConfig): string {
@@ -115,108 +147,127 @@ IMPORTANT GUIDELINES:
 The entity has access to many tools including search, image generation, calculations, and more. Always route tool requests through cortex_query.`;
     }
 
-    private setupEventHandlers(): void {
-        if (!this.client) return;
-
-        // Handle input audio transcription
-        this.client.on('conversation.updated', (event: any) => {
-            const { item } = event;
-
-            if (item.role === 'user' && item.formatted?.transcript) {
-                this.currentTranscript = item.formatted.transcript;
-                this.emit('transcript', {
-                    type: 'user',
-                    content: this.currentTranscript,
-                    isFinal: item.status === 'completed',
-                    timestamp: Date.now(),
-                });
-
-                if (item.status === 'completed') {
-                    this.conversationHistory.push({
-                        role: 'user',
-                        content: this.currentTranscript,
-                        timestamp: Date.now(),
-                    });
-                    this.currentTranscript = '';
-                }
-            }
-
-            if (item.role === 'assistant') {
-                if (item.formatted?.transcript) {
-                    this.emit('transcript', {
-                        type: 'assistant',
-                        content: item.formatted.transcript,
-                        isFinal: item.status === 'completed',
-                        timestamp: Date.now(),
-                    });
-                }
-
-                if (item.status === 'completed' && item.formatted?.transcript) {
-                    this.conversationHistory.push({
-                        role: 'assistant',
-                        content: item.formatted.transcript,
-                        timestamp: Date.now(),
-                    });
-                }
-            }
-        });
-
-        // Handle audio output
-        this.client.on('conversation.item.audio', (event: any) => {
-            if (event.audio) {
-                this.setState('speaking');
-                this.emit('audio', {
-                    data: event.audio,
-                    sampleRate: 24000,
-                });
-            }
-        });
-
-        // Handle audio done
-        this.client.on('conversation.item.audio.completed', () => {
-            this.setState('idle');
-        });
-
-        // Handle speech detection
-        this.client.on('input_audio_buffer.speech_started', () => {
-            this.setState('listening');
-        });
-
-        this.client.on('input_audio_buffer.speech_stopped', () => {
-            this.setState('processing');
-        });
-
-        // Handle responses
-        this.client.on('response.created', () => {
-            if (!this.isProcessingTool) {
-                this.setState('processing');
-            }
-        });
-
-        this.client.on('response.done', () => {
-            if (!this.isProcessingTool) {
-                this.setState('idle');
-            }
-        });
-
-        // Handle errors
-        this.client.on('error', (error: any) => {
-            console.error('[OpenAI Realtime] Error:', error);
-            this.emitError(new Error(error.message || 'Unknown realtime error'));
-        });
-
-        // Handle disconnection
-        this.client.on('close', () => {
-            this.setConnected(false);
-            this.setState('idle');
-        });
+    private send(event: RealtimeEvent): void {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(event));
+        }
     }
 
-    private async handleCortexQuery(query: string): Promise<string> {
-        this.isProcessingTool = true;
+    private handleEvent(event: RealtimeEvent): void {
+        switch (event.type) {
+            case 'session.created':
+            case 'session.updated':
+                console.log(`[OpenAI Realtime] Session ${event.type}`);
+                this.setState('idle');
+                break;
+
+            case 'input_audio_buffer.speech_started':
+                this.setState('listening');
+                break;
+
+            case 'input_audio_buffer.speech_stopped':
+                this.setState('processing');
+                break;
+
+            case 'conversation.item.input_audio_transcription.completed':
+                // User's speech transcribed
+                if (event.transcript) {
+                    this.emit('transcript', {
+                        type: 'user',
+                        content: event.transcript,
+                        isFinal: true,
+                        timestamp: Date.now(),
+                    });
+                    this.conversationHistory.push({
+                        role: 'user',
+                        content: event.transcript,
+                        timestamp: Date.now(),
+                    });
+                }
+                break;
+
+            case 'response.created':
+                this.setState('processing');
+                break;
+
+            case 'response.audio_transcript.delta':
+                // Assistant transcript streaming
+                if (event.delta) {
+                    this.emit('transcript', {
+                        type: 'assistant',
+                        content: event.delta,
+                        isFinal: false,
+                        timestamp: Date.now(),
+                    });
+                }
+                break;
+
+            case 'response.audio_transcript.done':
+                // Final assistant transcript
+                if (event.transcript) {
+                    this.emit('transcript', {
+                        type: 'assistant',
+                        content: event.transcript,
+                        isFinal: true,
+                        timestamp: Date.now(),
+                    });
+                    this.conversationHistory.push({
+                        role: 'assistant',
+                        content: event.transcript,
+                        timestamp: Date.now(),
+                    });
+                }
+                break;
+
+            case 'response.audio.delta':
+                // Audio chunk from assistant
+                if (event.delta) {
+                    this.setState('speaking');
+                    this.emit('audio', {
+                        data: event.delta,
+                        sampleRate: 24000,
+                    });
+                }
+                break;
+
+            case 'response.audio.done':
+                // Audio response complete
+                break;
+
+            case 'response.done':
+                this.setState('idle');
+                break;
+
+            case 'response.function_call_arguments.done':
+                // Tool call complete, execute it
+                this.handleToolCall(event);
+                break;
+
+            case 'error':
+                console.error('[OpenAI Realtime] API error:', event.error);
+                this.emitError(new Error(event.error?.message || 'Unknown error'));
+                break;
+
+            default:
+                // Log unhandled events in debug
+                if (event.type && !event.type.includes('.delta')) {
+                    console.log(`[OpenAI Realtime] Event: ${event.type}`);
+                }
+        }
+    }
+
+    private async handleToolCall(event: RealtimeEvent): Promise<void> {
+        const callId = event.call_id;
+        const name = event.name;
+        let args: any = {};
 
         try {
-            // Emit tool status
+            args = JSON.parse(event.arguments || '{}');
+        } catch (e) {
+            console.error('[OpenAI Realtime] Failed to parse tool arguments:', e);
+        }
+
+        if (name === 'cortex_query' && args.query) {
             this.emit('tool-status', {
                 name: 'cortex_query',
                 status: 'running',
@@ -224,130 +275,133 @@ The entity has access to many tools including search, image generation, calculat
                 timestamp: Date.now(),
             });
 
-            // Query the Cortex entity agent
-            const response = await this.cortexBridge.query(
-                query,
-                this._config!.entityId,
-                this.conversationHistory.slice(-8) // Last 8 messages for context
-            );
+            try {
+                const response = await this.cortexBridge.query(
+                    args.query,
+                    this._config!.entityId,
+                    this.conversationHistory.slice(-8)
+                );
 
-            // Handle media events if present
-            if (response.tool?.includes('image') || response.tool?.includes('media')) {
-                // Parse media URLs from response if present
-                const mediaUrls = this.extractMediaUrls(response.result);
-                if (mediaUrls.length > 0) {
-                    this.emit('media', {
-                        type: mediaUrls.length > 1 ? 'slideshow' : 'image',
-                        urls: mediaUrls,
-                    });
-                }
+                this.emit('tool-status', {
+                    name: response.tool || 'cortex_query',
+                    status: 'completed',
+                    message: 'Done',
+                    timestamp: Date.now(),
+                });
+
+                // Send tool result back to OpenAI
+                this.send({
+                    event_id: this.generateEventId(),
+                    type: 'conversation.item.create',
+                    item: {
+                        type: 'function_call_output',
+                        call_id: callId,
+                        output: response.result,
+                    },
+                });
+
+                // Trigger response generation
+                this.send({
+                    event_id: this.generateEventId(),
+                    type: 'response.create',
+                });
+
+            } catch (error) {
+                this.emit('tool-status', {
+                    name: 'cortex_query',
+                    status: 'error',
+                    message: (error as Error).message,
+                    timestamp: Date.now(),
+                });
+
+                // Send error result
+                this.send({
+                    event_id: this.generateEventId(),
+                    type: 'conversation.item.create',
+                    item: {
+                        type: 'function_call_output',
+                        call_id: callId,
+                        output: `Error: ${(error as Error).message}`,
+                    },
+                });
+
+                this.send({
+                    event_id: this.generateEventId(),
+                    type: 'response.create',
+                });
             }
-
-            // Emit completion status
-            this.emit('tool-status', {
-                name: response.tool || 'cortex_query',
-                status: 'completed',
-                message: 'Done',
-                timestamp: Date.now(),
-            });
-
-            // Handle errors/warnings
-            if (response.errors && response.errors.length > 0) {
-                console.warn('[OpenAI Realtime] Cortex errors:', response.errors);
-            }
-            if (response.warnings && response.warnings.length > 0) {
-                console.warn('[OpenAI Realtime] Cortex warnings:', response.warnings);
-            }
-
-            return response.result;
-        } catch (error) {
-            this.emit('tool-status', {
-                name: 'cortex_query',
-                status: 'error',
-                message: (error as Error).message,
-                timestamp: Date.now(),
-            });
-
-            return `I encountered an error while processing your request: ${(error as Error).message}`;
-        } finally {
-            this.isProcessingTool = false;
         }
-    }
-
-    private extractMediaUrls(text: string): string[] {
-        // Extract URLs that look like media (images, videos)
-        const urlRegex = /https?:\/\/[^\s<>"{}|\\^`\[\]]+\.(jpg|jpeg|png|gif|webp|mp4|webm)/gi;
-        const matches = text.match(urlRegex);
-        return matches || [];
     }
 
     async disconnect(): Promise<void> {
-        if (this.client) {
-            try {
-                await this.client.disconnect();
-            } catch (error) {
-                console.error('[OpenAI Realtime] Error disconnecting:', error);
-            }
-            this.client = null;
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
         }
-
         this.setConnected(false);
         this.setState('idle');
         this.conversationHistory = [];
-        this.currentTranscript = '';
     }
 
     sendAudio(data: AudioData): void {
-        if (!this.client || !this._isConnected || this._isMuted) {
+        if (!this.ws || !this._isConnected || this._isMuted) {
             return;
         }
 
-        try {
-            this.client.appendInputAudio(data.data);
-        } catch (error) {
-            console.error('[OpenAI Realtime] Error sending audio:', error);
-        }
+        this.send({
+            event_id: this.generateEventId(),
+            type: 'input_audio_buffer.append',
+            audio: data.data,
+        });
     }
 
     async sendText(text: string): Promise<void> {
-        if (!this.client || !this._isConnected) {
+        if (!this.ws || !this._isConnected) {
             throw new Error('Not connected');
         }
 
-        try {
-            // Add to conversation history
-            this.conversationHistory.push({
+        this.conversationHistory.push({
+            role: 'user',
+            content: text,
+            timestamp: Date.now(),
+        });
+
+        this.emit('transcript', {
+            type: 'user',
+            content: text,
+            isFinal: true,
+            timestamp: Date.now(),
+        });
+
+        // Create user message
+        this.send({
+            event_id: this.generateEventId(),
+            type: 'conversation.item.create',
+            item: {
+                type: 'message',
                 role: 'user',
-                content: text,
-                timestamp: Date.now(),
-            });
+                content: [{
+                    type: 'input_text',
+                    text,
+                }],
+            },
+        });
 
-            this.emit('transcript', {
-                type: 'user',
-                content: text,
-                isFinal: true,
-                timestamp: Date.now(),
-            });
-
-            // Send as user message
-            await this.client.sendUserMessageContent([
-                { type: 'input_text', text },
-            ]);
-        } catch (error) {
-            this.emitError(error as Error);
-            throw error;
-        }
+        // Trigger response
+        this.send({
+            event_id: this.generateEventId(),
+            type: 'response.create',
+        });
     }
 
     interrupt(): void {
-        if (!this.client || !this._isConnected) {
+        if (!this.ws || !this._isConnected) {
             return;
         }
 
-        try {
-            this.client.cancelResponse();
-        } catch (error) {
-            console.error('[OpenAI Realtime] Error interrupting:', error);
-        }
+        this.send({
+            event_id: this.generateEventId(),
+            type: 'response.cancel',
+        });
     }
 }

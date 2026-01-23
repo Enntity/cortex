@@ -9,7 +9,6 @@ import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HTTPServer } from 'http';
 import {
     IVoiceProvider,
-    VoiceProviderType,
     VoiceConfig,
     SessionState,
     ServerConfig,
@@ -21,11 +20,12 @@ import {
 } from './types.js';
 import { createVoiceProvider, getAvailableProviders } from './providers/index.js';
 import { CortexBridge } from './cortex/CortexBridge.js';
+import { StreamingCortexBridge } from './cortex/StreamingCortexBridge.js';
 
 interface SessionData {
     state: SessionState;
     provider: IVoiceProvider;
-    cortexBridge: CortexBridge;
+    cortexBridge: CortexBridge | StreamingCortexBridge;
     idleTimeout: NodeJS.Timeout | null;
     idleCount: number;
     audioBlockTimeout: NodeJS.Timeout | null;
@@ -129,10 +129,21 @@ export class SocketServer {
 
         try {
             // Create Cortex bridge for this session
-            const cortexBridge = new CortexBridge(this.config.cortexApiUrl);
+            // Use streaming bridge for TTS providers (ElevenLabs, OpenAI TTS)
+            // Use regular bridge for OpenAI Realtime (which has native streaming)
+            const useStreaming = providerType === 'elevenlabs' || providerType === 'openai-tts';
+            const cortexBridge = useStreaming
+                ? new StreamingCortexBridge(this.config.cortexApiUrl)
+                : new CortexBridge(this.config.cortexApiUrl);
 
-            // Get voice sample for entity if available
-            const voiceSample = await cortexBridge.getVoiceSample(config.entityId);
+            // Set session context for proper sys_entity_agent calls
+            cortexBridge.setSessionContext(config);
+
+            // Get voice sample for entity if available (only CortexBridge has this method)
+            let voiceSample: string | null = null;
+            if (!useStreaming) {
+                voiceSample = await (cortexBridge as CortexBridge).getVoiceSample(config.entityId);
+            }
 
             // Create voice provider
             const provider = createVoiceProvider(providerType, cortexBridge, this.config);

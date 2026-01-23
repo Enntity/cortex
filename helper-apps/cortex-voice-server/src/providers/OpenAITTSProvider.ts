@@ -22,7 +22,6 @@ export class OpenAITTSProvider extends BaseVoiceProvider {
     private conversationHistory: ConversationMessage[] = [];
     private audioBuffer: Buffer[] = [];
     private isProcessing: boolean = false;
-    private pendingTranscription: boolean = false;
     private voice: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer' = 'alloy';
 
     constructor(cortexBridge: ICortexBridge, apiKey: string) {

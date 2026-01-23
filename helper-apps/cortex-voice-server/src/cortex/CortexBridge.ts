@@ -11,11 +11,12 @@ import {
     ConversationMessage,
     ToolStatusEvent,
     MediaEvent,
+    VoiceConfig,
 } from '../types.js';
 
 const SYS_ENTITY_AGENT_QUERY = `
-query SysEntityAgent($text: String, $contextId: String, $chatHistory: [MultiMessage], $aiName: String) {
-    sys_entity_agent(text: $text, contextId: $contextId, chatHistory: $chatHistory, aiName: $aiName, voiceResponse: true) {
+query SysEntityAgent($text: String, $entityId: String, $chatId: String, $chatHistory: [MultiMessage], $aiName: String, $agentContext: [AgentContextInput], $model: String) {
+    sys_entity_agent(text: $text, entityId: $entityId, chatId: $chatId, chatHistory: $chatHistory, aiName: $aiName, agentContext: $agentContext, model: $model, voiceResponse: true) {
         result
         tool
         errors
@@ -38,13 +39,75 @@ interface MultiMessage {
     content: string;
 }
 
+interface AgentContext {
+    contextId: string;
+    contextKey?: string;
+    default?: boolean;
+}
+
+interface SessionContext {
+    entityId: string;
+    chatId?: string;
+    aiName?: string;
+    agentContext?: AgentContext[];
+    model?: string;
+}
+
+// GraphQL response types
+interface GraphQLResponse {
+    data?: {
+        sys_entity_agent?: {
+            result: string;
+            tool?: string;
+            errors?: string[];
+            warnings?: string[];
+        };
+    };
+    errors?: Array<{ message: string }>;
+}
+
+interface VoiceSampleResponse {
+    data?: {
+        sys_generator_voice_sample?: {
+            url?: string;
+            voiceId?: string;
+        };
+    };
+}
+
 export class CortexBridge implements ICortexBridge {
     private apiUrl: string;
+    private sessionContext: SessionContext | null = null;
     private toolStatusCallbacks: ((event: ToolStatusEvent) => void)[] = [];
     private mediaCallbacks: ((event: MediaEvent) => void)[] = [];
 
     constructor(apiUrl: string) {
         this.apiUrl = apiUrl;
+    }
+
+    /**
+     * Set session context from VoiceConfig
+     */
+    setSessionContext(config: VoiceConfig): void {
+        // Build agentContext array for continuity memory
+        // This passes the user's contextId and contextKey to sys_entity_agent
+        const agentContext: AgentContext[] = [];
+        if (config.contextId) {
+            agentContext.push({
+                contextId: config.contextId,
+                contextKey: config.contextKey,
+                default: true,
+            });
+        }
+
+        this.sessionContext = {
+            entityId: config.entityId,
+            chatId: config.chatId,
+            aiName: config.aiName || config.entityId,
+            agentContext: agentContext.length > 0 ? agentContext : undefined,
+            model: config.model,
+        };
+        console.log('[CortexBridge] Session context set:', this.sessionContext);
     }
 
     async query(
@@ -58,12 +121,34 @@ export class CortexBridge implements ICortexBridge {
             content: msg.content,
         }));
 
-        const variables = {
+        // Use session context if available, otherwise fall back to entityId
+        const ctx = this.sessionContext || { entityId, aiName: entityId };
+
+        const variables: Record<string, unknown> = {
             text,
-            contextId: entityId,
+            entityId: ctx.entityId,
+            chatId: ctx.chatId,
             chatHistory: formattedHistory,
-            aiName: entityId, // Use entityId as AI name for context
+            aiName: ctx.aiName || ctx.entityId,
         };
+
+        // Add agentContext if available (enables continuity memory)
+        if (ctx.agentContext && ctx.agentContext.length > 0) {
+            variables.agentContext = ctx.agentContext;
+        }
+
+        // Add model if specified
+        if (ctx.model) {
+            variables.model = ctx.model;
+        }
+
+        console.log('[CortexBridge] Query with context:', {
+            text: text.substring(0, 50),
+            entityId: variables.entityId,
+            aiName: variables.aiName,
+            model: variables.model,
+            hasAgentContext: !!variables.agentContext,
+        });
 
         try {
             const response = await fetch(this.apiUrl, {
@@ -81,7 +166,7 @@ export class CortexBridge implements ICortexBridge {
                 throw new Error(`Cortex API error: ${response.status} ${response.statusText}`);
             }
 
-            const data = await response.json();
+            const data = await response.json() as GraphQLResponse;
 
             if (data.errors && data.errors.length > 0) {
                 console.error('[CortexBridge] GraphQL errors:', data.errors);
@@ -126,7 +211,7 @@ export class CortexBridge implements ICortexBridge {
                 return null;
             }
 
-            const data = await response.json();
+            const data = await response.json() as VoiceSampleResponse;
             return data.data?.sys_generator_voice_sample?.url || null;
         } catch (error) {
             console.warn('[CortexBridge] Failed to get voice sample:', error);
