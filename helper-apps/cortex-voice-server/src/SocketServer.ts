@@ -16,6 +16,7 @@ import {
     TranscriptEvent,
     ToolStatusEvent,
     MediaEvent,
+    TrackCompleteEvent,
     VoiceState,
 } from './types.js';
 import { createVoiceProvider, getAvailableProviders } from './providers/index.js';
@@ -235,6 +236,11 @@ export class SocketServer {
         provider.on('audio', (data: AudioData) => {
             socket.emit('audio:output', data);
             this.resetAudioBlockTimeout(sessionData, socket);
+        });
+
+        // Track complete (signal client to flush audio buffer)
+        provider.on('track-complete', (event: TrackCompleteEvent) => {
+            socket.emit('audio:trackComplete', event);
         });
 
         // Tool status

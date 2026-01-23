@@ -238,14 +238,18 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             );
 
             let pendingBuffer = Buffer.alloc(0);
-            const minChunkSize = 4800; // 100ms of 24kHz mono PCM16
+            // Use chunk size that aligns with 128-sample AudioWorklet frames
+            // 128 samples * 2 bytes = 256 bytes per frame
+            // 2560 samples = 256 * 10 = 20 frames = ~107ms at 24kHz
+            const minChunkSize = 5120; // 2560 samples, aligned to worklet frames
 
             for await (const chunk of audioStream) {
                 if (chunk instanceof Buffer || chunk instanceof Uint8Array) {
                     pendingBuffer = Buffer.concat([pendingBuffer, Buffer.from(chunk)]);
 
                     while (pendingBuffer.length >= minChunkSize) {
-                        const sendSize = Math.floor(minChunkSize / 2) * 2;
+                        // Ensure alignment to 256 bytes (128 samples * 2 bytes)
+                        const sendSize = Math.floor(minChunkSize / 256) * 256;
                         const sendChunk = pendingBuffer.subarray(0, sendSize);
                         pendingBuffer = pendingBuffer.subarray(sendSize);
 
@@ -258,9 +262,9 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                 }
             }
 
-            // Send remaining data
-            if (pendingBuffer.length >= 2) {
-                const alignedLength = Math.floor(pendingBuffer.length / 2) * 2;
+            // For final chunk, align to 256 bytes for worklet compatibility
+            if (pendingBuffer.length >= 256) {
+                const alignedLength = Math.floor(pendingBuffer.length / 256) * 256;
                 const finalChunk = pendingBuffer.subarray(0, alignedLength);
                 this.emit('audio', {
                     data: finalChunk.toString('base64'),
@@ -268,6 +272,9 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                     trackId,
                 });
             }
+
+            // Signal track complete so client can flush audio buffer
+            this.emit('track-complete', { trackId });
         } catch (error) {
             console.error('[ElevenLabs] Error generating speech for sentence:', error);
             throw error;
@@ -408,14 +415,16 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             );
 
             let pendingBuffer = Buffer.alloc(0);
-            const minChunkSize = 4800;
+            // Use chunk size that aligns with 128-sample AudioWorklet frames
+            const minChunkSize = 5120; // 2560 samples, aligned to worklet frames
 
             for await (const chunk of audioStream) {
                 if (chunk instanceof Buffer || chunk instanceof Uint8Array) {
                     pendingBuffer = Buffer.concat([pendingBuffer, Buffer.from(chunk)]);
 
                     while (pendingBuffer.length >= minChunkSize) {
-                        const sendSize = Math.floor(minChunkSize / 2) * 2;
+                        // Ensure alignment to 256 bytes (128 samples * 2 bytes)
+                        const sendSize = Math.floor(minChunkSize / 256) * 256;
                         const sendChunk = pendingBuffer.subarray(0, sendSize);
                         pendingBuffer = pendingBuffer.subarray(sendSize);
 
@@ -427,14 +436,18 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                 }
             }
 
-            if (pendingBuffer.length >= 2) {
-                const alignedLength = Math.floor(pendingBuffer.length / 2) * 2;
+            // For final chunk, align to 256 bytes for worklet compatibility
+            if (pendingBuffer.length >= 256) {
+                const alignedLength = Math.floor(pendingBuffer.length / 256) * 256;
                 const finalChunk = pendingBuffer.subarray(0, alignedLength);
                 this.emit('audio', {
                     data: finalChunk.toString('base64'),
                     sampleRate: 24000,
                 });
             }
+
+            // Signal track complete so client can flush audio buffer
+            this.emit('track-complete', { trackId: 'default' });
         } catch (error) {
             console.error('[ElevenLabs] Error generating speech:', error);
             throw error;

@@ -72,12 +72,17 @@ export interface CortexAgentResponse {
     warnings?: string[];
 }
 
+export interface TrackCompleteEvent {
+    trackId: string;
+}
+
 export interface VoiceProviderEvents {
     'state-change': (state: VoiceState) => void;
     'transcript': (event: TranscriptEvent) => void;
     'audio': (data: AudioData) => void;
     'tool-status': (event: ToolStatusEvent) => void;
     'media': (event: MediaEvent) => void;
+    'track-complete': (event: TrackCompleteEvent) => void;
     'error': (error: Error) => void;
     'connected': () => void;
     'disconnected': () => void;
