@@ -375,37 +375,23 @@ class PathwayResolver {
                 }
 
                 if (incomingMessage) {
-                    // Add timeout to prevent hanging forever
-                    const streamTimeout = setTimeout(() => {
-                        if (!completionSent && !streamErrorOccurred) {
+                    await new Promise((resolve, reject) => {
+                        incomingMessage.on('data', processStream);
+                        incomingMessage.on('end', resolve);
+                        incomingMessage.on('error', (err) => {
                             streamErrorOccurred = true;
-                            streamErrorMessage = 'Stream timeout - no data received for 5 minutes';
-                            logger.error(streamErrorMessage);
-                            incomingMessage.destroy();
-                        }
-                    }, 5 * 60 * 1000); // 5 minute timeout
-
-                    try {
-                        await new Promise((resolve, reject) => {
-                            incomingMessage.on('data', processStream);
-                            incomingMessage.on('end', resolve);
-                            incomingMessage.on('error', (err) => {
-                                streamErrorOccurred = true;
-                                streamErrorMessage = err instanceof Error ? err.message : String(err);
-                                reject(err);
-                            });
-                            incomingMessage.on('close', () => {
-                                // Stream closed - only warn if we received SSE data but no completion
-                                // Skip warning if: non-streaming (no SSE), tool callback invoked (expected close), or error occurred
-                                if (receivedSSEData && !completionSent && !streamErrorOccurred && !toolCallbackInvoked) {
-                                    logger.warn('Stream closed without completion signal');
-                                }
-                                resolve();
-                            });
+                            streamErrorMessage = err instanceof Error ? err.message : String(err);
+                            reject(err);
                         });
-                    } finally {
-                        clearTimeout(streamTimeout);
-                    }
+                        incomingMessage.on('close', () => {
+                            // Stream closed - only warn if we received SSE data but no completion
+                            // Skip warning if: non-streaming (no SSE), tool callback invoked (expected close), or error occurred
+                            if (receivedSSEData && !completionSent && !streamErrorOccurred && !toolCallbackInvoked) {
+                                logger.warn('Stream closed without completion signal');
+                            }
+                            resolve();
+                        });
+                    });
                 }
 
             } catch (error) {
