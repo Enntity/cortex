@@ -1,0 +1,36 @@
+{
+  "name": "cortex-voice-server",
+  "version": "1.0.0",
+  "description": "Pluggable voice server for Cortex entities with OpenAI Realtime, TTS/STT, and 11Labs support",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "lint": "eslint src/**/*.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.12.0",
+    "@openai/realtime-api-beta": "^0.3.1",
+    "dotenv": "^16.4.5",
+    "elevenlabs": "^0.16.0",
+    "hono": "^4.5.0",
+    "openai": "^4.58.0",
+    "socket.io": "^4.7.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "eslint": "^9.8.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
