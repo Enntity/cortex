@@ -3,10 +3,9 @@
  *
  * High-quality TTS with natural voices and voice cloning capability.
  * Supports streaming responses from Cortex - sentences are spoken as they arrive.
- * Pipeline: STT (Whisper) -> Cortex Agent (streaming) -> TTS (ElevenLabs) per sentence
+ * Pipeline: STT (Deepgram streaming) -> Cortex Agent (streaming) -> TTS (ElevenLabs)
  */
 
-import OpenAI from 'openai';
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 import { BaseVoiceProvider } from './BaseProvider.js';
 import {
@@ -18,16 +17,20 @@ import {
     ToolStatusEvent,
 } from '../types.js';
 import { StreamingCortexBridge } from '../cortex/StreamingCortexBridge.js';
+import { StreamingSTT, createStreamingSTT, STTProvider } from '../stt/index.js';
 
 export class ElevenLabsProvider extends BaseVoiceProvider {
     readonly type: VoiceProviderType = 'elevenlabs';
 
-    private openai: OpenAI;
     private elevenlabs: ElevenLabsClient;
     private conversationHistory: ConversationMessage[] = [];
-    private audioBuffer: Buffer[] = [];
     private isProcessing: boolean = false;
     private voiceId: string = 'pNInz6obpgDQGcFmaJgB'; // Default: Adam
+
+    // Streaming STT (replaces batch Whisper for low latency)
+    private streamingSTT: StreamingSTT | null = null;
+    private sttProvider: STTProvider = 'elevenlabs';
+    private deepgramApiKey: string | null = null;
 
     // Streaming support
     private streamingBridge: StreamingCortexBridge | null = null;
@@ -35,14 +38,24 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
     private isSpeaking: boolean = false;
     private currentTrackId: number = 0;
 
+    // Progressive batching for better TTS prosody
+    // Strategy: Send first sentence immediately for low latency, then buffer
+    // all subsequent sentences while TTS is playing. When TTS finishes,
+    // flush the entire buffer as one chunk for maximum prosody context.
+    private isFirstChunk: boolean = true;
+    private pendingBatch: string[] = [];
+    private readonly INTER_CHUNK_DELAY_MS = 120; // Small pause between chunks for natural rhythm
+
     constructor(
         cortexBridge: ICortexBridge,
-        openaiApiKey: string,
-        elevenlabsApiKey: string
+        private elevenlabsApiKey: string,
+        deepgramApiKey?: string,
+        sttProvider?: STTProvider
     ) {
         super(cortexBridge);
-        this.openai = new OpenAI({ apiKey: openaiApiKey });
         this.elevenlabs = new ElevenLabsClient({ apiKey: elevenlabsApiKey });
+        this.deepgramApiKey = deepgramApiKey || null;
+        this.sttProvider = sttProvider || 'elevenlabs'; // Default to ElevenLabs STT
 
         // Check if cortexBridge is a StreamingCortexBridge
         if (cortexBridge instanceof StreamingCortexBridge) {
@@ -88,20 +101,35 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         this.streamingBridge.on('complete', (fullText: string) => {
             console.log('[ElevenLabs] Stream complete, full response length:', fullText.length);
 
-            // Emit the full transcript
-            this.emit('transcript', {
-                type: 'assistant',
-                content: fullText,
-                isFinal: true,
-                timestamp: Date.now(),
-            });
+            // Flush any remaining batched sentences
+            this.flushBatch();
 
-            // Add to conversation history
-            this.conversationHistory.push({
-                role: 'assistant',
-                content: fullText,
-                timestamp: Date.now(),
-            });
+            // Only emit transcript and add to history if we got content
+            if (fullText && fullText.trim().length > 0) {
+                // Emit the full transcript
+                this.emit('transcript', {
+                    type: 'assistant',
+                    content: fullText,
+                    isFinal: true,
+                    timestamp: Date.now(),
+                });
+
+                // Add to conversation history
+                this.conversationHistory.push({
+                    role: 'assistant',
+                    content: fullText,
+                    timestamp: Date.now(),
+                });
+            } else {
+                console.warn('[ElevenLabs] Stream completed with empty response');
+            }
+
+            // If nothing is queued to speak, go back to idle
+            // This handles cases where stream completes with no/empty content
+            if (this.sentenceQueue.length === 0 && this.pendingBatch.length === 0 && !this.isSpeaking) {
+                this.isProcessing = false;
+                this.setState('idle');
+            }
         });
 
         // Handle errors
@@ -130,6 +158,35 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             }
         }
 
+        // Initialize streaming STT
+        this.streamingSTT = createStreamingSTT({
+            provider: this.sttProvider,
+            elevenlabsApiKey: this.elevenlabsApiKey,
+            deepgramApiKey: this.deepgramApiKey || undefined,
+            sampleRate: 16000, // Client sends 16kHz from VAD
+            language: 'en',
+            apiKey: '', // Required by interface but we use specific keys above
+        });
+
+        if (this.streamingSTT) {
+            this.streamingSTT.on('transcript', (data) => {
+                // Emit interim transcripts so client can show live text
+                if (!data.isFinal) {
+                    this.emit('transcript', {
+                        type: 'user',
+                        content: data.text,
+                        isFinal: false,
+                        timestamp: Date.now(),
+                    });
+                }
+            });
+
+            await this.streamingSTT.start();
+            console.log(`[ElevenLabs] Streaming STT initialized (${this.sttProvider})`);
+        } else {
+            console.log('[ElevenLabs] No streaming STT - falling back to batch Whisper');
+        }
+
         this.setConnected(true);
         this.setState('idle');
 
@@ -147,11 +204,18 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             this.streamingBridge.cancel();
         }
 
+        // Stop streaming STT
+        if (this.streamingSTT) {
+            await this.streamingSTT.stop();
+            this.streamingSTT = null;
+        }
+
+        // Clean up batching state
+        this.resetBatchingState();
+
         this.setConnected(false);
         this.setState('idle');
         this.conversationHistory = [];
-        this.audioBuffer = [];
-        this.sentenceQueue = [];
         this.isSpeaking = false;
     }
 
@@ -161,7 +225,18 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         }
 
         const buffer = Buffer.from(data.data, 'base64');
-        this.audioBuffer.push(buffer);
+
+        // Stream to STT for real-time transcription
+        // Reconnect if STT was disconnected (e.g., server-side idle timeout)
+        if (this.streamingSTT) {
+            if (!this.streamingSTT.connected) {
+                console.log('[ElevenLabs] STT disconnected, reconnecting...');
+                this.streamingSTT.start().catch(err => {
+                    console.error('[ElevenLabs] Failed to reconnect STT:', err);
+                });
+            }
+            this.streamingSTT.sendAudio(buffer);
+        }
 
         if (this._state !== 'listening') {
             this.setState('listening');
@@ -169,26 +244,57 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
     }
 
     /**
-     * Queue a sentence for TTS processing
+     * Queue a sentence for TTS processing with progressive batching
+     * First sentence goes immediately for low latency, subsequent sentences
+     * are buffered while TTS is playing and flushed as one chunk when ready
      */
     private queueSentence(sentence: string): void {
-        this.sentenceQueue.push(sentence);
-        this.processNextSentence();
+        if (this.isFirstChunk) {
+            // First sentence: send immediately for low latency
+            console.log('[ElevenLabs] First chunk - sending immediately for low latency');
+            this.isFirstChunk = false;
+            this.sentenceQueue.push(sentence);
+            this.processNextBatch();
+        } else {
+            // Buffer while TTS is playing - will be flushed when current chunk finishes
+            this.pendingBatch.push(sentence);
+            console.log(`[ElevenLabs] Buffering sentence (${this.pendingBatch.length} pending)`);
+
+            // If not currently speaking, flush immediately
+            if (!this.isSpeaking) {
+                this.flushBatch();
+            }
+            // Otherwise, batch will be flushed when current TTS finishes
+        }
     }
 
     /**
-     * Process the next sentence in the queue
+     * Flush all pending sentences to the queue as a single chunk
      */
-    private async processNextSentence(): Promise<void> {
+    private flushBatch(): void {
+        if (this.pendingBatch.length > 0) {
+            // Join all sentences into a single TTS chunk for better prosody
+            const batchedText = this.pendingBatch.join(' ');
+            console.log(`[ElevenLabs] Flushing ${this.pendingBatch.length} sentences as one chunk`);
+            this.pendingBatch = [];
+            this.sentenceQueue.push(batchedText);
+            this.processNextBatch();
+        }
+    }
+
+    /**
+     * Process the next batch/chunk in the queue
+     */
+    private async processNextBatch(): Promise<void> {
         // Don't start if already speaking or queue is empty
         if (this.isSpeaking || this.sentenceQueue.length === 0) {
             return;
         }
 
         this.isSpeaking = true;
-        const sentence = this.sentenceQueue.shift()!;
+        const text = this.sentenceQueue.shift()!;
         this.currentTrackId++;
-        const trackId = `sentence-${this.currentTrackId}`;
+        const trackId = `chunk-${this.currentTrackId}`;
 
         try {
             this.setState('speaking');
@@ -196,20 +302,25 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             // Emit partial transcript as we speak
             this.emit('transcript', {
                 type: 'assistant',
-                content: sentence,
+                content: text,
                 isFinal: false, // Partial - more may be coming
                 timestamp: Date.now(),
             });
 
-            await this.textToSpeechSentence(sentence, trackId);
+            await this.textToSpeechChunk(text, trackId);
         } catch (error) {
-            console.error('[ElevenLabs] Error speaking sentence:', error);
+            console.error('[ElevenLabs] Error speaking chunk:', error);
         } finally {
             this.isSpeaking = false;
 
-            // Process next sentence if available
-            if (this.sentenceQueue.length > 0) {
-                this.processNextSentence();
+            // Flush any sentences that accumulated while we were speaking
+            if (this.pendingBatch.length > 0) {
+                await this.delay(this.INTER_CHUNK_DELAY_MS);
+                this.flushBatch();
+            } else if (this.sentenceQueue.length > 0) {
+                // More chunks waiting in queue
+                await this.delay(this.INTER_CHUNK_DELAY_MS);
+                this.processNextBatch();
             } else if (!this.isProcessing) {
                 // All done, back to idle
                 this.setState('idle');
@@ -218,9 +329,26 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
     }
 
     /**
-     * Convert a single sentence to speech (streaming)
+     * Small delay helper for inter-chunk pauses
      */
-    private async textToSpeechSentence(text: string, trackId: string): Promise<void> {
+    private delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    /**
+     * Reset batching state for a new response
+     */
+    private resetBatchingState(): void {
+        this.sentenceQueue = [];
+        this.pendingBatch = [];
+        this.isFirstChunk = true;
+    }
+
+    /**
+     * Convert a text chunk to speech (streaming)
+     * Can be a single sentence (first chunk) or multiple sentences (batched)
+     */
+    private async textToSpeechChunk(text: string, trackId: string): Promise<void> {
         try {
             const audioStream = await this.elevenlabs.textToSpeech.stream(
                 this.voiceId,
@@ -273,6 +401,15 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                 });
             }
 
+            // Add silence padding at end of chunk for natural inter-chunk pause
+            // 24kHz * 0.15s = 3600 samples * 2 bytes = 7200 bytes (aligned to 256)
+            const silencePadding = Buffer.alloc(7168); // 7168 = 28 * 256, ~149ms of silence
+            this.emit('audio', {
+                data: silencePadding.toString('base64'),
+                sampleRate: 24000,
+                trackId,
+            });
+
             // Signal track complete so client can flush audio buffer
             this.emit('track-complete', { trackId });
         } catch (error) {
@@ -282,33 +419,31 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
     }
 
     /**
-     * Process buffered audio through STT -> Streaming Agent -> TTS pipeline
+     * Process speech end - get transcript and send to LLM
+     * Uses Deepgram streaming (transcript already available) or Whisper fallback
      */
     async processBufferedAudio(): Promise<void> {
-        if (this.audioBuffer.length === 0 || this.isProcessing) {
+        if (this.isProcessing) {
             return;
         }
 
         this.isProcessing = true;
         this.setState('processing');
-        this.sentenceQueue = []; // Clear any pending sentences
+        this.resetBatchingState(); // Reset for new response
 
         try {
-            // Combine and convert audio
-            const combinedAudio = Buffer.concat(this.audioBuffer);
-            this.audioBuffer = [];
+            let userText: string;
 
-            // VAD sends 16kHz audio, Whisper handles any sample rate
-            const wavBuffer = this.pcmToWav(combinedAudio, 16000);
-
-            // Transcribe with Whisper
-            const transcription = await this.openai.audio.transcriptions.create({
-                file: new File([wavBuffer], 'audio.wav', { type: 'audio/wav' }),
-                model: 'whisper-1',
-                language: 'en',
-            });
-
-            const userText = transcription.text.trim();
+            if (this.streamingSTT) {
+                // Streaming STT - transcript is already available!
+                userText = await this.streamingSTT.finalize();
+                this.streamingSTT.clearTranscript(); // Ready for next utterance
+                console.log(`[ElevenLabs] STT transcript (${this.sttProvider}):`, userText.substring(0, 50));
+            } else {
+                // Fallback: This path shouldn't be hit if Deepgram is configured
+                console.warn('[ElevenLabs] No streaming STT available');
+                userText = '';
+            }
 
             if (!userText) {
                 this.setState('idle');
@@ -463,7 +598,7 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         }
 
         this.isProcessing = true;
-        this.sentenceQueue = [];
+        this.resetBatchingState();
 
         try {
             this.emit('transcript', {
@@ -496,44 +631,30 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
     }
 
     interrupt(): void {
+        console.log('[ElevenLabs] Interrupt requested');
+
         // Cancel streaming if active
         if (this.streamingBridge) {
             this.streamingBridge.cancel();
         }
 
-        // Clear sentence queue
-        this.sentenceQueue = [];
+        // Clear all queues and batching state
+        this.resetBatchingState();
         this.isSpeaking = false;
         this.isProcessing = false;
 
+        // Clear STT transcript so new speech starts fresh
+        if (this.streamingSTT) {
+            this.streamingSTT.clearTranscript();
+            // Ensure STT is connected for new input
+            if (!this.streamingSTT.connected) {
+                console.log('[ElevenLabs] Reconnecting STT after interrupt');
+                this.streamingSTT.start().catch(err => {
+                    console.error('[ElevenLabs] Failed to reconnect STT:', err);
+                });
+            }
+        }
+
         this.setState('idle');
-    }
-
-    private pcmToWav(pcmData: Buffer, sampleRate: number): Buffer {
-        const numChannels = 1;
-        const bitsPerSample = 16;
-        const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-        const blockAlign = numChannels * (bitsPerSample / 8);
-        const dataSize = pcmData.length;
-        const headerSize = 44;
-
-        const wav = Buffer.alloc(headerSize + dataSize);
-
-        wav.write('RIFF', 0);
-        wav.writeUInt32LE(36 + dataSize, 4);
-        wav.write('WAVE', 8);
-        wav.write('fmt ', 12);
-        wav.writeUInt32LE(16, 16);
-        wav.writeUInt16LE(1, 20);
-        wav.writeUInt16LE(numChannels, 22);
-        wav.writeUInt32LE(sampleRate, 24);
-        wav.writeUInt32LE(byteRate, 28);
-        wav.writeUInt16LE(blockAlign, 32);
-        wav.writeUInt16LE(bitsPerSample, 34);
-        wav.write('data', 36);
-        wav.writeUInt32LE(dataSize, 40);
-        pcmData.copy(wav, 44);
-
-        return wav;
     }
 }

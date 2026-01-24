@@ -194,6 +194,8 @@ export interface ServerConfig {
     defaultProvider: VoiceProviderType;
     openaiApiKey?: string;
     elevenlabsApiKey?: string;
+    deepgramApiKey?: string;
+    sttProvider?: 'elevenlabs' | 'deepgram' | 'whisper';
     cortexApiUrl: string;
     maxAudioMessages: number;
     idleTimeoutBaseMs: number;

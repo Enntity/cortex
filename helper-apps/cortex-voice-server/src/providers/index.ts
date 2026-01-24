@@ -42,16 +42,14 @@ export function createVoiceProvider(
             return new OpenAITTSProvider(cortexBridge, config.openaiApiKey);
 
         case 'elevenlabs':
-            if (!config.openaiApiKey) {
-                throw new Error('OpenAI API key required for STT in elevenlabs provider');
-            }
             if (!config.elevenlabsApiKey) {
                 throw new Error('ElevenLabs API key required for elevenlabs provider');
             }
             return new ElevenLabsProvider(
                 cortexBridge,
-                config.openaiApiKey,
-                config.elevenlabsApiKey
+                config.elevenlabsApiKey,
+                config.deepgramApiKey,
+                config.sttProvider || 'elevenlabs' // Default to ElevenLabs streaming STT
             );
 
         default:

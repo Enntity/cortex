@@ -82,9 +82,14 @@ export class SocketServer {
                 this.handleMute(socket, muted);
             });
 
-            // Interrupt response
+            // Interrupt response (manual)
             socket.on('audio:interrupt', () => {
                 this.handleInterrupt(socket);
+            });
+
+            // Client-side VAD speech start - auto-interrupt if AI is speaking
+            socket.on('audio:speechStart', () => {
+                this.handleSpeechStart(socket);
             });
 
             // Client-side VAD speech end (for TTS providers)
@@ -346,7 +351,27 @@ export class SocketServer {
         const sessionData = this.sessions.get(socket.id);
 
         if (sessionData) {
+            console.log('[SocketServer] Manual interrupt requested');
             sessionData.provider.interrupt();
+            // Tell client to stop playing audio
+            socket.emit('audio:stop');
+        }
+    }
+
+    private handleSpeechStart(socket: Socket): void {
+        const sessionData = this.sessions.get(socket.id);
+
+        if (!sessionData) {
+            return;
+        }
+
+        // If AI is currently speaking or processing, interrupt it
+        const state = sessionData.provider.state;
+        if (state === 'speaking' || state === 'processing') {
+            console.log('[SocketServer] User started speaking - interrupting AI');
+            sessionData.provider.interrupt();
+            // Tell client to stop playing audio immediately
+            socket.emit('audio:stop');
         }
     }
 

@@ -409,6 +409,14 @@ export class StreamingCortexBridge extends EventEmitter {
             };
             this.emit('tool-status', event);
             console.log('[StreamingCortexBridge] Tool started:', toolName, userMessage);
+
+            // Speak the tool userMessage so user hears something while tool runs
+            // This prevents awkward silence during tool execution
+            if (userMessage && userMessage.trim().length > 0) {
+                console.log('[StreamingCortexBridge] Emitting tool userMessage as sentence for TTS');
+                this.fullResponse += userMessage + ' ';
+                this.emit('sentence', userMessage);
+            }
         } else if (type === 'finish') {
             const event: ToolStatusEvent = {
                 name: toolName || 'tool',

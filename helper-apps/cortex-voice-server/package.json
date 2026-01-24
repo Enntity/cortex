@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@deepgram/sdk": "^4.11.3",
     "@elevenlabs/elevenlabs-js": "^2.32.0",
     "@hono/node-server": "^1.12.0",
     "dotenv": "^16.4.5",

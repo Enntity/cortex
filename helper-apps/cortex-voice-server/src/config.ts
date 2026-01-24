@@ -54,6 +54,13 @@ function getDefaultProvider(): VoiceProviderType {
     return 'openai-realtime';
 }
 
+function getSTTProvider(): 'elevenlabs' | 'deepgram' | 'whisper' {
+    const provider = process.env.STT_PROVIDER?.toLowerCase();
+    if (provider === 'deepgram') return 'deepgram';
+    if (provider === 'whisper') return 'whisper';
+    return 'elevenlabs'; // Default to ElevenLabs streaming STT
+}
+
 export function loadConfig(): ServerConfig {
     return {
         port: getEnvNumber('PORT', 3001),
@@ -61,6 +68,8 @@ export function loadConfig(): ServerConfig {
         defaultProvider: getDefaultProvider(),
         openaiApiKey: process.env.OPENAI_API_KEY,
         elevenlabsApiKey: process.env.ELEVENLABS_API_KEY,
+        deepgramApiKey: process.env.DEEPGRAM_API_KEY,
+        sttProvider: getSTTProvider(),
         cortexApiUrl: getEnvString('CORTEX_API_URL', 'http://localhost:4000/graphql'),
         maxAudioMessages: getEnvNumber('MAX_AUDIO_MESSAGES', 8),
         idleTimeoutBaseMs: getEnvNumber('IDLE_TIMEOUT_BASE_MS', 2500),
