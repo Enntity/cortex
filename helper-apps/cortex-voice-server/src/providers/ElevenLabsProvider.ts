@@ -298,7 +298,8 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             const combinedAudio = Buffer.concat(this.audioBuffer);
             this.audioBuffer = [];
 
-            const wavBuffer = this.pcmToWav(combinedAudio, 24000);
+            // VAD sends 16kHz audio, Whisper handles any sample rate
+            const wavBuffer = this.pcmToWav(combinedAudio, 16000);
 
             // Transcribe with Whisper
             const transcription = await this.openai.audio.transcriptions.create({
