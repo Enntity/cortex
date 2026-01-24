@@ -26,7 +26,8 @@ query SysEntityAgent(
     $aiName: String,
     $agentContext: [AgentContextInput],
     $model: String,
-    $stream: Boolean
+    $stream: Boolean,
+    $userInfo: String
 ) {
     sys_entity_agent(
         text: $text,
@@ -37,7 +38,8 @@ query SysEntityAgent(
         agentContext: $agentContext,
         model: $model,
         voiceResponse: true,
-        stream: $stream
+        stream: $stream,
+        userInfo: $userInfo
     ) {
         result
         tool
@@ -70,6 +72,7 @@ interface SessionContext {
     aiName?: string;
     agentContext?: AgentContext[];
     model?: string;
+    userInfo?: string;
 }
 
 interface ToolMessage {
@@ -128,6 +131,18 @@ export class StreamingCortexBridge extends EventEmitter {
     private readonly SENTENCE_ENDINGS = /([.!?])\s+/;
     private readonly MIN_SENTENCE_LENGTH = 10; // Don't emit very short fragments
 
+    // Filler mechanism for long operations
+    private fillerTimer: ReturnType<typeof setTimeout> | null = null;
+    private fillerIndex: number = 0;
+    private readonly FILLER_BASE_TIMEOUT = 4000; // 4 seconds before first filler
+    private readonly FILLER_PHRASES = [
+        'Hmm...',
+        "Let's see...",
+        'One moment...',
+        'Still working on that...',
+        'Almost there...',
+    ];
+
     constructor(apiUrl: string) {
         super();
         this.httpUrl = apiUrl;
@@ -154,11 +169,13 @@ export class StreamingCortexBridge extends EventEmitter {
             aiName: config.aiName || config.entityId,
             agentContext: agentContext.length > 0 ? agentContext : undefined,
             model: config.model,
+            userInfo: config.userInfo,
         };
         console.log('[StreamingCortexBridge] Session context set:', {
             entityId: this.sessionContext.entityId,
             model: this.sessionContext.model,
             hasAgentContext: !!this.sessionContext.agentContext,
+            hasUserInfo: !!this.sessionContext.userInfo,
         });
     }
 
@@ -238,6 +255,10 @@ export class StreamingCortexBridge extends EventEmitter {
 
         if (ctx.model) {
             variables.model = ctx.model;
+        }
+
+        if (ctx.userInfo) {
+            variables.userInfo = ctx.userInfo;
         }
 
         console.log('[StreamingCortexBridge] Starting streaming query:', {
@@ -415,9 +436,17 @@ export class StreamingCortexBridge extends EventEmitter {
             if (userMessage && userMessage.trim().length > 0) {
                 console.log('[StreamingCortexBridge] Emitting tool userMessage as sentence for TTS');
                 this.fullResponse += userMessage + ' ';
-                this.emit('sentence', userMessage);
+                this.emitSentence(userMessage);
             }
+
+            // Start filler timer for long-running tools
+            // This will emit "hmm...", "let's see..." etc. if the tool takes too long
+            this.startFillerTimer();
+
         } else if (type === 'finish') {
+            // Stop filler timer when tool completes
+            this.stopFillerTimer();
+
             const event: ToolStatusEvent = {
                 name: toolName || 'tool',
                 status: success ? 'completed' : 'error',
@@ -489,7 +518,7 @@ export class StreamingCortexBridge extends EventEmitter {
             // Only emit if sentence is long enough
             if (sentence.length >= this.MIN_SENTENCE_LENGTH) {
                 console.log('[StreamingCortexBridge] Emitting sentence:', sentence.substring(0, 50) + '...');
-                this.emit('sentence', sentence);
+                this.emitSentence(sentence);
             }
 
             // Remove processed sentence from buffer
@@ -504,15 +533,66 @@ export class StreamingCortexBridge extends EventEmitter {
         const remaining = this.textBuffer.trim();
         if (remaining.length > 0) {
             console.log('[StreamingCortexBridge] Flushing remaining:', remaining.substring(0, 50) + '...');
-            this.emit('sentence', remaining);
+            this.emitSentence(remaining);
             this.textBuffer = '';
         }
     }
 
     /**
-     * Cleanup WebSocket connection
+     * Emit a sentence and reset filler timer
+     */
+    private emitSentence(text: string): void {
+        this.stopFillerTimer(); // Reset filler on any speech
+        this.emit('sentence', text);
+    }
+
+    /**
+     * Start the filler timer - will emit filler phrases if no content for too long
+     */
+    private startFillerTimer(): void {
+        this.stopFillerTimer(); // Clear any existing timer
+        this.fillerIndex = 0;
+        this.scheduleNextFiller();
+    }
+
+    /**
+     * Schedule the next filler phrase
+     */
+    private scheduleNextFiller(): void {
+        // Calculate timeout with exponential backoff: base + random(0 to min(index+1 * 1000, 3000))
+        const randomOffset = Math.floor(Math.random() * Math.min((this.fillerIndex + 1) * 1000, 3000));
+        const timeout = this.FILLER_BASE_TIMEOUT + randomOffset;
+
+        this.fillerTimer = setTimeout(() => {
+            if (this.isProcessing) {
+                // Pick a filler phrase (cycle through them)
+                const phrase = this.FILLER_PHRASES[this.fillerIndex % this.FILLER_PHRASES.length];
+                console.log('[StreamingCortexBridge] Emitting filler:', phrase);
+                this.fullResponse += phrase + ' ';
+                this.emit('sentence', phrase);
+                this.fillerIndex++;
+                // Schedule next filler with increasing delay
+                this.scheduleNextFiller();
+            }
+        }, timeout);
+    }
+
+    /**
+     * Stop the filler timer
+     */
+    private stopFillerTimer(): void {
+        if (this.fillerTimer) {
+            clearTimeout(this.fillerTimer);
+            this.fillerTimer = null;
+        }
+        this.fillerIndex = 0;
+    }
+
+    /**
+     * Cleanup WebSocket connection and timers
      */
     private cleanup(): void {
+        this.stopFillerTimer();
         if (this.wsClient) {
             this.wsClient.dispose();
             this.wsClient = null;

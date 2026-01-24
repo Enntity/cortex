@@ -41,7 +41,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: "A brief, natural voice phrase to speak while the image is being created (e.g., 'Creating that for you', 'Working on it now'). Keep it conversational."
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]
@@ -81,7 +81,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: "A brief, natural voice phrase to speak while the image is being created (e.g., 'Creating that for you', 'Working on it now'). Keep it conversational."
                     }
                 },
                 required: ["inputImages", "detailedInstructions", "userMessage"]
@@ -114,7 +114,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: "A brief, natural voice phrase to speak while the image is being created (e.g., 'Creating that for you', 'Working on it now'). Keep it conversational."
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]
@@ -136,7 +136,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: "A brief, natural voice phrase to speak while the image is being created (e.g., 'Creating that for you', 'Working on it now'). Keep it conversational."
                     }
                 },
                 required: ["file", "userMessage"]

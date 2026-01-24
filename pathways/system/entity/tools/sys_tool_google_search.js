@@ -169,7 +169,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: "A brief, natural voice phrase to speak while searching (e.g., 'Let me look that up', 'Searching now', 'One moment'). Keep it conversational."
                     }
                 },
                 required: ["q", "userMessage"]

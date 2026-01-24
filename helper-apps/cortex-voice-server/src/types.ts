@@ -13,6 +13,7 @@ export interface VoiceConfig {
     contextKey?: string;     // For continuity memory (user's context key)
     aiName?: string;         // Entity display name
     userName?: string;       // User display name
+    userInfo?: string;       // User info for time zone, location context (e.g., "User is in EST timezone")
     voiceSample?: string;
     voiceId?: string;
     model?: string;
