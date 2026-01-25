@@ -151,6 +151,7 @@ export class StreamingCortexBridge extends EventEmitter {
     private fillerIndex: number = 0;
     private shuffledFillers: string[] = [];
     private lastSpeechTime: number = 0; // Track when we last emitted speech
+    private clientAudioPlaying: boolean = false; // Track if client is playing audio
     private readonly TOOL_MESSAGE_DELAY = 1000; // 1s delay before speaking tool message
     private readonly FILLER_FIRST_TIMEOUT = 4000; // 4 seconds before first filler
     private readonly FILLER_BASE_INTERVAL = 5000; // Start at 5s for subsequent fillers
@@ -481,6 +482,11 @@ export class StreamingCortexBridge extends EventEmitter {
                 this.handleToolMessage(parsed.toolMessage);
             }
 
+            // Handle app commands (e.g., showOverlay)
+            if (parsed.appCommand) {
+                this.handleAppCommand(parsed.appCommand);
+            }
+
             // Handle ephemeral flag (thinking mode)
             if (parsed.ephemeral !== undefined) {
                 this.emit('thinking', !!parsed.ephemeral);
@@ -488,6 +494,31 @@ export class StreamingCortexBridge extends EventEmitter {
 
         } catch (e) {
             console.warn('[StreamingCortexBridge] Failed to parse info:', e);
+        }
+    }
+
+    /**
+     * Handle app commands from Cortex tools
+     */
+    private handleAppCommand(command: { type: string; items?: unknown[]; narrative?: string; [key: string]: unknown }): void {
+        if (command.type === 'showOverlay' && command.items && Array.isArray(command.items)) {
+            console.log('[StreamingCortexBridge] ShowOverlay command received:', command.items.length, 'items', command.narrative ? 'with narrative' : '');
+
+            // Emit media event for overlay display
+            const event: MediaEvent = {
+                type: 'overlay',
+                items: command.items as MediaEvent['items'],
+            };
+            this.emit('media', event);
+
+            // If there's a narrative, queue it for TTS
+            if (command.narrative && typeof command.narrative === 'string' && command.narrative.trim()) {
+                console.log('[StreamingCortexBridge] Queuing narrative for TTS:', command.narrative.substring(0, 50) + '...');
+                // Add to full response for history
+                this.fullResponse += command.narrative + ' ';
+                // Emit as sentence for TTS
+                this.emitSpeech(command.narrative.trim());
+            }
         }
     }
 
@@ -507,23 +538,9 @@ export class StreamingCortexBridge extends EventEmitter {
             this.emit('tool-status', event);
             console.log('[StreamingCortexBridge] Tool started:', toolName, userMessage);
 
-            // Speak the tool message after a delay (1s minimum since last speech)
-            if (userMessage) {
-                const timeSinceLastSpeech = Date.now() - this.lastSpeechTime;
-                const delay = Math.max(this.TOOL_MESSAGE_DELAY, this.MIN_SPEECH_GAP - timeSinceLastSpeech);
-
-                this.toolMessageTimer = setTimeout(() => {
-                    if (this.isProcessing) {
-                        console.log('[StreamingCortexBridge] Speaking tool message:', userMessage);
-                        this.emitSpeech(userMessage);
-                        // Start filler timer after tool message
-                        this.startFillerTimer();
-                    }
-                }, delay);
-            } else {
-                // No user message, just start filler timer
-                this.startFillerTimer();
-            }
+            // Don't speak tool messages - just show them visually
+            // Start filler timer for long-running tools
+            this.startFillerTimer();
 
         } else if (type === 'finish') {
             // Stop timers when tool completes
@@ -593,8 +610,25 @@ export class StreamingCortexBridge extends EventEmitter {
         this.textBuffer += content;
         this.fullResponse += content;
 
+        // Clean markdown images BEFORE sentence splitting
+        // (prevents TTS from speaking URLs if model uses markdown)
+        this.cleanMarkdownFromBuffer();
+
         // Check for sentence boundaries
         this.emitCompleteSentences();
+    }
+
+    /**
+     * Clean markdown images from buffer to prevent TTS speaking URLs
+     * Media display should use ShowOverlay tool, not inline markdown
+     */
+    private cleanMarkdownFromBuffer(): void {
+        // Match complete markdown images: ![alt](url)
+        const imageRegex = /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g;
+
+        // Replace markdown with just alt text to prevent TTS from speaking URLs
+        this.textBuffer = this.textBuffer.replace(imageRegex, (_, alt) => alt ? `[${alt}]` : '');
+        this.fullResponse = this.fullResponse.replace(imageRegex, (_, alt) => alt ? `[${alt}]` : '');
     }
 
     /**
@@ -645,7 +679,32 @@ export class StreamingCortexBridge extends EventEmitter {
     private emitSentence(text: string): void {
         this.stopToolMessageTimer(); // Cancel tool message if content arrives
         this.stopFillerTimer(); // Reset filler on any speech
-        this.emitSpeech(text);
+
+        // Clean any remaining markdown from text (in case it wasn't caught in buffer)
+        const cleanText = this.cleanMarkdownFromText(text);
+
+        // Emit the cleaned text for TTS
+        if (cleanText.trim()) {
+            this.emitSpeech(cleanText.trim());
+        }
+    }
+
+    /**
+     * Clean markdown syntax from text to prevent TTS speaking URLs
+     */
+    private cleanMarkdownFromText(text: string): string {
+        let cleanText = text;
+
+        // Remove ![alt](url) syntax, keep alt text
+        cleanText = cleanText.replace(/!\[([^\]]*)\]\([^)]+\)/g, (_, alt) => alt || '');
+
+        // Remove [label](url) syntax for media files, keep label
+        cleanText = cleanText.replace(/\[([^\]]*)\]\(https?:\/\/[^)]+\.(?:jpg|jpeg|png|gif|webp|mp4|webm|mov)\)/gi, (_, label) => label || '');
+
+        // Clean up any double spaces
+        cleanText = cleanText.replace(/\s+/g, ' ').trim();
+
+        return cleanText;
     }
 
     /**
@@ -699,6 +758,14 @@ export class StreamingCortexBridge extends EventEmitter {
     private emitFiller(): void {
         if (!this.isProcessing) return;
 
+        // Skip fillers if client is already playing audio - no need for filler
+        if (this.clientAudioPlaying) {
+            console.log('[StreamingCortexBridge] Skipping filler - client audio is playing');
+            // Still schedule next filler in case audio stops
+            this.scheduleNextFiller();
+            return;
+        }
+
         // Use shuffled list, cycling through for variety without repeats
         const phrase = this.shuffledFillers[this.fillerIndex % this.shuffledFillers.length];
         // Add [thoughtful] speech tag for natural, non-excited delivery
@@ -709,6 +776,14 @@ export class StreamingCortexBridge extends EventEmitter {
         this.fillerIndex++;
         // Schedule next filler
         this.scheduleNextFiller();
+    }
+
+    /**
+     * Set client audio playing state - used to skip fillers when audio is already playing
+     */
+    setClientAudioPlaying(playing: boolean): void {
+        this.clientAudioPlaying = playing;
+        console.log('[StreamingCortexBridge] Client audio playing:', playing);
     }
 
     /**

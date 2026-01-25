@@ -403,10 +403,12 @@ async function generateVideo(args, resolvedReferenceImages, pathwayResolver, cha
                 action: 'Video generation'
             });
 
-            // Parse and add display reminder
+            // Parse and add display reminder (different for voice mode)
             try {
                 const parsed = JSON.parse(response);
-                parsed.displayReminder = "IMPORTANT: Show this video to the user! Use ShowOverlay or include in your response as markdown: ![description](url) - yes, image syntax works for videos too!";
+                parsed.displayReminder = args.voiceResponse
+                    ? "IMPORTANT: Show this video to the user with ShowOverlay! Include a 'narrative' parameter with what you'll say while showing it."
+                    : "IMPORTANT: Show this video to the user! Use ShowOverlay or include in your response as markdown: ![description](url)";
                 return JSON.stringify(parsed);
             } catch {
                 return response;
@@ -535,7 +537,9 @@ async function processImageArtifacts(result, args, pathwayResolver, chatId, acti
             // Parse and add display reminder
             try {
                 const parsed = JSON.parse(response);
-                parsed.displayReminder = "IMPORTANT: Show this image to the user! Use ShowOverlay or include in your response as markdown: ![description](url)";
+                parsed.displayReminder = args.voiceResponse
+                    ? "IMPORTANT: Show this image to the user with ShowOverlay! Include a 'narrative' parameter with what you'll say while showing it."
+                    : "IMPORTANT: Show this image to the user! Use ShowOverlay or include in your response as markdown: ![description](url)";
                 return JSON.stringify(parsed);
             } catch {
                 return response;

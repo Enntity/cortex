@@ -466,48 +466,6 @@ export default {
                             content: toolResultContent
                         });
 
-                        // Add the screenshots/images using OpenAI image format
-                        if (toolResult?.toolImages && toolResult.toolImages.length > 0) {
-                            toolMessages.push({
-                                role: "user",
-                                content: [
-                                    {
-                                        type: "text",
-                                        text: "The tool with id " + toolCall.id + " has also supplied you with these images."
-                                    },
-                                    ...toolResult.toolImages.map(toolImage => {
-                                        // Handle both base64 strings (screenshots) and image_url objects (file collection images)
-                                        if (typeof toolImage === 'string') {
-                                            // Base64 string format (screenshots)
-                                            return {
-                                                type: "image_url",
-                                                image_url: {
-                                                    url: `data:image/png;base64,${toolImage}`
-                                                }
-                                            };
-                                        } else if (typeof toolImage === 'object' && toolImage.image_url) {
-                                            // Image URL object format (file collection images)
-                                            return {
-                                                type: "image_url",
-                                                url: toolImage.url,
-                                                gcs: toolImage.gcs,
-                                                image_url: toolImage.image_url,
-                                                originalFilename: toolImage.originalFilename
-                                            };
-                                        } else {
-                                            // Fallback for any other format
-                                            return {
-                                                type: "image_url",
-                                                image_url: {
-                                                    url: toolImage.url || toolImage
-                                                }
-                                            };
-                                        }
-                                    })
-                                ]
-                            });
-                        }
-
                         // Check for errors in tool result
                         // callTool returns { result: parsedResult, toolImages: [] }
                         // We need to check if result has an error field

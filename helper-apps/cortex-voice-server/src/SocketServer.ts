@@ -16,6 +16,7 @@ import {
     TranscriptEvent,
     ToolStatusEvent,
     MediaEvent,
+    TrackStartEvent,
     TrackCompleteEvent,
     VoiceState,
 } from './types.js';
@@ -95,6 +96,15 @@ export class SocketServer {
             // Client-side VAD speech end (for TTS providers)
             socket.on('audio:speechEnd', async () => {
                 await this.handleSpeechEnd(socket);
+            });
+
+            // Client audio playback state - used to skip fillers when audio is playing
+            socket.on('audio:clientPlaying', () => {
+                this.handleClientAudioState(socket, true);
+            });
+
+            socket.on('audio:clientStopped', () => {
+                this.handleClientAudioState(socket, false);
             });
 
             // Get available providers
@@ -243,6 +253,11 @@ export class SocketServer {
             this.resetAudioBlockTimeout(sessionData, socket);
         });
 
+        // Track start (send text for transcript sync)
+        provider.on('track-start', (event: TrackStartEvent) => {
+            socket.emit('audio:trackStart', event);
+        });
+
         // Track complete (signal client to flush audio buffer)
         provider.on('track-complete', (event: TrackCompleteEvent) => {
             socket.emit('audio:trackComplete', event);
@@ -386,6 +401,19 @@ export class SocketServer {
         const provider = sessionData.provider as any;
         if (typeof provider.processBufferedAudio === 'function') {
             await provider.processBufferedAudio();
+        }
+    }
+
+    private handleClientAudioState(socket: Socket, isPlaying: boolean): void {
+        const sessionData = this.sessions.get(socket.id);
+
+        if (!sessionData) {
+            return;
+        }
+
+        // Tell the cortex bridge about client audio state so it can skip fillers
+        if (sessionData.cortexBridge && 'setClientAudioPlaying' in sessionData.cortexBridge) {
+            (sessionData.cortexBridge as any).setClientAudioPlaying(isPlaying);
         }
     }
 

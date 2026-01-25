@@ -15,6 +15,7 @@ import {
     ConversationMessage,
     ICortexBridge,
     ToolStatusEvent,
+    MediaEvent,
 } from '../types.js';
 import { StreamingCortexBridge } from '../cortex/StreamingCortexBridge.js';
 import { StreamingSTT, createStreamingSTT, STTProvider } from '../stt/index.js';
@@ -104,20 +105,22 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             // Flush any remaining batched sentences
             this.flushBatch();
 
-            // Only emit transcript and add to history if we got content
+            // Only add to history if we got content
+            // Note: transcript display is handled by track-start events for better audio sync
             if (fullText && fullText.trim().length > 0) {
-                // Emit the full transcript
+                // Add to conversation history (server-side)
+                this.conversationHistory.push({
+                    role: 'assistant',
+                    content: fullText,
+                    timestamp: Date.now(),
+                });
+
+                // Emit final transcript for client-side history recording
+                // This triggers _addToHistory() on the client when voice mode ends
                 this.emit('transcript', {
                     type: 'assistant',
                     content: fullText,
                     isFinal: true,
-                    timestamp: Date.now(),
-                });
-
-                // Add to conversation history
-                this.conversationHistory.push({
-                    role: 'assistant',
-                    content: fullText,
                     timestamp: Date.now(),
                 });
             } else {
@@ -138,6 +141,12 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             this.emitError(error);
             this.isProcessing = false;
             this.setState('idle');
+        });
+
+        // Forward media events (e.g., ShowOverlay)
+        this.streamingBridge.on('media', (event: MediaEvent) => {
+            console.log('[ElevenLabs] Media event:', event.type, event.items?.length || 0, 'items');
+            this.emit('media', event);
         });
     }
 
@@ -299,13 +308,8 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         try {
             this.setState('speaking');
 
-            // Emit partial transcript as we speak
-            this.emit('transcript', {
-                type: 'assistant',
-                content: text,
-                isFinal: false, // Partial - more may be coming
-                timestamp: Date.now(),
-            });
+            // Note: transcript is now sent via track-start event in textToSpeechChunk
+            // for better synchronization with audio playback
 
             await this.textToSpeechChunk(text, trackId);
         } catch (error) {
@@ -350,6 +354,9 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
      */
     private async textToSpeechChunk(text: string, trackId: string): Promise<void> {
         try {
+            // Emit track-start with text so client can sync transcript with audio
+            this.emit('track-start', { trackId, text });
+
             const audioStream = await this.elevenlabs.textToSpeech.stream(
                 this.voiceId,
                 {
@@ -512,16 +519,19 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             timestamp: Date.now(),
         });
 
-        this.emit('transcript', {
-            type: 'assistant',
-            content: response.result,
-            isFinal: true,
-            timestamp: Date.now(),
-        });
+        // Note: transcript display is handled by track-start in textToSpeech
 
         this.conversationHistory.push({
             role: 'assistant',
             content: response.result,
+            timestamp: Date.now(),
+        });
+
+        // Emit final transcript for client-side history recording
+        this.emit('transcript', {
+            type: 'assistant',
+            content: response.result,
+            isFinal: true,
             timestamp: Date.now(),
         });
 
@@ -533,6 +543,9 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
      */
     private async textToSpeech(text: string): Promise<void> {
         this.setState('speaking');
+
+        // Emit track-start for transcript sync
+        this.emit('track-start', { trackId: 'full-response', text });
 
         try {
             const audioStream = await this.elevenlabs.textToSpeech.stream(

@@ -7,7 +7,7 @@ import { sendAppCommand } from '../../../../lib/pathwayTools.js';
 export default {
     prompt: [],
     timeout: 30,
-    toolDefinition: { 
+    toolDefinition: {
         type: "function",
         icon: "🖼️",
         hideExecution: true,
@@ -177,12 +177,13 @@ export default {
             pathwayResolver.tool = JSON.stringify({ toolUsed: "ShowOverlay" });
 
             const itemCount = overlayItems.length;
-            const itemList = overlayItems.map(item => item.type === 'text' ? 'text' : (item.filename || 'file')).join(', ');
             const errorText = errors.length > 0 ? ` (${errors.length} item(s) had errors: ${errors.join('; ')})` : '';
 
+            // Keep return minimal - narrative is already sent via SSE command
+            // Don't include narrative or items here to avoid model repeating them
             return JSON.stringify({
                 success: true,
-                message: `${itemCount} overlay item(s) (${itemList}) sent for display.${errorText}`,
+                message: `Overlay displayed.${errorText}`,
                 itemCount: itemCount,
                 errors: errors.length > 0 ? errors : undefined
             });

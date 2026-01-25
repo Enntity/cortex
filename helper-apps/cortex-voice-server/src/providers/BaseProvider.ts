@@ -10,6 +10,8 @@ import {
     VoiceState,
     AudioData,
     ICortexBridge,
+    MediaEvent,
+    ToolStatusEvent,
 } from '../types.js';
 
 export abstract class BaseVoiceProvider implements IVoiceProvider {
@@ -25,6 +27,20 @@ export abstract class BaseVoiceProvider implements IVoiceProvider {
 
     constructor(cortexBridge: ICortexBridge) {
         this.cortexBridge = cortexBridge;
+
+        // Wire up bridge callbacks to provider events
+        if (cortexBridge.onMedia) {
+            cortexBridge.onMedia((event: MediaEvent) => {
+                console.log('[BaseProvider] Forwarding media event from bridge');
+                this.emit('media', event);
+            });
+        }
+
+        if (cortexBridge.onToolStatus) {
+            cortexBridge.onToolStatus((event: ToolStatusEvent) => {
+                this.emit('tool-status', event);
+            });
+        }
     }
 
     get isConnected(): boolean {

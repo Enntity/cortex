@@ -35,9 +35,18 @@ export interface ToolStatusEvent {
     timestamp: number;
 }
 
+export interface OverlayItem {
+    type: 'text' | 'image' | 'video';
+    url?: string;
+    content?: string;
+    duration?: number;
+    label?: string;
+}
+
 export interface MediaEvent {
-    type: 'image' | 'video' | 'slideshow';
-    urls: string[];
+    type: 'image' | 'video' | 'slideshow' | 'overlay';
+    urls?: string[];
+    items?: OverlayItem[];
     title?: string;
 }
 
@@ -77,12 +86,18 @@ export interface TrackCompleteEvent {
     trackId: string;
 }
 
+export interface TrackStartEvent {
+    trackId: string;
+    text: string;
+}
+
 export interface VoiceProviderEvents {
     'state-change': (state: VoiceState) => void;
     'transcript': (event: TranscriptEvent) => void;
     'audio': (data: AudioData) => void;
     'tool-status': (event: ToolStatusEvent) => void;
     'media': (event: MediaEvent) => void;
+    'track-start': (event: TrackStartEvent) => void;
     'track-complete': (event: TrackCompleteEvent) => void;
     'error': (error: Error) => void;
     'connected': () => void;

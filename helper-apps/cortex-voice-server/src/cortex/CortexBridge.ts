@@ -231,7 +231,40 @@ export class CortexBridge implements ICortexBridge {
      * Detect and emit media events from response
      */
     private detectMediaEvents(result: string, tool?: string): void {
-        // Check for image generation tools
+        // Check for ShowOverlay tool (returns items array in result)
+        if (tool) {
+            try {
+                const toolData = JSON.parse(tool);
+                if (toolData.toolUsed === 'ShowOverlay') {
+                    // Parse result to get items
+                    try {
+                        const resultData = JSON.parse(result);
+                        if (resultData.items && Array.isArray(resultData.items) && resultData.items.length > 0) {
+                            console.log('[CortexBridge] ShowOverlay detected, emitting media event:', resultData.items.length, 'items', resultData.narrative ? 'with narrative' : '');
+                            const event: MediaEvent = {
+                                type: 'overlay',
+                                items: resultData.items,
+                            };
+
+                            for (const callback of this.mediaCallbacks) {
+                                try {
+                                    callback(event);
+                                } catch (error) {
+                                    console.error('[CortexBridge] Media callback error:', error);
+                                }
+                            }
+                            return; // Don't fall through to image URL extraction
+                        }
+                    } catch (parseError) {
+                        console.warn('[CortexBridge] Failed to parse ShowOverlay result:', parseError);
+                    }
+                }
+            } catch {
+                // tool is not JSON, continue with legacy detection
+            }
+        }
+
+        // Legacy: Check for image generation tools by extracting URLs
         const imageTools = ['image_generation', 'dall_e', 'midjourney', 'stable_diffusion'];
         const isImageTool = tool && imageTools.some(t => tool.toLowerCase().includes(t));
 
