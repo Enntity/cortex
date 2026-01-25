@@ -103,7 +103,7 @@ export default {
                         },
                         userMessage: {
                             type: "string",
-                            description: "A user-friendly message describing what you're doing"
+                            description: 'A short voice phrase (2-5 words) like "Checking that" or "One moment"'
                         }
                     },
                     required: ["userMessage"]
@@ -204,7 +204,7 @@ export default {
                 const foundFile = findFileInCollection(file, collection);
                 
                 if (!foundFile) {
-                    throw new Error(`File not found: "${file}". Use ListFileCollection to see available files.`);
+                    throw new Error(`File not found: "${file}". Use FileCollection to see available files.`);
                 }
 
                 if (!foundFile.hash) {
@@ -430,7 +430,7 @@ export default {
                     if (chatId && !includeAllChats) {
                         suggestions.push('try includeAllChats=true to search across all chats');
                     }
-                    suggestions.push('use ListFileCollection to see all available files');
+                    suggestions.push('use FileCollection to see all available files');
                     
                     message = `No files found matching "${query}". Count: 0. Suggestions: ${suggestions.join('; ')}.`;
                 } else {

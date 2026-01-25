@@ -42,7 +42,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A brief, natural voice phrase to speak while the image is being created (e.g., 'Creating that for you', 'Working on it now'). Keep it conversational."
+                        description: 'A short voice phrase (2-5 words) like "Creating that" or "On it"'
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]
@@ -83,7 +83,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A brief, natural voice phrase to speak while the image is being created (e.g., 'Creating that for you', 'Working on it now'). Keep it conversational."
+                        description: 'A short voice phrase (2-5 words) like "Creating that" or "On it"'
                     }
                 },
                 required: ["inputImages", "detailedInstructions", "userMessage"]
@@ -117,7 +117,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A brief, natural voice phrase to speak while the image is being created (e.g., 'Creating that for you', 'Working on it now'). Keep it conversational."
+                        description: 'A short voice phrase (2-5 words) like "Creating that" or "On it"'
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]
@@ -139,7 +139,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A brief, natural voice phrase to speak while the image is being created (e.g., 'Creating that for you', 'Working on it now'). Keep it conversational."
+                        description: 'A short voice phrase (2-5 words) like "Creating that" or "On it"'
                     }
                 },
                 required: ["file", "userMessage"]

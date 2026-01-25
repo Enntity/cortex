@@ -169,7 +169,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A brief, natural voice phrase to speak while searching (e.g., 'Let me look that up', 'Searching now', 'One moment'). Keep it conversational."
+                        description: 'A short voice phrase (2-5 words) like "Checking that" or "One moment"'
                     }
                 },
                 required: ["q", "userMessage"]

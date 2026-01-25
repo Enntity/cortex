@@ -96,7 +96,7 @@ Nuanced resonance states:
                     },
                     userMessage: {
                         type: 'string',
-                        description: 'A user-friendly message describing what you are remembering'
+                        description: 'A short voice phrase (2-5 words) like "Got it" or "Noted"'
                     }
                 },
                 required: ['content', 'memoryType', 'userMessage']

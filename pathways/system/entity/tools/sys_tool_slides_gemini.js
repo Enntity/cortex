@@ -40,7 +40,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'A short voice phrase (2-5 words) like "Checking that" or "One moment"'
                     },
                     inputImages: {
                         type: "array",

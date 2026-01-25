@@ -39,7 +39,7 @@ Examples of when to use:
                     },
                     userMessage: {
                         type: "string",
-                        description: "A brief, user-friendly message to display while research is in progress (e.g., 'Researching recent AI developments...')"
+                        description: 'A short voice phrase (2-5 words) like "Researching that" or "Looking into it"'
                     }
                 },
                 required: ["researchTask", "userMessage"]

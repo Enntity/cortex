@@ -68,7 +68,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message to notify the user that a coding task is being handled"
+                        description: 'A short voice phrase (2-5 words) like "Working on that" or "One moment"'
                     },
                     codingTaskKeywords: {
                         type: "string",
