@@ -58,7 +58,7 @@ Examples of when to use:
 
         try {
             // Look up WebAgent entity by name (UUID is generated at runtime)
-            const webAgent = getSystemEntity('WebAgent');
+            const webAgent = await getSystemEntity('WebAgent');
             if (!webAgent || !webAgent.id) {
                 throw new Error('WebAgent system entity not found - ensure server has been restarted after adding WebAgent to config');
             }

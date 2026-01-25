@@ -2,6 +2,8 @@
 // Shared tool definitions that can be used by any entity
 import { config } from '../../../../../config.js';
 import logger from '../../../../../lib/logger.js';
+import { migrateToolList } from './tool_migrations.js';
+import { getEntityStore } from '../../../../../lib/MongoEntityStore.js';
 
 export const CUSTOM_TOOLS = {};
 
@@ -69,8 +71,8 @@ export const getToolsForEntity = (entityConfig) => {
         };
     }
 
-    // Get the list of tool names for this entity and convert to lowercase for case-insensitive comparison
-    const entityToolNames = entityConfig.tools.map(name => name.toLowerCase());
+    // Get the list of tool names for this entity, applying any migrations for renamed/consolidated tools
+    const entityToolNames = migrateToolList(entityConfig.tools);
     
     // Add custom tools to the list of allowed tools if they exist
     if (entityConfig.customTools) {
@@ -96,41 +98,28 @@ export const getToolsForEntity = (entityConfig) => {
     };
 };
 
-// Load entity configuration by UUID
+// Load entity configuration by UUID (on-demand from MongoDB)
 // Entities are stored in MongoDB with UUID identifiers
 // Strict matching: only exact UUID matches are returned
-export const loadEntityConfig = (entityId) => {
+export const loadEntityConfig = async (entityId) => {
     try {
-        const entityConfig = config.get('entityConfig');
-        if (!entityConfig) {
-            logger.warn('No entity config found - ensure MongoDB is configured and entities are loaded');
-            return null;
-        }
+        const entityStore = getEntityStore();
 
-        // Convert to array format for consistent processing
-        const entities = Object.values(entityConfig);
-
-        // If entityId is provided, look for exact UUID match only
+        // If entityId is provided, look for exact UUID match
         if (entityId) {
-            const entity = entities.find(e => e.id === entityId);
-            
+            const entity = await entityStore.getEntity(entityId);
             if (entity) {
                 return entity;
             }
-            // Entity explicitly requested but not found - return null, don't silently fall back
+            // Entity explicitly requested but not found
             logger.warn(`Entity with UUID ${entityId} not found`);
             return null;
         }
 
         // No entityId provided - return default entity
-        const defaultEntity = entities.find(e => e.isDefault === true);
+        const defaultEntity = await entityStore.getDefaultEntity();
         if (defaultEntity) {
             return defaultEntity;
-        }
-
-        // If no default entity, return first entity
-        if (entities.length > 0) {
-            return entities[0];
         }
 
         return null;
@@ -141,59 +130,25 @@ export const loadEntityConfig = (entityId) => {
 };
 
 /**
- * Fetches the list of available entities with their descriptions and active tools
+ * Fetches the list of available entities with their descriptions and active tools (on-demand from MongoDB)
  * Returns entities with their UUID identifiers for client use
  * @param {Object} [options]
  * @param {boolean} [options.includeSystem=false] - Include system entities (like Enntity)
  * @param {string} options.userId - User ID (required) - Filter to entities associated with this user
- * @returns {Array|Error} Array of objects containing entity information and their active tools, or Error if userId is missing
+ * @returns {Promise<Array>} Array of objects containing entity information and their active tools
  */
-export const getAvailableEntities = (options = {}) => {
+export const getAvailableEntities = async (options = {}) => {
     const { includeSystem = false, userId } = options;
-    
+
     // Require userId - return error if not provided
     if (!userId || userId.trim() === '') {
         logger.warn('getAvailableEntities called without userId - userId is required');
         throw new Error('userId is required to get available entities');
     }
-    
-    try {
-        const entityConfig = config.get('entityConfig');
-        if (!entityConfig) {
-            logger.warn('No entity config found - ensure MongoDB is configured and entities are loaded');
-            return [];
-        }
 
-        let entities = Object.values(entityConfig);
-        
-        // Filter out system entities unless explicitly requested
-        if (!includeSystem) {
-            entities = entities.filter(e => !e.isSystem);
-        }
-        
-        // Filter by userId
-        // System entities: always included (no assocUserIds check)
-        // Non-system entities: must have userId in assocUserIds array
-        entities = entities.filter(e => {
-            // System entities are always accessible
-            if (e.isSystem) {
-                return true;
-            }
-            
-            // Non-system entities: must have userId in assocUserIds array
-            // Empty, missing, or null assocUserIds means the entity is not accessible
-            const hasValidAssocUserIds = e.assocUserIds && 
-                                        Array.isArray(e.assocUserIds) && 
-                                        e.assocUserIds.length > 0;
-            
-            if (!hasValidAssocUserIds) {
-                // No valid assocUserIds array - exclude this entity
-                return false;
-            }
-            
-            // Must have userId in the array
-            return e.assocUserIds.includes(userId);
-        });
+    try {
+        const entityStore = getEntityStore();
+        const entities = await entityStore.getAllEntities({ includeSystem, userId });
 
         return entities.map(entity => {
             const { entityTools } = getToolsForEntity(entity);
@@ -226,20 +181,12 @@ export const getAvailableEntities = (options = {}) => {
 /**
  * Get the system entity by name (e.g., "Enntity")
  * @param {string} name - System entity name
- * @returns {Object|null} Entity config or null
+ * @returns {Promise<Object|null>} Entity config or null
  */
-export const getSystemEntity = (name) => {
+export const getSystemEntity = async (name) => {
     try {
-        const entityConfig = config.get('entityConfig');
-        if (!entityConfig) {
-            return null;
-        }
-
-        const entities = Object.values(entityConfig);
-        return entities.find(e => 
-            e.isSystem && 
-            e.name.toLowerCase() === name.toLowerCase()
-        ) || null;
+        const entityStore = getEntityStore();
+        return await entityStore.getSystemEntity(name);
     } catch (error) {
         logger.error(`Error getting system entity: ${error.message}`);
         return null;

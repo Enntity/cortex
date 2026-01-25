@@ -44,7 +44,7 @@ export default {
                 });
             }
             
-            const entities = getAvailableEntities({
+            const entities = await getAvailableEntities({
                 userId: contextId,
                 includeSystem: includeSystem === true || includeSystem === 'true'
             });

@@ -18,7 +18,6 @@
 // }
 
 import { getEntityStore } from '../../../lib/MongoEntityStore.js';
-import { config } from '../../../config.js';
 import logger from '../../../lib/logger.js';
 
 // Properties that can be updated via this pathway
@@ -238,11 +237,6 @@ export default {
                     error: 'Failed to update entity in database'
                 });
             }
-            
-            // Explicitly update config.entityConfig to ensure immediate availability
-            const currentEntityConfig = config.get('entityConfig') || {};
-            currentEntityConfig[entityId] = updateData;
-            config.set('entityConfig', currentEntityConfig);
             
             logger.info(`Updated entity ${entityId} (${currentEntity.name}): ${updatedProperties.join(', ')}`);
             

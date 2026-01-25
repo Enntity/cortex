@@ -75,9 +75,10 @@ export default {
         contextKey: '',
     },
     timeout: 600, // 10 minutes for video generation
+    // DEPRECATED: Use CreateMedia tool with type="video" (sys_tool_create_media.js)
     toolDefinition: [{
         type: "function",
-        enabled: true,
+        enabled: false, // Replaced by CreateMedia
         icon: "🎬",
         function: {
             name: "GenerateVideo",
@@ -91,7 +92,7 @@ export default {
                     },
                     inputImage: {
                         type: "string",
-                        description: "Optional: A reference image from your available files (from Available Files section or ListFileCollection or SearchFileCollection) to use as the starting frame or style reference for the video. The video will be generated to animate or extend from this image. Provide the hash or filename of the image."
+                        description: "Optional: A reference image from your available files (from Available Files section or FileCollection) to use as the starting frame or style reference for the video. The video will be generated to animate or extend from this image. Provide the hash or filename of the image."
                     },
                     filenamePrefix: {
                         type: "string",
@@ -126,12 +127,12 @@ export default {
             let imageParam = undefined;
             if (args.inputImage) {
                 if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
-                    throw new Error("agentContext is required when using the 'inputImage' parameter. Use ListFileCollection or SearchFileCollection to find available files.");
+                    throw new Error("agentContext is required when using the 'inputImage' parameter. Use FileCollection to find available files.");
                 }
                 
                 const resolved = await resolveFileParameter(args.inputImage, args.agentContext, { preferGcs: true });
                 if (!resolved) {
-                    throw new Error(`File not found: "${args.inputImage}". Use ListFileCollection or SearchFileCollection to find available files.`);
+                    throw new Error(`File not found: "${args.inputImage}". Use FileCollection to find available files.`);
                 }
                 
                 // Veo expects image as JSON object with gcsUri and mimeType

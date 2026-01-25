@@ -3,6 +3,7 @@ import sysEntityAgent from '../../pathways/system/entity/sys_entity_agent.js';
 import { config } from '../../config.js';
 import { getToolsForEntity } from '../../pathways/system/entity/tools/shared/sys_entity_tools.js';
 import { withTimeout } from '../../lib/pathwayTools.js';
+import { getEntityStore } from '../../lib/MongoEntityStore.js';
 
 const buildToolDefinition = (name, pathwayName, overrides = {}) => ({
   pathwayName,
@@ -48,7 +49,6 @@ const buildResolver = (overrides = {}) => ({
 });
 
 const setupConfig = () => {
-  const originalGet = config.get.bind(config);
   const originalPathways = config.get('pathways') || {};
   const originalEntityTools = config.get('entityTools') || {};
 
@@ -60,13 +60,12 @@ const setupConfig = () => {
   };
 
   const entityId = 'entity-test-errors';
-  const entityConfig = {
-    [entityId]: {
-      id: entityId,
-      isDefault: true,
-      tools: Object.keys(tools),
-      customTools: tools,
-    },
+  const testEntity = {
+    id: entityId,
+    name: 'Test Entity',
+    isDefault: true,
+    tools: Object.keys(tools),
+    customTools: tools,
   };
 
   const pathways = {
@@ -103,17 +102,14 @@ const setupConfig = () => {
     entityTools: {},
   });
 
-  // convict schema does not expose entityConfig; override config.get for tests
-  config.get = (key) => {
-    if (key === 'entityConfig') {
-      return entityConfig;
-    }
-    return originalGet(key);
-  };
+  // Inject test entity into MongoEntityStore cache (bypasses MongoDB)
+  const entityStore = getEntityStore();
+  entityStore._entityCache.set(entityId, testEntity);
+  entityStore._cacheTimestamps.set(entityId, Date.now());
 
   return {
     entityId,
-    originalGet,
+    testEntity,
     originalPathways,
     originalEntityTools,
   };
@@ -125,7 +121,10 @@ const restoreConfig = (originals) => {
     entityTools: originals.originalEntityTools,
   });
 
-  config.get = originals.originalGet;
+  // Clear test entity from cache
+  const entityStore = getEntityStore();
+  entityStore._entityCache.delete(originals.entityId);
+  entityStore._cacheTimestamps.delete(originals.entityId);
 };
 
 test.serial('executePathway returns sys_generator_error output on 500 base model error', async (t) => {
@@ -182,7 +181,7 @@ test.serial('toolCallback surfaces 400 error JSON from tool result', async (t) =
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
-  const entityConfig = config.get('entityConfig')[originals.entityId];
+  const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
   let promptArgs;
@@ -216,7 +215,7 @@ test.serial('toolCallback captures 500 error thrown by tool pathway', async (t) 
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
-  const entityConfig = config.get('entityConfig')[originals.entityId];
+  const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
   let promptArgs;
@@ -250,7 +249,7 @@ test.serial('toolCallback captures tool null result as error', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
-  const entityConfig = config.get('entityConfig')[originals.entityId];
+  const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
   let promptArgs;
@@ -284,7 +283,7 @@ test.serial('toolCallback reports invalid tool call arguments', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
-  const entityConfig = config.get('entityConfig')[originals.entityId];
+  const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
   let promptArgs;
@@ -324,7 +323,7 @@ test.serial('toolCallback returns error response when promptAndParse throws', as
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
-  const entityConfig = config.get('entityConfig')[originals.entityId];
+  const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
   const resolver = buildResolver({
@@ -350,7 +349,7 @@ test.serial('executePathway returns error response when tool recursion times out
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
-  const entityConfig = config.get('entityConfig')[originals.entityId];
+  const entityConfig = originals.testEntity;
   const { entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
   const resolver = buildResolver({
@@ -380,7 +379,7 @@ test.serial('toolCallback injects max tool call message once limit reached', asy
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
-  const entityConfig = config.get('entityConfig')[originals.entityId];
+  const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
   let promptArgs;
@@ -469,26 +468,17 @@ test.serial('toolCallback truncates oversized tool results', async (t) => {
   config.load({ pathways: largeResultPathways });
 
   const tools = {
-    ...config.get('entityConfig')[originals.entityId].customTools,
+    ...originals.testEntity.customTools,
     largeresult: buildToolDefinition('LargeResult', 'test_tool_large_result'),
   };
 
-  const entityConfig = {
-    [originals.entityId]: {
-      ...config.get('entityConfig')[originals.entityId],
-      tools: [...config.get('entityConfig')[originals.entityId].tools, 'largeresult'],
-      customTools: tools,
-    },
+  const modifiedEntity = {
+    ...originals.testEntity,
+    tools: [...originals.testEntity.tools, 'largeresult'],
+    customTools: tools,
   };
 
-  config.get = (key) => {
-    if (key === 'entityConfig') {
-      return entityConfig;
-    }
-    return originals.originalGet(key);
-  };
-
-  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig[originals.entityId]);
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(modifiedEntity);
 
   let promptArgs;
   const resolver = buildResolver({
@@ -613,7 +603,7 @@ test.serial('toolCallback handles tool timeout error correctly', async (t) => {
   config.load({ pathways: timeoutPathways });
 
   const tools = {
-    ...config.get('entityConfig')[originals.entityId].customTools,
+    ...originals.testEntity.customTools,
     slowtool: {
       ...buildToolDefinition('SlowTool', 'test_tool_slow'),
       definition: {
@@ -624,22 +614,13 @@ test.serial('toolCallback handles tool timeout error correctly', async (t) => {
     },
   };
 
-  const entityConfig = {
-    [originals.entityId]: {
-      ...config.get('entityConfig')[originals.entityId],
-      tools: [...config.get('entityConfig')[originals.entityId].tools, 'slowtool'],
-      customTools: tools,
-    },
+  const modifiedEntity = {
+    ...originals.testEntity,
+    tools: [...originals.testEntity.tools, 'slowtool'],
+    customTools: tools,
   };
 
-  config.get = (key) => {
-    if (key === 'entityConfig') {
-      return entityConfig;
-    }
-    return originals.originalGet(key);
-  };
-
-  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig[originals.entityId]);
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(modifiedEntity);
 
   let promptArgs;
   const resolver = buildResolver({

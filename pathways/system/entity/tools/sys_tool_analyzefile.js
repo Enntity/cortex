@@ -47,7 +47,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to analyze (from ListFileCollection or SearchFileCollection): each can be the hash, the filename, the URL, or the GCS URL. You can find available files in the availableFiles section."
+                        description: "Array of files to analyze (from FileCollection): each can be the hash, the filename, the URL, or the GCS URL. You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",
@@ -123,7 +123,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to analyze (from ListFileCollection or SearchFileCollection): each can be the hash, the filename, the URL, or the GCS URL. You can find available files in the availableFiles section."
+                        description: "Array of files to analyze (from FileCollection): each can be the hash, the filename, the URL, or the GCS URL. You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",
@@ -152,7 +152,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to analyze. Each can be: (1) A YouTube URL (youtube.com/watch?v=..., youtu.be/..., youtube.com/shorts/..., youtube.com/embed/...), (2) A direct video/audio file URL, (3) A file from the collection (hash, filename, URL, or GCS URL from ListFileCollection or SearchFileCollection). You can find available files in the availableFiles section."
+                        description: "Array of files to analyze. Each can be: (1) A YouTube URL (youtube.com/watch?v=..., youtu.be/..., youtube.com/shorts/..., youtube.com/embed/...), (2) A direct video/audio file URL, (3) A file from the collection (hash, filename, URL, or GCS URL from FileCollection). You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",
@@ -210,7 +210,7 @@ export default {
                 if (fileContents.length === 0) {
                     const errorMessage = errors.length > 0 
                         ? errors.join('; ')
-                        : 'No files found. Use ListFileCollection or SearchFileCollection to find available files.';
+                        : 'No files found. Use FileCollection to find available files.';
                     resolver.tool = JSON.stringify({ toolUsed: "vision" });
                     return JSON.stringify({ 
                         error: errorMessage,

@@ -7,7 +7,6 @@ import serverFactory from '../../../../index.js';
 import { callPathway } from '../../../../lib/pathwayTools.js';
 import { getEntityStore } from '../../../../lib/MongoEntityStore.js';
 import { getContinuityMemoryService, ContinuityMemoryType } from '../../../../lib/continuity/index.js';
-import { config } from '../../../../config.js';
 
 const TEST_USER_ID = `test-user-onboarding-${Date.now()}`;
 const TEST_USER_ID_2 = `test-user-onboarding-2-${Date.now()}`;
@@ -371,16 +370,15 @@ test.serial('Tool: createEntity updates config cache immediately', async (t) => 
     const parsed = JSON.parse(result);
     t.true(parsed.success, 'Should create entity');
     createdEntityIds.push(parsed.entityId);
-    
-    // Verify entity is immediately available in config
-    const entityConfig = config.get('entityConfig') || {};
-    const cachedEntity = entityConfig[parsed.entityId];
-    t.truthy(cachedEntity, 'Entity should be in config cache');
+
+    // Verify entity is immediately available via MongoEntityStore cache
+    const cachedEntity = await entityStore.getEntity(parsed.entityId);
+    t.truthy(cachedEntity, 'Entity should be in MongoEntityStore cache');
     t.is(cachedEntity.name, 'ConfigTestEntity', 'Cached entity should have correct name');
-    
+
     // Verify it's also available via getAvailableEntities
     const { getAvailableEntities } = await import('../../../../pathways/system/entity/tools/shared/sys_entity_tools.js');
-    const entities = getAvailableEntities({ userId: TEST_USER_ID });
+    const entities = await getAvailableEntities({ userId: TEST_USER_ID });
     const found = entities.find(e => e.id === parsed.entityId);
     t.truthy(found, 'Entity should be discoverable via getAvailableEntities');
 });

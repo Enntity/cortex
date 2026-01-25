@@ -29,7 +29,7 @@ export default {
         // Load input parameters and information into args
         const { entityId, aiName, language, model } = { ...pathwayResolver.pathway.inputParameters, ...args };
         
-        const entityConfig = loadEntityConfig(entityId);
+        const entityConfig = await loadEntityConfig(entityId);
 
         // Initialize chat history if needed
         if (!args.chatHistory || args.chatHistory.length === 0) {

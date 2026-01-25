@@ -71,7 +71,7 @@ Examples of when to use:
 
         try {
             // Look up CreativeAgent entity by name (UUID is generated at runtime)
-            const creativeAgent = getSystemEntity('CreativeAgent');
+            const creativeAgent = await getSystemEntity('CreativeAgent');
             if (!creativeAgent || !creativeAgent.id) {
                 throw new Error('CreativeAgent system entity not found - ensure server has been restarted after adding CreativeAgent to config');
             }

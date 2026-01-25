@@ -1,5 +1,5 @@
-// sys_tool_show_avatar_overlay.js
-// Tool pathway that allows agents to show avatar overlay playlist items in a special UI location
+// sys_tool_show_overlay.js
+// Tool pathway that allows agents to show overlay playlist items in a special UI location
 import logger from '../../../../lib/logger.js';
 import { loadFileCollection, findFileInCollection } from '../../../../lib/fileUtils.js';
 import { sendAppCommand } from '../../../../lib/pathwayTools.js';
@@ -12,8 +12,8 @@ export default {
         icon: "🖼️",
         hideExecution: true,
         function: {
-            name: "ShowAvatarOverlay",
-            description: "Display an overlay playlist in a prominent area of the UI. Provide an array of items to show in sequence. Each item can be text, image, or video with optional duration and label. Use this any time you want to show yourself or something particularly interesting to the user in a dynamic way. The items will be displayed in the order they are provided in the array.",
+            name: "ShowOverlay",
+            description: "Display an overlay containing images, videos, or text in a prominent area of the UI. Provide an array of items to show in sequence with an optional duration and label. Use this any time you want to show something special to the user outside of the chat markdown - great for showing selfies, etc. The items will be displayed in the order they are provided in the array.",
             parameters: {
                 type: "object",
                 properties: {
@@ -33,7 +33,7 @@ export default {
                                 },
                                 file: {
                                     type: "string",
-                                    description: "For image/video items: a file reference from ListFileCollection or SearchFileCollection (hash, filename, URL, or GCS URL)."
+                                    description: "For image/video items: a file reference from FileCollection (hash, filename, URL, or GCS URL)."
                                 },
                                 duration: {
                                     type: "number",
@@ -68,7 +68,7 @@ export default {
         if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
             return JSON.stringify({
                 error: true,
-                message: "agentContext is required. Use ListFileCollection or SearchFileCollection to find available files."
+                message: "agentContext is required. Use FileCollection to find available files."
             });
         }
 
@@ -174,7 +174,7 @@ export default {
                 ...(entityId && { entityId })
             });
 
-            pathwayResolver.tool = JSON.stringify({ toolUsed: "ShowAvatarOverlay" });
+            pathwayResolver.tool = JSON.stringify({ toolUsed: "ShowOverlay" });
 
             const itemCount = overlayItems.length;
             const itemList = overlayItems.map(item => item.type === 'text' ? 'text' : (item.filename || 'file')).join(', ');
@@ -187,7 +187,7 @@ export default {
                 errors: errors.length > 0 ? errors : undefined
             });
         } catch (e) {
-            logger.error(`Error in ShowAvatarOverlay tool: ${e.message || e}`);
+            logger.error(`Error in ShowOverlay tool: ${e.message || e}`);
             return JSON.stringify({
                 error: true,
                 message: e.message || String(e)

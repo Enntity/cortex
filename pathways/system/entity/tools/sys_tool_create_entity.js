@@ -15,7 +15,6 @@
 
 import { getEntityStore } from '../../../../lib/MongoEntityStore.js';
 import { getContinuityMemoryService, ContinuityMemoryType } from '../../../../lib/continuity/index.js';
-import { config } from '../../../../config.js';
 import logger from '../../../../lib/logger.js';
 import { v4 as uuidv4 } from 'uuid';
 import { sendAppCommand } from '../../../../lib/pathwayTools.js';
@@ -287,13 +286,7 @@ Required information before calling:
             }
             
             logger.info(`Created new entity "${name}" (${createdId}) for user ${userId}`);
-            
-            // Update global config so the new entity is immediately available
-            // (entityStore cache is already updated by upsertEntity)
-            const currentEntityConfig = config.get('entityConfig') || {};
-            currentEntityConfig[createdId] = entityData;
-            config.set('entityConfig', currentEntityConfig);
-            
+
             // For continuity memory entities, seed CORE and ANCHOR memories
             if (useContinuityMemory) {
                 try {

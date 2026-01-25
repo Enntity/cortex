@@ -191,7 +191,7 @@ test('formatFilesForTemplate should limit to 10 files and show note', t => {
     // Should include compact note about more files
     t.true(result.includes('more file(s) available'));
     t.true(result.includes('5 more file(s) available'));
-    t.true(result.includes('ListFileCollection or SearchFileCollection'));
+    t.true(result.includes('FileCollection'));
 });
 
 test('extractFilesFromChatHistory should handle mixed content types', t => {

@@ -1,7 +1,7 @@
 // sys_tool_file_collection.js
 // Tool pathway that manages user file collections (add, search, list, update, remove files)
 // Uses Redis hash maps (FileStoreMap:ctx:<contextId>) for storage
-// Supports atomic rename/tag/notes updates via UpdateFileMetadata
+// Unified tool with smart routing based on parameters
 import logger from '../../../../lib/logger.js';
 import { addFileToCollection, loadFileCollection, findFileInCollection, deleteFileByHash, updateFileMetadata, invalidateFileCollectionCache } from '../../../../lib/fileUtils.js';
 
@@ -9,198 +9,156 @@ export default {
     prompt: [],
     timeout: 30,
     toolDefinition: [
-        { 
+        {
             type: "function",
             icon: "📁",
             function: {
-                name: "AddFileToCollection",
-                description: "Add a file to the file collection for this chat. This tool can upload a file from a URL to cloud storage (checking for duplicates by hash) and then store it in your collection with metadata so it can be used to download files from the internet.",
+                name: "FileCollection",
+                description: `Manage your file collection. Operations are inferred from parameters:
+• ADD: Provide fileUrl (to upload) or url (already uploaded) + filename
+• SEARCH: Provide query to search by filename, tags, or notes
+• LIST: No query/fileUrl/url/fileIds/file → lists all files
+• REMOVE: Provide fileIds array to delete files
+• UPDATE: Provide file + any of: newFilename, tags, addTags, removeTags, notes, permanent`,
                 parameters: {
                     type: "object",
                     properties: {
+                        // === ADD parameters ===
                         fileUrl: {
                             type: "string",
-                            description: "Optional: The URL of a file to upload to cloud storage (e.g., https://example.com/file.pdf). If provided, the file will be uploaded and then added to the collection. If not provided, you must provide the 'url' parameter for an already-uploaded file."
+                            description: "ADD: URL of a file to upload to cloud storage (e.g., https://example.com/file.pdf)"
                         },
                         url: {
                             type: "string",
-                            description: "Optional: The cloud storage URL of an already-uploaded file (Azure URL). Use this if the file is already in cloud storage. If 'fileUrl' is provided, this will be ignored."
+                            description: "ADD: Cloud storage URL of an already-uploaded file (use if file is already in cloud)"
                         },
                         gcs: {
                             type: "string",
-                            description: "Optional: The Google Cloud Storage URL of the file (GCS URL). Only needed if the file is already in cloud storage and you're providing 'url'."
+                            description: "ADD: Google Cloud Storage URL (only if providing 'url')"
                         },
                         filename: {
                             type: "string",
-                            description: "The filename or title for this file"
-                        },
-                        tags: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "Optional: Array of tags to help organize and search for this file (e.g., ['pdf', 'report', '2024'])"
-                        },
-                        notes: {
-                            type: "string",
-                            description: "Optional: Notes or description about this file to help you remember what it contains"
+                            description: "ADD: Filename or title for the file being added"
                         },
                         hash: {
                             type: "string",
-                            description: "Optional: File hash for deduplication and identification (usually computed automatically during upload)"
+                            description: "ADD: File hash for deduplication (usually computed automatically)"
+                        },
+                        // === SEARCH parameters ===
+                        query: {
+                            type: "string",
+                            description: "SEARCH: Search query - searches filename, tags, and notes (case-insensitive substring match)"
+                        },
+                        // === REMOVE parameters ===
+                        fileIds: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "REMOVE: Array of files to delete (hash, filename, or URL)"
+                        },
+                        // === UPDATE parameters ===
+                        file: {
+                            type: "string",
+                            description: "UPDATE: The file to update (filename, hash, or URL)"
+                        },
+                        newFilename: {
+                            type: "string",
+                            description: "UPDATE: New filename/title for the file"
+                        },
+                        addTags: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "UPDATE: Tags to add to existing tags"
+                        },
+                        removeTags: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "UPDATE: Tags to remove from existing tags"
+                        },
+                        // === Shared parameters ===
+                        tags: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "ADD: Tags for new file. UPDATE: Replace all tags. SEARCH/LIST: Filter by tags."
+                        },
+                        notes: {
+                            type: "string",
+                            description: "ADD/UPDATE: Notes or description for the file"
                         },
                         permanent: {
                             type: "boolean",
-                            description: "Optional: If true, the file will be stored indefinitely (retention=permanent). Default: false."
-                        },
-                        userMessage: {
-                            type: "string",
-                            description: "A user-friendly message that describes what you're doing with this tool"
-                        }
-                    },
-                    required: ["filename", "userMessage"]
-                }
-            }
-        },
-        {
-            type: "function",
-            icon: "🔍",
-            function: {
-                name: "SearchFileCollection",
-                description: "Search your file collection to find files by filename, tags, notes, or date. Returns matching files with their cloud URLs and metadata.",
-                parameters: {
-                    type: "object",
-                    properties: {
-                        query: {
-                            type: "string",
-                            description: "Search query - can search by filename, tags, or notes content. Note: This is a simple substring search (case-insensitive). Operators like | (OR), & (AND), NOT, or quoted phrases are NOT supported. The query will match if it appears anywhere in the filename, tags, or notes."
-                        },
-                        tags: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "Optional: Filter results by specific tags (all tags must match)"
-                        },
-                        limit: {
-                            type: "number",
-                            description: "Optional: Maximum number of results to return (default: 20)"
-                        },
-                        includeAllChats: {
-                            type: "boolean",
-                            description: "Optional: Set to true if the file you want may be in a different chat than the current chat."
-                        },
-                        userMessage: {
-                            type: "string",
-                            description: "A user-friendly message that describes what you're doing with this tool"
-                        }
-                    },
-                    required: ["query", "userMessage"]
-                }
-            }
-        },
-        {
-            type: "function",
-            icon: "📋",
-            function: {
-                name: "ListFileCollection",
-                description: "List all files in your collection, optionally filtered by tags or sorted by date. Useful for getting an overview of your stored files or when you don't know the exact file you're looking for.",
-                parameters: {
-                    type: "object",
-                    properties: {
-                        tags: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "Optional: Filter results by specific tags (all tags must match)"
+                            description: "ADD/UPDATE: If true, file won't be auto-cleaned"
                         },
                         sortBy: {
                             type: "string",
                             enum: ["date", "filename"],
-                            description: "Optional: Sort results by date (newest first) or filename (alphabetical). Default: date"
+                            description: "LIST: Sort by date (newest first) or filename. Default: date"
                         },
                         limit: {
                             type: "number",
-                            description: "Optional: Maximum number of results to return (default: 50)"
+                            description: "SEARCH/LIST: Maximum results to return (default: 20 for search, 50 for list)"
                         },
                         includeAllChats: {
                             type: "boolean",
-                            description: "Optional: Set to true if the file you want may be in a different chat than the current chat."
+                            description: "SEARCH/LIST: Set true to include files from all chats"
                         },
                         userMessage: {
                             type: "string",
-                            description: "A user-friendly message that describes what you're doing with this tool"
+                            description: "A user-friendly message describing what you're doing"
                         }
                     },
                     required: ["userMessage"]
                 }
             }
         },
+        // Legacy tool definitions (disabled - use FileCollection instead)
         {
             type: "function",
-            icon: "🗑️",
+            enabled: false,
+            icon: "📁",
             function: {
-                name: "RemoveFileFromCollection",
-                description: "Remove one or more files from your collection and delete them from cloud storage.",
-                parameters: {
-                    type: "object",
-                    properties: {
-                        fileIds: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "Array of files to remove (from ListFileCollection or SearchFileCollection): each item can be the hash, the filename, the URL, or the GCS URL."
-                        },
-                        userMessage: {
-                            type: "string",
-                            description: "A user-friendly message that describes what you're doing with this tool"
-                        }
-                    },
-                    required: ["fileIds", "userMessage"]
-                }
+                name: "AddFileToCollection",
+                description: "DEPRECATED: Use FileCollection with fileUrl/url + filename instead.",
+                parameters: { type: "object", properties: {}, required: [] }
             }
         },
         {
             type: "function",
+            enabled: false,
+            icon: "🔍",
+            function: {
+                name: "SearchFileCollection",
+                description: "DEPRECATED: Use FileCollection with query parameter instead.",
+                parameters: { type: "object", properties: {}, required: [] }
+            }
+        },
+        {
+            type: "function",
+            enabled: false,
+            icon: "📋",
+            function: {
+                name: "ListFileCollection",
+                description: "DEPRECATED: Use FileCollection with no action parameters instead.",
+                parameters: { type: "object", properties: {}, required: [] }
+            }
+        },
+        {
+            type: "function",
+            enabled: false,
+            icon: "🗑️",
+            function: {
+                name: "RemoveFileFromCollection",
+                description: "DEPRECATED: Use FileCollection with fileIds parameter instead.",
+                parameters: { type: "object", properties: {}, required: [] }
+            }
+        },
+        {
+            type: "function",
+            enabled: false,
             icon: "✏️",
             function: {
                 name: "UpdateFileMetadata",
-                description: "Update metadata for a file in your collection. Use this to rename files, update tags, or add/modify notes. This is an atomic operation - safer than add+delete for renaming.",
-                parameters: {
-                    type: "object",
-                    properties: {
-                        file: {
-                            type: "string",
-                            description: "The file to update - can be the current filename, hash, URL, or ID from ListFileCollection"
-                        },
-                        newFilename: {
-                            type: "string",
-                            description: "Optional: New filename/title for the file (renames the file)"
-                        },
-                        tags: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "Optional: New tags to set for this file (replaces existing tags)"
-                        },
-                        addTags: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "Optional: Tags to add to the file's existing tags"
-                        },
-                        removeTags: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "Optional: Tags to remove from the file's existing tags"
-                        },
-                        notes: {
-                            type: "string",
-                            description: "Optional: New notes/description for the file (replaces existing notes)"
-                        },
-                        permanent: {
-                            type: "boolean",
-                            description: "Optional: If true, marks the file as permanent (won't be auto-cleaned). If false, marks as temporary."
-                        },
-                        userMessage: {
-                            type: "string",
-                            description: "A user-friendly message that describes what you're doing with this tool"
-                        }
-                    },
-                    required: ["file", "userMessage"]
-                }
+                description: "DEPRECATED: Use FileCollection with file + metadata parameters instead.",
+                parameters: { type: "object", properties: {}, required: [] }
             }
         }
     ],
@@ -317,7 +275,7 @@ export default {
                 if (notes !== undefined) updates.push(`notes updated`);
                 if (permanent !== undefined) updates.push(`marked as ${permanent ? 'permanent' : 'temporary'}`);
 
-                resolver.tool = JSON.stringify({ toolUsed: "UpdateFileMetadata" });
+                resolver.tool = JSON.stringify({ toolUsed: "FileCollection", action: "update" });
                 return JSON.stringify({
                     success: true,
                     file: foundFile.displayFilename || foundFile.filename || file,
@@ -356,7 +314,7 @@ export default {
                     args.entityId || null
                 );
 
-                resolver.tool = JSON.stringify({ toolUsed: "AddFileToCollection" });
+                resolver.tool = JSON.stringify({ toolUsed: "FileCollection", action: "add" });
                 return JSON.stringify({
                     success: true,
                     fileId: fileEntry.id,
@@ -463,7 +421,7 @@ export default {
                 // Limit results
                 results = results.slice(0, limit);
 
-                resolver.tool = JSON.stringify({ toolUsed: "SearchFileCollection" });
+                resolver.tool = JSON.stringify({ toolUsed: "FileCollection", action: "search" });
                 
                 // Build helpful message when no results found
                 let message;
@@ -656,7 +614,7 @@ export default {
                 
                 message += " (Cloud storage cleanup started in background)";
 
-                resolver.tool = JSON.stringify({ toolUsed: "RemoveFileFromCollection" });
+                resolver.tool = JSON.stringify({ toolUsed: "FileCollection", action: "remove" });
                 return JSON.stringify({
                     success: true,
                     removedCount: removedCount,
@@ -705,7 +663,7 @@ export default {
                 // Limit results
                 results = results.slice(0, limit);
 
-                resolver.tool = JSON.stringify({ toolUsed: "ListFileCollection" });
+                resolver.tool = JSON.stringify({ toolUsed: "FileCollection", action: "list" });
                 
                 // Build helpful message
                 let message;

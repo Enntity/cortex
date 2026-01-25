@@ -64,7 +64,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "A list of input files (from Available Files section or ListFileCollection or SearchFileCollection) that the coding agent must use to complete the task. Each file should be the hash or filename. Omit this parameter if no input files are needed."
+                        description: "A list of input files (from Available Files section or FileCollection) that the coding agent must use to complete the task. Each file should be the hash or filename. Omit this parameter if no input files are needed."
                     },
                     userMessage: {
                         type: "string",
@@ -91,7 +91,7 @@ export default {
             let taskSuffix = "";
             if (inputFiles && Array.isArray(inputFiles) && inputFiles.length > 0) {
                 if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
-                    throw new Error("agentContext is required when using the 'inputFiles' parameter. Use ListFileCollection or SearchFileCollection to find available files.");
+                    throw new Error("agentContext is required when using the 'inputFiles' parameter. Use FileCollection to find available files.");
                 }
                 
                 // Resolve file parameters to URLs
@@ -116,7 +116,7 @@ export default {
                     const fileList = failedFiles.length === 1 
                         ? `"${failedFiles[0]}"` 
                         : failedFiles.map(f => `"${f}"`).join(', ');
-                    throw new Error(`File(s) not found: ${fileList}. Use ListFileCollection or SearchFileCollection to find available files.`);
+                    throw new Error(`File(s) not found: ${fileList}. Use FileCollection to find available files.`);
                 }
                 
                 if (resolvedUrls.length > 0) {
