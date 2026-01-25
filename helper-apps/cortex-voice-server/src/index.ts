@@ -5,10 +5,7 @@
  * Supports OpenAI Realtime, OpenAI TTS/STT, and ElevenLabs providers.
  */
 
-import { createServer } from 'http';
-import { Hono } from 'hono';
-// serve is unused - using native http createServer instead
-// import { serve } from '@hono/node-server';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { loadConfig, validateConfig } from './config.js';
 import { SocketServer } from './SocketServer.js';
 import { getAvailableProviders } from './providers/index.js';
@@ -29,46 +26,73 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
-    // Create Hono app for HTTP endpoints
-    const app = new Hono();
-
-    // Health check endpoint
-    app.get('/health', (c) => {
-        return c.json({
-            status: 'ok',
-            timestamp: new Date().toISOString(),
-            sessions: socketServer?.getSessionCount() || 0,
-        });
-    });
-
-    // Server info endpoint
-    app.get('/info', (c) => {
-        return c.json({
-            name: 'cortex-voice-server',
-            version: '1.0.0',
-            providers: getAvailableProviders(config),
-            defaultProvider: config.defaultProvider,
-        });
-    });
-
-    // Sessions endpoint (for monitoring)
-    app.get('/sessions', (c) => {
-        if (!config.debug) {
-            return c.json({ error: 'Debug mode disabled' }, 403);
-        }
-
-        return c.json({
-            count: socketServer?.getSessionCount() || 0,
-            sessions: socketServer?.getSessions() || [],
-        });
-    });
-
-    // Create HTTP server
-    const httpServer = createServer(app.fetch as any);
-
-    // Create Socket.io server
+    // Socket server reference (set after creation)
     let socketServer: SocketServer;
 
+    // Create HTTP server with request handler for health/info endpoints
+    // Socket.io intercepts its own paths via the 'upgrade' event
+    const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+        const url = req.url || '/';
+
+        // CORS headers for all responses
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Content-Type', 'application/json');
+
+        if (req.method === 'OPTIONS') {
+            res.writeHead(204);
+            res.end();
+            return;
+        }
+
+        // Health check endpoint
+        if (url === '/health') {
+            res.writeHead(200);
+            res.end(JSON.stringify({
+                status: 'ok',
+                timestamp: new Date().toISOString(),
+                sessions: socketServer?.getSessionCount() || 0,
+            }));
+            return;
+        }
+
+        // Server info endpoint
+        if (url === '/info') {
+            res.writeHead(200);
+            res.end(JSON.stringify({
+                name: 'cortex-voice-server',
+                version: '1.0.0',
+                providers: getAvailableProviders(config),
+                defaultProvider: config.defaultProvider,
+            }));
+            return;
+        }
+
+        // Sessions endpoint (for monitoring, debug mode only)
+        if (url === '/sessions') {
+            if (!config.debug) {
+                res.writeHead(403);
+                res.end(JSON.stringify({ error: 'Debug mode disabled' }));
+                return;
+            }
+
+            res.writeHead(200);
+            res.end(JSON.stringify({
+                count: socketServer?.getSessionCount() || 0,
+                sessions: socketServer?.getSessions() || [],
+            }));
+            return;
+        }
+
+        // Socket.io handles /socket.io/* paths via upgrade event
+        // Return 404 for any other paths
+        if (!url.startsWith('/socket.io')) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Not found' }));
+        }
+    });
+
+    // Create Socket.io server
     try {
         socketServer = new SocketServer(httpServer, config);
     } catch (error) {
