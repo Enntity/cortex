@@ -11,6 +11,7 @@ import { BaseVoiceProvider } from './BaseProvider.js';
 import {
     VoiceProviderType,
     VoiceConfig,
+    VoiceSettings,
     AudioData,
     ConversationMessage,
     ICortexBridge,
@@ -27,6 +28,12 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
     private conversationHistory: ConversationMessage[] = [];
     private isProcessing: boolean = false;
     private voiceId: string = 'pNInz6obpgDQGcFmaJgB'; // Default: Adam
+    private voiceSettings: VoiceSettings = {
+        stability: 0.5,
+        similarity: 0.75,
+        style: 0.0,
+        speakerBoost: true,
+    };
 
     // Streaming STT (replaces batch Whisper for low latency)
     private streamingSTT: StreamingSTT | null = null;
@@ -158,6 +165,16 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             this.voiceId = config.voiceId;
         }
 
+        // Use custom voice settings if provided
+        if (config.voiceSettings) {
+            this.voiceSettings = {
+                stability: config.voiceSettings.stability ?? this.voiceSettings.stability,
+                similarity: config.voiceSettings.similarity ?? this.voiceSettings.similarity,
+                style: config.voiceSettings.style ?? this.voiceSettings.style,
+                speakerBoost: config.voiceSettings.speakerBoost ?? this.voiceSettings.speakerBoost,
+            };
+        }
+
         // If entity has a voice sample, try to clone it
         if (config.voiceSample) {
             try {
@@ -199,7 +216,7 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         this.setConnected(true);
         this.setState('idle');
 
-        console.log(`[ElevenLabs] Connected for entity: ${config.entityId}, voice: ${this.voiceId}, streaming: ${!!this.streamingBridge}`);
+        console.log(`[ElevenLabs] Connected for entity: ${config.entityId}, voice: ${this.voiceId}, streaming: ${!!this.streamingBridge}, settings:`, this.voiceSettings);
     }
 
     private async setupVoiceClone(voiceSampleUrl: string, _entityId: string): Promise<void> {
@@ -364,10 +381,10 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                     modelId: 'eleven_v3',
                     outputFormat: 'pcm_24000',
                     voiceSettings: {
-                        stability: 0.5,
-                        similarityBoost: 0.75,
-                        style: 0.0,
-                        useSpeakerBoost: true,
+                        stability: this.voiceSettings.stability ?? 0.5,
+                        similarityBoost: this.voiceSettings.similarity ?? 0.75,
+                        style: this.voiceSettings.style ?? 0.0,
+                        useSpeakerBoost: this.voiceSettings.speakerBoost ?? true,
                     },
                 }
             );
@@ -555,10 +572,10 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                     modelId: 'eleven_v3',
                     outputFormat: 'pcm_24000',
                     voiceSettings: {
-                        stability: 0.5,
-                        similarityBoost: 0.75,
-                        style: 0.0,
-                        useSpeakerBoost: true,
+                        stability: this.voiceSettings.stability ?? 0.5,
+                        similarityBoost: this.voiceSettings.similarity ?? 0.75,
+                        style: this.voiceSettings.style ?? 0.0,
+                        useSpeakerBoost: this.voiceSettings.speakerBoost ?? true,
                     },
                 }
             );

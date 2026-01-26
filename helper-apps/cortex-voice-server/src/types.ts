@@ -4,6 +4,13 @@
 
 export type VoiceProviderType = 'openai-realtime' | 'openai-tts' | 'elevenlabs';
 
+export interface VoiceSettings {
+    stability?: number;      // 0.0 - 1.0
+    similarity?: number;     // 0.0 - 1.0
+    style?: number;          // 0.0 - 1.0
+    speakerBoost?: boolean;
+}
+
 export interface VoiceConfig {
     provider: VoiceProviderType;
     entityId: string;
@@ -16,6 +23,7 @@ export interface VoiceConfig {
     userInfo?: string;       // User info for time zone, location context (e.g., "User is in EST timezone")
     voiceSample?: string;
     voiceId?: string;
+    voiceSettings?: VoiceSettings;  // TTS voice settings (stability, similarity, style, speakerBoost)
     model?: string;
 }
 

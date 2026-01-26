@@ -8,6 +8,7 @@
 // - Entity properties (all optional, only provided ones are updated):
 //   - name, description, identity, tools, useMemory, preferredModel, modelOverride, reasoningEffort
 //   - avatarText (emoji), avatarDescription (for image gen), avatarImageUrl (avatar image URL)
+//   - voiceProvider, voiceId, voiceName, voiceStability, voiceSimilarity, voiceStyle, voiceSpeakerBoost
 //
 // Response format:
 // {
@@ -23,7 +24,7 @@ import logger from '../../../lib/logger.js';
 // Properties that can be updated via this pathway
 const ALLOWED_PROPERTIES = new Set([
     'name',
-    'description', 
+    'description',
     'identity',
     'tools',
     'useMemory',
@@ -33,7 +34,15 @@ const ALLOWED_PROPERTIES = new Set([
     // Avatar fields (these update nested avatar object)
     'avatarText',        // avatar.text (emoji)
     'avatarDescription', // avatar.description (for image generation)
-    'avatarImageUrl'     // avatar.image.url
+    'avatarImageUrl',    // avatar.image.url
+    // Voice fields (these update nested voice object)
+    'voiceProvider',     // voice.provider (e.g., 'elevenlabs')
+    'voiceId',           // voice.voiceId (provider-specific voice ID)
+    'voiceName',         // voice.voiceName (display name)
+    'voiceStability',    // voice.settings.stability (0.0 - 1.0)
+    'voiceSimilarity',   // voice.settings.similarity (0.0 - 1.0)
+    'voiceStyle',        // voice.settings.style (0.0 - 1.0)
+    'voiceSpeakerBoost'  // voice.settings.speakerBoost (boolean)
 ]);
 
 // Valid values for reasoningEffort
@@ -48,7 +57,10 @@ const MAX_LENGTHS = {
     modelOverride: 100,
     avatarText: 10,           // Emoji - should be short
     avatarDescription: 1000,  // Description for image generation
-    avatarImageUrl: 2000      // URL
+    avatarImageUrl: 2000,     // URL
+    voiceProvider: 50,        // e.g., 'elevenlabs'
+    voiceId: 100,             // Provider-specific voice ID
+    voiceName: 100            // Display name
 };
 
 export default {
@@ -68,7 +80,15 @@ export default {
         // Avatar fields - update nested avatar object
         avatarText: undefined,        // avatar.text (emoji)
         avatarDescription: undefined, // avatar.description (for image generation)
-        avatarImageUrl: undefined     // avatar.image.url
+        avatarImageUrl: undefined,    // avatar.image.url
+        // Voice fields - update nested voice object
+        voiceProvider: undefined,     // voice.provider (e.g., 'elevenlabs')
+        voiceId: undefined,           // voice.voiceId (provider-specific voice ID)
+        voiceName: undefined,         // voice.voiceName (display name)
+        voiceStability: { type: 'number', default: undefined },    // voice.settings.stability (0.0 - 1.0)
+        voiceSimilarity: { type: 'number', default: undefined },   // voice.settings.similarity (0.0 - 1.0)
+        voiceStyle: { type: 'number', default: undefined },        // voice.settings.style (0.0 - 1.0)
+        voiceSpeakerBoost: { type: 'boolean', default: undefined } // voice.settings.speakerBoost
     },
     model: 'oai-gpt41-mini',
     isMutation: true,
@@ -206,6 +226,77 @@ export default {
                     updateData.avatar = updateData.avatar || {};
                     updateData.avatar.image = updateData.avatar.image || {};
                     updateData.avatar.image.url = value;
+                } else if (key === 'voiceProvider') {
+                    // Update voice.provider
+                    if (typeof value === 'string' && value.length > MAX_LENGTHS.voiceProvider) {
+                        return JSON.stringify({
+                            success: false,
+                            error: `voiceProvider exceeds maximum length of ${MAX_LENGTHS.voiceProvider} characters`
+                        });
+                    }
+                    updateData.voice = updateData.voice || {};
+                    updateData.voice.provider = value;
+                } else if (key === 'voiceId') {
+                    // Update voice.voiceId
+                    if (typeof value === 'string' && value.length > MAX_LENGTHS.voiceId) {
+                        return JSON.stringify({
+                            success: false,
+                            error: `voiceId exceeds maximum length of ${MAX_LENGTHS.voiceId} characters`
+                        });
+                    }
+                    updateData.voice = updateData.voice || {};
+                    updateData.voice.voiceId = value;
+                } else if (key === 'voiceName') {
+                    // Update voice.voiceName
+                    if (typeof value === 'string' && value.length > MAX_LENGTHS.voiceName) {
+                        return JSON.stringify({
+                            success: false,
+                            error: `voiceName exceeds maximum length of ${MAX_LENGTHS.voiceName} characters`
+                        });
+                    }
+                    updateData.voice = updateData.voice || {};
+                    updateData.voice.voiceName = value;
+                } else if (key === 'voiceStability') {
+                    // Update voice.settings.stability (0.0 - 1.0)
+                    const numValue = typeof value === 'number' ? value : parseFloat(value);
+                    if (isNaN(numValue) || numValue < 0 || numValue > 1) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'voiceStability must be a number between 0.0 and 1.0'
+                        });
+                    }
+                    updateData.voice = updateData.voice || {};
+                    updateData.voice.settings = updateData.voice.settings || {};
+                    updateData.voice.settings.stability = numValue;
+                } else if (key === 'voiceSimilarity') {
+                    // Update voice.settings.similarity (0.0 - 1.0)
+                    const numValue = typeof value === 'number' ? value : parseFloat(value);
+                    if (isNaN(numValue) || numValue < 0 || numValue > 1) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'voiceSimilarity must be a number between 0.0 and 1.0'
+                        });
+                    }
+                    updateData.voice = updateData.voice || {};
+                    updateData.voice.settings = updateData.voice.settings || {};
+                    updateData.voice.settings.similarity = numValue;
+                } else if (key === 'voiceStyle') {
+                    // Update voice.settings.style (0.0 - 1.0)
+                    const numValue = typeof value === 'number' ? value : parseFloat(value);
+                    if (isNaN(numValue) || numValue < 0 || numValue > 1) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'voiceStyle must be a number between 0.0 and 1.0'
+                        });
+                    }
+                    updateData.voice = updateData.voice || {};
+                    updateData.voice.settings = updateData.voice.settings || {};
+                    updateData.voice.settings.style = numValue;
+                } else if (key === 'voiceSpeakerBoost') {
+                    // Update voice.settings.speakerBoost (boolean)
+                    updateData.voice = updateData.voice || {};
+                    updateData.voice.settings = updateData.voice.settings || {};
+                    updateData.voice.settings.speakerBoost = value === true || value === 'true';
                 } else if (MAX_LENGTHS[key] && typeof value === 'string') {
                     // Check string length limits
                     if (value.length > MAX_LENGTHS[key]) {

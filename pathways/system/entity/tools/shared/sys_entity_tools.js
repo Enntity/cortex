@@ -168,7 +168,8 @@ export const getAvailableEntities = async (options = {}) => {
                 preferredModel: entity.preferredModel || null,
                 modelOverride: entity.modelOverride || null,
                 baseModel: entity.baseModel || null,
-                reasoningEffort: entity.reasoningEffort || 'medium'
+                reasoningEffort: entity.reasoningEffort || 'medium',
+                voice: entity.voice || null
                 // Note: assocUserIds and createdBy intentionally not exposed for privacy
             };
         });
