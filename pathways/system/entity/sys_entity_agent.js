@@ -7,6 +7,7 @@ const CONTEXT_COMPRESSION_THRESHOLD = 0.7; // Compress when context reaches 70% 
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000; // Default context limit if not available from model
 
 import { callPathway, callTool, say, sendToolStart, sendToolFinish, withTimeout } from '../../../lib/pathwayTools.js';
+import { publishRequestProgress } from '../../../lib/redisSubscription.js';
 import { encode } from '../../../lib/encodeCache.js';
 import logger from '../../../lib/logger.js';
 import { config } from '../../../config.js';
@@ -687,16 +688,27 @@ export default {
                 
                 // Check if promptAndParse returned null (model call failed)
                 if (!result) {
-                    const errorMessage = pathwayResolver.errors.length > 0 
+                    const errorMessage = pathwayResolver.errors.length > 0
                         ? pathwayResolver.errors.join(', ')
                         : 'Model request failed - no response received';
                     logger.error(`promptAndParse returned null during tool callback: ${errorMessage}`);
                     const errorResponse = await generateErrorResponse(new Error(errorMessage), args, pathwayResolver);
                     // Ensure errors are cleared before returning
                     pathwayResolver.errors = [];
+
+                    // In streaming mode, the toolCallback is invoked fire-and-forget by the plugin,
+                    // so we must stream the error response directly to the client and close the stream
+                    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+                    publishRequestProgress({
+                        requestId,
+                        progress: 1,
+                        data: JSON.stringify(errorResponse),
+                        info: JSON.stringify(pathwayResolver.pathwayResultData || {}),
+                        error: ''
+                    });
                     return errorResponse;
                 }
-                
+
                 return result;
             } catch (parseError) {
                 // If promptAndParse fails, generate error response instead of re-throwing
@@ -704,6 +716,17 @@ export default {
                 const errorResponse = await generateErrorResponse(parseError, args, pathwayResolver);
                 // Ensure errors are cleared before returning
                 pathwayResolver.errors = [];
+
+                // In streaming mode, the toolCallback is invoked fire-and-forget by the plugin,
+                // so we must stream the error response directly to the client and close the stream
+                const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+                publishRequestProgress({
+                    requestId,
+                    progress: 1,
+                    data: JSON.stringify(errorResponse),
+                    info: JSON.stringify(pathwayResolver.pathwayResultData || {}),
+                    error: ''
+                });
                 return errorResponse;
             }
         }
@@ -856,7 +879,11 @@ You are speaking to the user through voice. Follow these guidelines for natural 
         } catch (compressionError) {
             logger.warn(`Initial context compression failed: ${compressionError.message}`);
         }
-      
+
+        // Update pathwayResolver.args with stripped/compressed chatHistory
+        // This ensures toolCallback receives the processed history, not the original
+        pathwayResolver.args = {...args};
+
         try {
             let currentMessages = JSON.parse(JSON.stringify(args.chatHistory));
 
