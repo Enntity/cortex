@@ -47,7 +47,7 @@ export default {
                         },
                         userMessage: {
                             type: "string",
-                            description: 'A short voice phrase (2-5 words) like "Checking that" or "One moment"'
+                            description: 'Brief message to display while this action runs'
                         }
                     },
                     required: ["text", "userMessage"]
@@ -82,7 +82,7 @@ export default {
                         },
                         userMessage: {
                             type: "string",
-                            description: 'A short voice phrase (2-5 words) like "Checking that" or "One moment"'
+                            description: 'Brief message to display while this action runs'
                         }
                     },
                     required: ["text", "userMessage"]
@@ -117,7 +117,7 @@ export default {
                         },
                         userMessage: {
                             type: "string",
-                            description: 'A short voice phrase (2-5 words) like "Checking that" or "One moment"'
+                            description: 'Brief message to display while this action runs'
                         }
                     },
                     required: ["text", "userMessage"]
@@ -152,7 +152,7 @@ export default {
                         },
                         userMessage: {
                             type: "string",
-                            description: 'A short voice phrase (2-5 words) like "Checking that" or "One moment"'
+                            description: 'Brief message to display while this action runs'
                         }
                     },
                     required: ["text", "userMessage"]

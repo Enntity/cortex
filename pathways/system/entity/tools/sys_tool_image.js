@@ -42,7 +42,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: 'A short voice phrase (2-5 words) like "Creating that" or "On it"'
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]
@@ -83,7 +83,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: 'A short voice phrase (2-5 words) like "Creating that" or "On it"'
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["inputImages", "detailedInstructions", "userMessage"]
@@ -117,7 +117,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: 'A short voice phrase (2-5 words) like "Creating that" or "On it"'
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]
@@ -139,7 +139,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: 'A short voice phrase (2-5 words) like "Creating that" or "On it"'
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["file", "userMessage"]

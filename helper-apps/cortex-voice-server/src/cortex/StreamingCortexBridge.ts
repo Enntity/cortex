@@ -101,6 +101,7 @@ interface ToolMessage {
 
 interface StreamEvents {
     'sentence': (sentence: string) => void;
+    'filler': (text: string) => void; // Filler phrases (not added to transcript/history)
     'tool-status': (event: ToolStatusEvent) => void;
     'media': (event: MediaEvent) => void;
     'thinking': (isThinking: boolean) => void;
@@ -145,31 +146,37 @@ export class StreamingCortexBridge extends EventEmitter {
     private readonly SENTENCE_ENDINGS = /([.!?])\s+/;
     private readonly MIN_SENTENCE_LENGTH = 10; // Don't emit very short fragments
 
-    // Filler mechanism for long operations
+    // Single chained filler timer for natural conversation flow
     private fillerTimer: ReturnType<typeof setTimeout> | null = null;
-    private toolMessageTimer: ReturnType<typeof setTimeout> | null = null;
-    private fillerIndex: number = 0;
-    private shuffledFillers: string[] = [];
+    private fillerStartTime: number = 0;
     private lastSpeechTime: number = 0; // Track when we last emitted speech
     private clientAudioPlaying: boolean = false; // Track if client is playing audio
-    private readonly TOOL_MESSAGE_DELAY = 1000; // 1s delay before speaking tool message
-    private readonly FILLER_FIRST_TIMEOUT = 4000; // 4 seconds before first filler
-    private readonly FILLER_BASE_INTERVAL = 5000; // Start at 5s for subsequent fillers
-    private readonly FILLER_INCREMENT = 1000; // Add 1s per filler for progressive spacing
-    private readonly FILLER_VARIANCE = 1000; // ±1s randomness
-    private readonly MIN_SPEECH_GAP = 2000; // Minimum 2s between any speech
-    private fillerPhrases: string[] = [
-        'Hmm...',
-        "Let's see...",
-        'One moment...',
-        'Working on that...',
-        'Almost there...',
-        'Bear with me...',
-        'Just a sec...',
-        'Thinking...',
-        'Got it...',
-        'On it...',
+    private hasEmittedContent: boolean = false; // Track if any real content has been emitted
+
+    // Timing milestones for fillers (ms from start)
+    // Note: acknowledgment disabled for now - was stepping on responses
+    private readonly FILLER_MILESTONES = [
+        // { time: 1600, category: 'acknowledgment' as const },
+        { time: 4000, category: 'thinking' as const },
+        { time: 10000, category: 'extended' as const },
+        // Extended fillers repeat every ~4s after 10s mark
     ];
+    private readonly EXTENDED_INTERVAL = 4000;
+    private readonly FILLER_VARIANCE = 500; // ±500ms randomness for natural feel
+    private readonly MIN_SPEECH_GAP = 3000; // Minimum 3s between any speech
+
+    // Categorized filler phrases
+    private fillers: {
+        acknowledgment: string[];
+        thinking: string[];
+        tool: string[];
+        extended: string[];
+    } = {
+        acknowledgment: ['Mm', 'Hmm', 'Ah', 'Mhm', 'Oh'],
+        thinking: ['Let me think...', 'Hmm...', 'One moment...', 'Good question...', 'Let me see...'],
+        tool: ['Working on that...', 'On it...', 'Let me check...', 'One sec...', 'Looking into it...'],
+        extended: ['Still working...', 'Almost there...', 'Bear with me...', 'Just a moment longer...', 'Nearly done...']
+    };
     private fillersLoaded: boolean = false;
 
     constructor(apiUrl: string) {
@@ -214,7 +221,7 @@ export class StreamingCortexBridge extends EventEmitter {
     }
 
     /**
-     * Load filler phrases from the entity via sys_generator_voice_filler
+     * Load categorized filler phrases from the entity via sys_generator_voice_filler
      */
     private async loadFillers(entityId: string): Promise<void> {
         if (this.fillersLoaded) return;
@@ -236,18 +243,43 @@ export class StreamingCortexBridge extends EventEmitter {
                 throw new Error(`HTTP ${response.status}`);
             }
 
+            interface FillerResult {
+                acknowledgment?: string[];
+                thinking?: string[];
+                tool?: string[];
+                extended?: string[];
+            }
+
             const data = await response.json() as {
-                data?: { sys_generator_voice_filler?: { result: string | string[] } };
+                data?: { sys_generator_voice_filler?: { result: string | FillerResult } };
             };
             const result = data?.data?.sys_generator_voice_filler?.result;
 
             if (result) {
-                // Parse the result - could be a JSON array string or already an array
-                const fillers = typeof result === 'string' ? JSON.parse(result) : result;
-                if (Array.isArray(fillers) && fillers.length > 0) {
-                    this.fillerPhrases = fillers;
+                // Parse the result - could be a JSON string or already an object
+                const parsed: FillerResult = typeof result === 'string' ? JSON.parse(result) : result;
+
+                // Validate and merge with defaults (keep defaults if category missing)
+                if (parsed && typeof parsed === 'object') {
+                    if (Array.isArray(parsed.acknowledgment) && parsed.acknowledgment.length > 0) {
+                        this.fillers.acknowledgment = parsed.acknowledgment;
+                    }
+                    if (Array.isArray(parsed.thinking) && parsed.thinking.length > 0) {
+                        this.fillers.thinking = parsed.thinking;
+                    }
+                    if (Array.isArray(parsed.tool) && parsed.tool.length > 0) {
+                        this.fillers.tool = parsed.tool;
+                    }
+                    if (Array.isArray(parsed.extended) && parsed.extended.length > 0) {
+                        this.fillers.extended = parsed.extended;
+                    }
                     this.fillersLoaded = true;
-                    console.log('[StreamingCortexBridge] Loaded entity fillers:', fillers.length, 'phrases');
+                    console.log('[StreamingCortexBridge] Loaded entity fillers:', {
+                        acknowledgment: this.fillers.acknowledgment.length,
+                        thinking: this.fillers.thinking.length,
+                        tool: this.fillers.tool.length,
+                        extended: this.fillers.extended.length,
+                    });
                 }
             }
         } catch (error) {
@@ -310,6 +342,9 @@ export class StreamingCortexBridge extends EventEmitter {
         this.isProcessing = true;
         this.textBuffer = '';
         this.fullResponse = '';
+
+        // Start filler timer for long-running queries (will be stopped when content arrives)
+        this.startFillerTimer();
 
         const ctx = this.sessionContext || { entityId, aiName: entityId };
         const formattedHistory = (chatHistory || []).map(msg => ({
@@ -538,13 +573,11 @@ export class StreamingCortexBridge extends EventEmitter {
             this.emit('tool-status', event);
             console.log('[StreamingCortexBridge] Tool started:', toolName, userMessage);
 
-            // Don't speak tool messages - just show them visually
-            // Start filler timer for long-running tools
-            this.startFillerTimer();
+            // Emit a tool-specific filler immediately (if appropriate)
+            this.emitToolFiller();
 
         } else if (type === 'finish') {
-            // Stop timers when tool completes
-            this.stopToolMessageTimer();
+            // Stop filler timers when tool completes
             this.stopFillerTimer();
 
             const event: ToolStatusEvent = {
@@ -555,16 +588,6 @@ export class StreamingCortexBridge extends EventEmitter {
             };
             this.emit('tool-status', event);
             console.log('[StreamingCortexBridge] Tool finished:', toolName, success ? 'success' : 'error');
-        }
-    }
-
-    /**
-     * Stop the tool message timer
-     */
-    private stopToolMessageTimer(): void {
-        if (this.toolMessageTimer) {
-            clearTimeout(this.toolMessageTimer);
-            this.toolMessageTimer = null;
         }
     }
 
@@ -674,11 +697,11 @@ export class StreamingCortexBridge extends EventEmitter {
     }
 
     /**
-     * Emit a sentence and reset filler timer
+     * Emit a sentence and stop filler timers (real content has arrived)
      */
     private emitSentence(text: string): void {
-        this.stopToolMessageTimer(); // Cancel tool message if content arrives
-        this.stopFillerTimer(); // Reset filler on any speech
+        this.stopFillerTimer(); // Stop all fillers - real content is here
+        this.hasEmittedContent = true; // Mark that we have real content
 
         // Clean any remaining markdown from text (in case it wasn't caught in buffer)
         const cleanText = this.cleanMarkdownFromText(text);
@@ -708,74 +731,107 @@ export class StreamingCortexBridge extends EventEmitter {
     }
 
     /**
-     * Start the filler timer - will emit filler phrases if no content for too long
+     * Start the filler timer chain for natural conversation flow
+     * Single timer that fires at milestones: 800ms, 2s, 5s, 7s, 9s...
      */
     private startFillerTimer(): void {
-        this.stopFillerTimer(); // Clear any existing timer
-        this.fillerIndex = 0;
-        // Shuffle the filler phrases for variety
-        this.shuffledFillers = [...this.fillerPhrases].sort(() => Math.random() - 0.5);
+        this.stopFillerTimer();
+        this.fillerStartTime = Date.now();
+        this.hasEmittedContent = false;
         this.scheduleNextFiller();
     }
 
     /**
-     * Schedule the next filler phrase with natural timing variation
+     * Schedule the next filler based on elapsed time
      */
     private scheduleNextFiller(): void {
-        // First filler at 4s, subsequent ones progressively longer (5s, 6s, 7s, etc.)
-        let baseTimeout: number;
-        if (this.fillerIndex === 0) {
-            // First filler: 4 seconds
-            baseTimeout = this.FILLER_FIRST_TIMEOUT;
+        const elapsed = Date.now() - this.fillerStartTime;
+
+        // Find the next milestone we haven't passed yet
+        let nextTime: number;
+        let category: 'acknowledgment' | 'thinking' | 'extended';
+
+        // Check fixed milestones first
+        const nextMilestone = this.FILLER_MILESTONES.find(m => m.time > elapsed);
+        if (nextMilestone) {
+            nextTime = nextMilestone.time;
+            category = nextMilestone.category;
         } else {
-            // Subsequent fillers: 5s + 1s per filler index (progressive spacing)
-            baseTimeout = this.FILLER_BASE_INTERVAL + (this.fillerIndex * this.FILLER_INCREMENT);
+            // Past all fixed milestones - schedule repeating extended fillers
+            const lastFixedTime = this.FILLER_MILESTONES[this.FILLER_MILESTONES.length - 1].time;
+            const timeSinceLast = elapsed - lastFixedTime;
+            const intervalsPassed = Math.floor(timeSinceLast / this.EXTENDED_INTERVAL);
+            nextTime = lastFixedTime + ((intervalsPassed + 1) * this.EXTENDED_INTERVAL);
+            category = 'extended';
         }
 
-        // Add randomness (±1s)
+        // Add randomness to feel more natural (±FILLER_VARIANCE ms)
         const variance = Math.floor(Math.random() * this.FILLER_VARIANCE * 2) - this.FILLER_VARIANCE;
-        const timeout = baseTimeout + variance;
+        const delay = Math.max(50, (nextTime - elapsed) + variance); // Ensure at least 50ms delay
 
         this.fillerTimer = setTimeout(() => {
-            if (this.isProcessing) {
-                // Check minimum gap since last speech
-                const timeSinceLastSpeech = Date.now() - this.lastSpeechTime;
-                if (timeSinceLastSpeech < this.MIN_SPEECH_GAP) {
-                    // Too soon, reschedule with remaining gap
-                    const remainingGap = this.MIN_SPEECH_GAP - timeSinceLastSpeech + 100; // +100ms buffer
-                    console.log('[StreamingCortexBridge] Filler delayed, waiting', remainingGap, 'ms');
-                    this.fillerTimer = setTimeout(() => this.emitFiller(), remainingGap);
-                    return;
-                }
-                this.emitFiller();
+            const didEmit = this.shouldEmitFiller();
+            if (didEmit) {
+                this.emitFiller(category);
             }
-        }, timeout);
+            // Chain to next filler (will stop naturally when hasEmittedContent or !isProcessing)
+            if (this.isProcessing && !this.hasEmittedContent) {
+                // If we just emitted, wait at least MIN_SPEECH_GAP before scheduling next
+                const nextDelay = didEmit ? this.MIN_SPEECH_GAP : 0;
+                this.fillerTimer = setTimeout(() => {
+                    if (this.isProcessing && !this.hasEmittedContent) {
+                        this.scheduleNextFiller();
+                    }
+                }, nextDelay);
+            }
+        }, delay);
     }
 
     /**
-     * Emit a filler phrase with thoughtful tone
+     * Check if we should emit a filler (processing, not playing audio, respects speech gap)
      */
-    private emitFiller(): void {
-        if (!this.isProcessing) return;
-
-        // Skip fillers if client is already playing audio - no need for filler
+    private shouldEmitFiller(): boolean {
+        if (!this.isProcessing) return false;
+        if (this.hasEmittedContent) return false; // Real content has started, no more fillers
         if (this.clientAudioPlaying) {
             console.log('[StreamingCortexBridge] Skipping filler - client audio is playing');
-            // Still schedule next filler in case audio stops
-            this.scheduleNextFiller();
-            return;
+            return false;
         }
 
-        // Use shuffled list, cycling through for variety without repeats
-        const phrase = this.shuffledFillers[this.fillerIndex % this.shuffledFillers.length];
-        // Add [thoughtful] speech tag for natural, non-excited delivery
-        const taggedPhrase = `[thoughtful] ${phrase}`;
-        console.log('[StreamingCortexBridge] Emitting filler:', taggedPhrase);
-        this.fullResponse += phrase + ' ';
-        this.emitSpeech(taggedPhrase);
-        this.fillerIndex++;
-        // Schedule next filler
-        this.scheduleNextFiller();
+        // Check minimum gap since last speech
+        const timeSinceLastSpeech = Date.now() - this.lastSpeechTime;
+        if (timeSinceLastSpeech < this.MIN_SPEECH_GAP) {
+            console.log('[StreamingCortexBridge] Skipping filler - too soon since last speech');
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Emit a filler phrase from the specified category
+     * Fillers are spoken but not added to transcript/history
+     */
+    private emitFiller(category: 'acknowledgment' | 'thinking' | 'tool' | 'extended'): void {
+        const phrases = this.fillers[category];
+        if (!phrases || phrases.length === 0) return;
+
+        // Pick a random phrase from the category
+        const phrase = phrases[Math.floor(Math.random() * phrases.length)];
+        console.log(`[StreamingCortexBridge] Emitting ${category} filler:`, phrase);
+
+        // Emit as filler (not sentence) - won't be added to transcript/history
+        this.lastSpeechTime = Date.now();
+        this.emit('filler', phrase);
+    }
+
+    /**
+     * Emit a tool-specific filler (called when tools start)
+     */
+    private emitToolFiller(): void {
+        if (this.shouldEmitFiller()) {
+            this.emitFiller('tool');
+        }
     }
 
     /**
@@ -794,14 +850,12 @@ export class StreamingCortexBridge extends EventEmitter {
             clearTimeout(this.fillerTimer);
             this.fillerTimer = null;
         }
-        this.fillerIndex = 0;
     }
 
     /**
      * Cleanup WebSocket connection and timers
      */
     private cleanup(): void {
-        this.stopToolMessageTimer();
         this.stopFillerTimer();
         if (this.wsClient) {
             this.wsClient.dispose();
@@ -817,6 +871,7 @@ export class StreamingCortexBridge extends EventEmitter {
         this.isProcessing = false;
         this.textBuffer = '';
         this.lastSpeechTime = 0;
+        this.hasEmittedContent = false;
     }
 
     /**

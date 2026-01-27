@@ -107,6 +107,11 @@ export class SocketServer {
                 this.handleClientAudioState(socket, false);
             });
 
+            // Client finished playing a track - for chunk pacing
+            socket.on('audio:trackPlaybackComplete', (data: { trackId: string }) => {
+                this.handleTrackPlaybackComplete(socket, data.trackId);
+            });
+
             // Get available providers
             socket.on('providers:list', () => {
                 const providers = getAvailableProviders(this.config);
@@ -327,6 +332,11 @@ export class SocketServer {
             return;
         }
 
+        // Validate audio data to prevent crashes from malformed input
+        if (!data || typeof data.data !== 'string') {
+            return;
+        }
+
         sessionData.state.lastActivityAt = Date.now();
         sessionData.provider.sendAudio(data);
 
@@ -414,6 +424,20 @@ export class SocketServer {
         // Tell the cortex bridge about client audio state so it can skip fillers
         if (sessionData.cortexBridge && 'setClientAudioPlaying' in sessionData.cortexBridge) {
             (sessionData.cortexBridge as any).setClientAudioPlaying(isPlaying);
+        }
+    }
+
+    private handleTrackPlaybackComplete(socket: Socket, trackId: string): void {
+        const sessionData = this.sessions.get(socket.id);
+
+        if (!sessionData) {
+            return;
+        }
+
+        // Notify the provider that client finished playing this track
+        const provider = sessionData.provider as any;
+        if (typeof provider.onTrackPlaybackComplete === 'function') {
+            provider.onTrackPlaybackComplete(trackId);
         }
     }
 

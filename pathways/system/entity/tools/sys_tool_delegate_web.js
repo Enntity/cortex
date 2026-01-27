@@ -39,7 +39,7 @@ Examples of when to use:
                     },
                     userMessage: {
                         type: "string",
-                        description: 'A short voice phrase (2-5 words) like "Researching that" or "Looking into it"'
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["researchTask", "userMessage"]

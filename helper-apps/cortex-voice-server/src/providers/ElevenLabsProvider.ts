@@ -52,7 +52,13 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
     // flush the entire buffer as one chunk for maximum prosody context.
     private isFirstChunk: boolean = true;
     private pendingBatch: string[] = [];
-    private readonly INTER_CHUNK_DELAY_MS = 120; // Small pause between chunks for natural rhythm
+    private readonly SENTENCE_PAUSE_MS = 400; // Natural pause between sentences
+
+    // Track playback completion - server waits for client to finish playing before next chunk
+    private pendingTrackCompletions: Map<string, () => void> = new Map();
+
+    // Flag to gate interim transcripts after finalization
+    private isFinalizingTranscript: boolean = false;
 
     constructor(
         cortexBridge: ICortexBridge,
@@ -82,6 +88,12 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         this.streamingBridge.on('sentence', (sentence: string) => {
             console.log('[ElevenLabs] Received sentence:', sentence.substring(0, 50) + '...');
             this.queueSentence(sentence);
+        });
+
+        // Handle filler phrases - TTS only, no transcript/history
+        this.streamingBridge.on('filler', (text: string) => {
+            console.log('[ElevenLabs] Received filler:', text);
+            this.queueFiller(text);
         });
 
         // Forward tool status events
@@ -197,7 +209,8 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         if (this.streamingSTT) {
             this.streamingSTT.on('transcript', (data) => {
                 // Emit interim transcripts so client can show live text
-                if (!data.isFinal) {
+                // Skip if we've already finalized (prevents duplicate/out-of-order transcripts)
+                if (!data.isFinal && !this.isFinalizingTranscript) {
                     this.emit('transcript', {
                         type: 'user',
                         content: data.text,
@@ -264,7 +277,8 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             this.streamingSTT.sendAudio(buffer);
         }
 
-        if (this._state !== 'listening') {
+        // Only transition to listening when idle (not while speaking or processing)
+        if (this._state === 'idle') {
             this.setState('listening');
         }
     }
@@ -291,6 +305,41 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                 this.flushBatch();
             }
             // Otherwise, batch will be flushed when current TTS finishes
+        }
+    }
+
+    /**
+     * Queue a filler phrase for TTS (no transcript/history)
+     * Fillers are only played if nothing else is speaking or queued
+     */
+    private async queueFiller(text: string): Promise<void> {
+        // Don't play filler if already speaking or real content is queued
+        if (this.isSpeaking || this.sentenceQueue.length > 0 || this.pendingBatch.length > 0) {
+            console.log('[ElevenLabs] Skipping filler - already speaking or content queued');
+            return;
+        }
+
+        this.isSpeaking = true;
+        this.currentTrackId++;
+        const trackId = `filler-${this.currentTrackId}`;
+
+        try {
+            this.setState('speaking');
+            // Pass skipTranscript=true to avoid adding to history
+            await this.textToSpeechChunk(text, trackId, true);
+        } catch (error) {
+            console.error('[ElevenLabs] Error speaking filler:', error);
+        } finally {
+            this.isSpeaking = false;
+
+            // Check if real content arrived while filler was playing
+            if (this.pendingBatch.length > 0) {
+                this.flushBatch();
+            } else if (this.sentenceQueue.length > 0) {
+                this.processNextBatch();
+            } else if (!this.isProcessing) {
+                this.setState('idle');
+            }
         }
     }
 
@@ -329,6 +378,14 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             // for better synchronization with audio playback
 
             await this.textToSpeechChunk(text, trackId);
+
+            // Wait for client to finish playing this track before processing next
+            // This ensures proper pacing between chunks
+            await this.waitForTrackPlayback(trackId);
+
+            // Add natural pause between sentences
+            await this.delay(this.SENTENCE_PAUSE_MS);
+
         } catch (error) {
             console.error('[ElevenLabs] Error speaking chunk:', error);
         } finally {
@@ -336,16 +393,46 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
 
             // Flush any sentences that accumulated while we were speaking
             if (this.pendingBatch.length > 0) {
-                await this.delay(this.INTER_CHUNK_DELAY_MS);
                 this.flushBatch();
             } else if (this.sentenceQueue.length > 0) {
                 // More chunks waiting in queue
-                await this.delay(this.INTER_CHUNK_DELAY_MS);
                 this.processNextBatch();
             } else if (!this.isProcessing) {
                 // All done, back to idle
                 this.setState('idle');
             }
+        }
+    }
+
+    /**
+     * Wait for client to signal that track playback completed
+     * Times out after estimated duration + buffer to prevent hangs
+     */
+    private waitForTrackPlayback(trackId: string): Promise<void> {
+        return new Promise((resolve) => {
+            // Store the resolve function to be called when client signals completion
+            this.pendingTrackCompletions.set(trackId, resolve);
+
+            // Timeout fallback in case client event is lost (estimate: ~5s max for any chunk)
+            setTimeout(() => {
+                if (this.pendingTrackCompletions.has(trackId)) {
+                    console.log(`[ElevenLabs] Track ${trackId} playback timeout, proceeding`);
+                    this.pendingTrackCompletions.delete(trackId);
+                    resolve();
+                }
+            }, 10000); // 10s timeout as safety net
+        });
+    }
+
+    /**
+     * Called by SocketServer when client signals track playback completed
+     */
+    onTrackPlaybackComplete(trackId: string): void {
+        console.log(`[ElevenLabs] Track playback complete: ${trackId}`);
+        const resolve = this.pendingTrackCompletions.get(trackId);
+        if (resolve) {
+            this.pendingTrackCompletions.delete(trackId);
+            resolve();
         }
     }
 
@@ -363,16 +450,21 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         this.sentenceQueue = [];
         this.pendingBatch = [];
         this.isFirstChunk = true;
+        this.isFinalizingTranscript = false; // Allow interim transcripts for new speech
     }
 
     /**
      * Convert a text chunk to speech (streaming)
      * Can be a single sentence (first chunk) or multiple sentences (batched)
+     * @param skipTranscript - If true, don't emit track-start (for fillers)
      */
-    private async textToSpeechChunk(text: string, trackId: string): Promise<void> {
+    private async textToSpeechChunk(text: string, trackId: string, skipTranscript: boolean = false): Promise<void> {
         try {
             // Emit track-start with text so client can sync transcript with audio
-            this.emit('track-start', { trackId, text });
+            // Skip for fillers - they shouldn't appear in transcript/history
+            if (!skipTranscript) {
+                this.emit('track-start', { trackId, text });
+            }
 
             const audioStream = await this.elevenlabs.textToSpeech.stream(
                 this.voiceId,
@@ -425,15 +517,6 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                 });
             }
 
-            // Add silence padding at end of chunk for natural inter-chunk pause
-            // 24kHz * 0.15s = 3600 samples * 2 bytes = 7200 bytes (aligned to 256)
-            const silencePadding = Buffer.alloc(7168); // 7168 = 28 * 256, ~149ms of silence
-            this.emit('audio', {
-                data: silencePadding.toString('base64'),
-                sampleRate: 24000,
-                trackId,
-            });
-
             // Signal track complete so client can flush audio buffer
             this.emit('track-complete', { trackId });
         } catch (error) {
@@ -460,6 +543,8 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
 
             if (this.streamingSTT) {
                 // Streaming STT - transcript is already available!
+                // Set flag to stop interim transcript emission before finalizing
+                this.isFinalizingTranscript = true;
                 userText = await this.streamingSTT.finalize();
                 this.streamingSTT.clearTranscript(); // Ready for next utterance
                 console.log(`[ElevenLabs] STT transcript (${this.sttProvider}):`, userText.substring(0, 50));

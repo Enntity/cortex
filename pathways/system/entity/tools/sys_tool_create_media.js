@@ -109,7 +109,7 @@ Videos are 8-second clips with AI audio. Use sparingly - video is slow and expen
                     },
                     userMessage: {
                         type: "string",
-                        description: "Brief voice phrase while creating"
+                        description: "Brief message to display while this action runs"
                     }
                 },
                 required: ["type", "prompt", "userMessage"]
