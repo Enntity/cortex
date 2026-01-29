@@ -39,7 +39,7 @@ Examples of when to use:
                     },
                     userMessage: {
                         type: "string",
-                        description: "A brief, user-friendly message to display while research is in progress (e.g., 'Researching recent AI developments...')"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["researchTask", "userMessage"]
@@ -58,7 +58,7 @@ Examples of when to use:
 
         try {
             // Look up WebAgent entity by name (UUID is generated at runtime)
-            const webAgent = getSystemEntity('WebAgent');
+            const webAgent = await getSystemEntity('WebAgent');
             if (!webAgent || !webAgent.id) {
                 throw new Error('WebAgent system entity not found - ensure server has been restarted after adding WebAgent to config');
             }

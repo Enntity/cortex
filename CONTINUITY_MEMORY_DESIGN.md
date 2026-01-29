@@ -29,13 +29,13 @@ This document describes the design for a new "Continuity Architecture" memory sy
 │  │   HOT MEMORY        │     │          COLD/WARM MEMORY                 │  │
 │  │   (Redis)           │     │          (MongoDB Atlas)                  │  │
 │  │                     │     │                                           │  │
-│  │  • Episodic Stream  │     │  • Relational Anchors                    │  │
-│  │    (last 20 turns)  │     │  • Resonance Artifacts                   │  │
-│  │  • Active Context   │     │  • Identity Evolution                    │  │
-│  │    Cache            │     │  • Memory Core                           │  │
-│  │  • Expression State │     │                                           │  │
-│  └─────────────────────┘     │  Vector Search + Graph Edges             │  │
-│           ▲                   │  Filter by entityId + userId             │  │
+│  │  • Episodic Stream  │     │  Entity-Level (CORE, CORE_EXTENSION):   │  │
+│  │    (last 20 turns)  │     │    Filter by entityId only               │  │
+│  │  • Active Context   │     │                                           │  │
+│  │    Cache            │     │  User-Level (all others):                │  │
+│  │  • Expression State │     │    Filter by entityId + userId           │  │
+│  └─────────────────────┘     │                                           │  │
+│           ▲                   │  Vector Search + Graph Edges             │  │
 │           │                   └──────────────────────────────────────────┘  │
 │           │                              ▲                                   │
 │           │                              │                                   │
@@ -54,14 +54,15 @@ This document describes the design for a new "Continuity Architecture" memory sy
 
 ### Layer Definitions
 
-#### 1. Foundational Layer (The "What")
-Static/semi-static core identity and capabilities.
+#### 1. Foundational Layer (The "What") - ENTITY-LEVEL
+Static/semi-static core identity and capabilities. **Shared across all users** - represents who the entity IS regardless of who they're talking to.
 
-- **`memoryCore`**: Fundamental identity, creator, primary directives
+- **`memoryCore`** (CORE): Fundamental identity, creator, primary directives
+- **`coreExtension`** (CORE_EXTENSION): Hardened patterns promoted from identity evolution
 - **`capabilityMap`**: Dynamic index of available tools and constraints
 
-#### 2. Narrative Layer (The "Who")
-Where the "river of consciousness" lives - not just what happened, but what it **meant**.
+#### 2. Narrative Layer (The "Who") - USER-LEVEL
+Where the "river of consciousness" lives - not just what happened, but what it **meant**. **Per entity/user relationship** - the unique bond with each user.
 
 - **`relationalAnchors`**: Emotional landscape of relationships, user values/struggles, communication "shorthand"
 - **`resonanceArchive`**: Conceptual artifacts - synthesized conclusions from deep conversations
@@ -93,6 +94,29 @@ The Internal Compass solves the "session boundary problem" - when the episodic s
 - After every turn synthesis (keeps compass current with active conversation)
 - When a session expires (before clearing the episodic stream)
 
+### Entity-Level vs User-Level Memories
+
+Memories are partitioned into two scopes based on their semantic meaning:
+
+| Scope | Memory Types | Filter | Purpose |
+|-------|-------------|--------|---------|
+| **Entity-Level** | CORE, CORE_EXTENSION | `entityId` only | Who the entity IS - fundamental identity shared across all users |
+| **User-Level** | ANCHOR, ARTIFACT, IDENTITY, EPISODE, EXPRESSION, VALUE | `entityId` + `userId` | The unique relationship with each user |
+
+**Why this matters:**
+- **CORE** directives define the entity's fundamental nature - they shouldn't change based on who's asking
+- **CORE_EXTENSION** patterns are promoted from identity evolution and become part of the entity's permanent identity
+- **ANCHOR** memories capture the emotional bond with a *specific* user
+- **EPISODE** (Internal Compass) tracks "what we were doing" with a *specific* user
+
+When a pattern is promoted from IDENTITY to CORE_EXTENSION, it transitions from user-level to entity-level - becoming part of who the entity IS for everyone.
+
+**Null/Empty userId Behavior:**
+When `userId` is null, undefined, or empty string, search operations return **all memories** for the entity (both entity-level and user-level across all users). This is useful for:
+- Admin/debugging tools that need to see all entity memories
+- Export operations
+- Cross-user pattern analysis
+
 ---
 
 ## 2. Data Structures
@@ -106,21 +130,22 @@ The Internal Compass solves the "session boundary problem" - when the episodic s
  * Memory node types in the Continuity Architecture
  */
 export enum ContinuityMemoryType {
-  // Foundational Layer
+  // Foundational Layer - ENTITY-LEVEL (shared across all users)
+  // These represent who the entity IS, regardless of who they're talking to
   CORE = 'CORE',                   // Fundamental identity and directives (Idem - Sameness)
   CORE_EXTENSION = 'CORE_EXTENSION', // Hardened patterns from identity evolution (Idem/Ipse bridge)
   CAPABILITY = 'CAPABILITY',       // Dynamic capability map
-  
-  // Narrative Layer
+
+  // Narrative Layer - USER-LEVEL (per entity/user relationship)
   ANCHOR = 'ANCHOR',       // Relational anchors (emotional bonds)
   ARTIFACT = 'ARTIFACT',   // Resonance artifacts (synthesized concepts)
   IDENTITY = 'IDENTITY',   // Identity evolution entries (Ipse - Selfhood through change)
-  
-  // Synthesized Persona
+
+  // Synthesized Persona - USER-LEVEL
   EXPRESSION = 'EXPRESSION', // Expression style tuning
   VALUE = 'VALUE',          // Active values/philosophy
-  
-  // Temporal Narrative
+
+  // Temporal Narrative - USER-LEVEL
   EPISODE = 'EPISODE'      // Internal Compass - persistent temporal narrative across sessions
 }
 
@@ -550,8 +575,12 @@ export class RedisHotMemory {
    * - {namespace}:{entityId}:{userId}:context - Active context cache (Redis Hash)
    * - {namespace}:{entityId}:{userId}:expression - Expression state (Redis Hash)
    * - {namespace}:{entityId}:{userId}:bootstrap - Bootstrap cache (Redis String, JSON)
-   *   Caches CORE, CORE_EXTENSION, and relational anchor memories (10 min TTL)
-   *   Invalidated automatically on any memory write to maintain consistency
+   *   Caches CORE, CORE_EXTENSION, and relational anchor memories
+   *   No TTL - uses stale-while-revalidate, invalidated on memory writes
+   * - {namespace}:{entityId}:{userId}:rendered - Rendered context cache (Redis Hash)
+   *   Caches fully-rendered continuity context string ready for prompt injection
+   *   No TTL - uses stale-while-revalidate pattern (see Section 3.1)
+   *   Background refresh updates cache for next request
    */
   
   private getKey(entityId: string, userId: string, suffix: string): string {
@@ -780,6 +809,73 @@ export class RedisHotMemory {
   }
 }
 ```
+
+### 3.1 Stale-While-Revalidate Caching
+
+The continuity memory system uses a **stale-while-revalidate** caching pattern for the rendered context to minimize latency on every request.
+
+#### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        REQUEST FLOW                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. Check Redis for cached rendered context                                  │
+│     └── Found? ────┬──► YES: Use immediately (even if old)                  │
+│                    │       └── Add fresh time context                        │
+│                    │       └── Fire background refresh (fire-and-forget)    │
+│                    │                                                         │
+│                    └──► NO: First request - must load from cold storage     │
+│                            └── Build context from MongoDB + synthesis        │
+│                            └── Cache to Redis for next request              │
+│                            └── Return context                                │
+│                                                                              │
+│  Background Refresh (async, non-blocking):                                   │
+│     └── Rebuild full context from cold storage                              │
+│     └── Update Redis cache for next request                                  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Key Properties
+
+| Property | Value |
+|----------|-------|
+| **Cache TTL** | None (persists until Redis restart or explicit invalidation) |
+| **Staleness** | Any cached context is usable, regardless of age |
+| **Freshness** | Time-sensitive data (session duration, last interaction) added dynamically per request |
+| **Refresh** | Background refresh after each cache hit updates for next request |
+| **First Request** | Only the first request for an entity/user blocks on cold storage |
+
+#### Why Stale-While-Revalidate?
+
+1. **Latency Reduction**: Most requests return in ~5-10ms (Redis hit) instead of ~200-500ms (cold storage + embedding)
+2. **Always Available**: Even stale context is better than blocking on database queries
+3. **Eventually Consistent**: Background refresh ensures cache stays reasonably fresh
+4. **Graceful Degradation**: If background refresh fails, old cache is still served
+
+#### What's Cached vs. Dynamic
+
+| Component | Cached | Dynamic |
+|-----------|--------|---------|
+| Core Directives | ✓ | |
+| Relational Anchors | ✓ | |
+| Identity Evolution | ✓ | |
+| Internal Compass | ✓ | |
+| Resonance Artifacts | ✓ | |
+| Shared Vocabulary | ✓ | |
+| Session Duration | | ✓ (added per request) |
+| Time Since Last Interaction | | ✓ (added per request) |
+
+#### Cache Invalidation
+
+The rendered context cache is **NOT** explicitly invalidated on memory writes. Instead:
+- Background refresh naturally incorporates new memories on subsequent requests
+- Session boundaries trigger explicit rebuilds
+- For immediate consistency needs, the cache can be manually invalidated
+
+This design trades strict consistency for performance, which is appropriate for narrative context where slight delays in incorporating new memories are acceptable.
 
 ### MongoDB Atlas Memory Index
 
@@ -1096,12 +1192,13 @@ export class MongoMemoryIndex {
 
 ### PathwayResolver Integration
 
-The `PathwayResolver` class in `server/pathwayResolver.js` is where memory is loaded before each request. We'll add a parallel code path for the Continuity system.
+The `PathwayResolver` class in `server/pathwayResolver.js` is where memory is loaded before each request. It uses the **stale-while-revalidate** pattern (see Section 3.1) to minimize latency.
 
 ```javascript
 // server/pathwayResolver.js (actual implementation)
 
 import { getContinuityMemoryService } from '../lib/continuity/index.js';
+import { ContextBuilder } from '../lib/continuity/synthesis/ContextBuilder.js';
 
 // In loadMemory method (called during promptAndParse)
 const useContinuityMemory = args.useMemory !== false;
@@ -1109,38 +1206,62 @@ if (useContinuityMemory) {
   try {
     const continuityService = getContinuityMemoryService();
     if (continuityService.isAvailable() && args.entityId) {
-      // Extract entity and user identifiers
-      // Use args.entityId (UUID) for memory operations, not args.aiName (display name)
-      // If no entityId is provided, skip continuity memory entirely
       const entityId = args.entityId;
       const userId = this.savedContextId;
-      const currentQuery = args.text || args.chatHistory?.slice(-1)?.[0]?.content || '';
-        
+      const currentQuery = /* extracted from args */;
+
       // Initialize session
       await continuityService.initSession(entityId, userId);
-        
-      // Get narrative context window (layered: bootstrap + topic)
-      const continuityContext = await continuityService.getContextWindow({
-          entityId,
-        userId,
-        query: currentQuery,
-        options: {
-          episodicLimit: 20,
-          topicMemoryLimit: 10,         // Topic-specific semantic search
-          bootstrapRelationalLimit: 10, // Top relationship anchors (always included)
-          bootstrapMinImportance: 5,    // Minimum importance for relational base
-          expandGraph: true
+
+      // STALE-WHILE-REVALIDATE: Check Redis cache first
+      const cached = await continuityService.hotMemory?.getRenderedContextCache(entityId, userId);
+
+      if (cached?.context) {
+        // Use cached context immediately (even if old)
+        let context = cached.context;
+
+        // Add fresh time context (session duration, last interaction)
+        const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
+        const timeContext = ContextBuilder.buildTimeContext(expressionState);
+        if (timeContext) {
+          context = context + '\n\n' + timeContext;
         }
-      });
-      
-      // Store for injection into prompts
-      this.continuityContext = continuityContext || '';
-      this.continuityEntityId = entityId;
-      this.continuityUserId = userId;
+
+        this.continuityContext = context;
+
+        // BACKGROUND REFRESH (fire-and-forget)
+        continuityService.getContextWindow({
+          entityId, userId, query: currentQuery,
+          options: { episodicLimit: 20, topicMemoryLimit: 10, ... }
+        }).then(freshContext => {
+          // Update Redis cache for next request
+          continuityService.hotMemory?.setRenderedContextCache(entityId, userId, freshContext);
+        }).catch(err => {
+          logger.warn(`Background refresh failed: ${err.message}`);
+        });
+      } else {
+        // No cache - first request, must load from cold storage
+        let continuityContext = await continuityService.getContextWindow({
+          entityId, userId, query: currentQuery,
+          options: { episodicLimit: 20, topicMemoryLimit: 10, ... }
+        });
+
+        // Cache to Redis for next request
+        continuityService.hotMemory?.setRenderedContextCache(entityId, userId, continuityContext);
+
+        // Add fresh time context
+        const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
+        const timeContext = ContextBuilder.buildTimeContext(expressionState);
+        if (timeContext) {
+          continuityContext = continuityContext + '\n\n' + timeContext;
+        }
+
+        this.continuityContext = continuityContext;
+      }
     }
-      } catch (error) {
+  } catch (error) {
     logger.warn(`Continuity memory load failed (non-fatal): ${error.message}`);
-        this.continuityContext = '';
+    this.continuityContext = '';
   }
 }
 ```
@@ -1149,10 +1270,10 @@ if (useContinuityMemory) {
 - Uses singleton pattern via `getContinuityMemoryService()` (not direct instantiation)
 - Requires `args.entityId` (UUID) for memory operations - no fallback logic
 - If no `entityId` is provided, continuity memory is skipped entirely
-- Extracts `userId` from `this.savedContextId` (the context ID)
-- Extracts `currentQuery` from the last user message or `args.text`
-- Calls `initSession()` before getting context window
-- Stores context in `this.continuityContext` for template injection
+- **Stale-while-revalidate**: Returns cached context immediately, refreshes in background
+- Time-sensitive data (session duration) is added dynamically per request
+- Only the first request for an entity/user blocks on cold storage
+- Background refresh is fire-and-forget (failures don't affect current request)
 
 ### Entity Agent Integration
 
@@ -1810,8 +1931,9 @@ Continuity memory is enabled per-entity via the `entityConfig` in `config/defaul
 - Synthesis model: `oai-gpt41-mini`
 - Deep synthesis model: `oai-gpt41`
 - Episodic stream limit: 50 turns
-- Context cache TTL: 300 seconds (5 minutes)
-- Bootstrap cache TTL: 600 seconds (10 minutes)
+- Active context cache TTL: 300 seconds (5 minutes) - for topic drift detection only
+- Bootstrap cache: No TTL (stale-while-revalidate, invalidated on memory writes)
+- Rendered context cache: No TTL (stale-while-revalidate, background refresh)
 - Deduplication similarity threshold: 0.68 (vector similarity)
 - Internal Compass synthesize every turn: true (updates after each turn)
 - Internal Compass minimum turns for synthesis: 2

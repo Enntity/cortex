@@ -20,6 +20,12 @@
 //       image: { url, gcs, name },// Optional image file
 //       video: { url, gcs, name } // Optional video file
 //     },
+//     voice: {                     // Optional voice profile
+//       provider: "elevenlabs",   // TTS provider
+//       voiceId: "...",           // Provider-specific voice ID
+//       voiceName: "...",         // Display name
+//       settings: { stability, similarity, style, speakerBoost }
+//     },
 //     activeTools: [...]           // List of available tools
 //   }
 // ]
@@ -44,7 +50,7 @@ export default {
                 });
             }
             
-            const entities = getAvailableEntities({
+            const entities = await getAvailableEntities({
                 userId: contextId,
                 includeSystem: includeSystem === true || includeSystem === 'true'
             });

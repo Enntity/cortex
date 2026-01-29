@@ -12,7 +12,7 @@ export default {
         icon: "👀",
         function: {
             name: "ViewImages",
-            description: "View one or more image files from your file collection. This injects the images into the conversation so you can see them. Use this when you need to look at image files that are in your collection but not currently visible in the conversation.",
+            description: "View one or more image files from your file collection. This allows you to see the images, but does not show them to the user.",
             parameters: {
                 type: "object",
                 properties: {
@@ -21,11 +21,11 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to view (from ListFileCollection or SearchFileCollection): each can be the hash, the filename, the URL, or the GCS URL. You can find available files in the availableFiles section."
+                        description: "Array of files to view (from FileCollection): each can be the hash, the filename, the URL, or the GCS URL. You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["files", "userMessage"]

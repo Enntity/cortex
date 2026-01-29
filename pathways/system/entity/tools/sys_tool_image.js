@@ -4,7 +4,6 @@ import { callPathway } from '../../../../lib/pathwayTools.js';
 import { uploadFileToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, loadFileCollection, findFileInCollection } from '../../../../lib/fileUtils.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
 import { getEntityStore } from '../../../../lib/MongoEntityStore.js';
-import { config } from '../../../../config.js';
 
 export default {
     prompt: [],
@@ -14,9 +13,11 @@ export default {
         model: 'oai-gpt4o',
     },
     timeout: 300,
+    // DEPRECATED: GenerateImage, ModifyImage, CreateAvatarVariant replaced by CreateMedia (sys_tool_create_media.js)
+    // SetBaseAvatar kept as separate entity config operation
     toolDefinition: [{
         type: "function",
-        enabled: false,
+        enabled: false, // Replaced by CreateMedia
         icon: "🎨",
         function: {
             name: "GenerateImage",
@@ -41,7 +42,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]
@@ -50,6 +51,7 @@ export default {
     },
     {
         type: "function",
+        enabled: false, // Replaced by CreateMedia
         icon: "🔄",
         function: {
             name: "ModifyImage",
@@ -62,7 +64,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "An array of images from your available files (from Available Files section or ListFileCollection or SearchFileCollection) to use as references for the image modification. You can provide up to 3 images. Each image should be the hash or filename."
+                        description: "An array of images from your available files (from Available Files section or FileCollection) to use as references for the image modification. You can provide up to 3 images. Each image should be the hash or filename."
                     },
                     detailedInstructions: {
                         type: "string",
@@ -81,7 +83,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["inputImages", "detailedInstructions", "userMessage"]
@@ -90,6 +92,7 @@ export default {
     },
     {
         type: "function",
+        enabled: false, // Replaced by CreateMedia with containsMe=true
         icon: "👤",
         function: {
             name: "CreateAvatarVariant",
@@ -114,7 +117,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]
@@ -132,11 +135,11 @@ export default {
                 properties: {
                     file: {
                         type: "string",
-                        description: "An image file from your available files (from Available Files section or ListFileCollection or SearchFileCollection) to set as your new base avatar. The file should be the hash or filename."
+                        description: "An image file from your available files (from Available Files section or FileCollection) to set as your new base avatar. The file should be the hash or filename."
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["file", "userMessage"]
@@ -168,7 +171,7 @@ export default {
                 }
                 
                 // Load entity config to get base avatar
-                const entityConfig = loadEntityConfig(entityIdForAvatar);
+                const entityConfig = await loadEntityConfig(entityIdForAvatar);
                 if (!entityConfig) {
                     throw new Error(`Entity not found: ${entityIdForAvatar}`);
                 }
@@ -196,7 +199,7 @@ export default {
             const resolvedInputImages = [];
             if (args.inputImages && Array.isArray(args.inputImages)) {
                 if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
-                    throw new Error("agentContext is required when using the 'inputImages' parameter. Use ListFileCollection or SearchFileCollection to find available files.");
+                    throw new Error("agentContext is required when using the 'inputImages' parameter. Use FileCollection to find available files.");
                 }
                 
                 // Limit to 3 images maximum
@@ -206,7 +209,7 @@ export default {
                     const imageRef = imagesToProcess[i];
                     const resolved = await resolveFileParameter(imageRef, args.agentContext);
                     if (!resolved) {
-                        throw new Error(`File not found: "${imageRef}". Use ListFileCollection or SearchFileCollection to find available files.`);
+                        throw new Error(`File not found: "${imageRef}". Use FileCollection to find available files.`);
                     }
                     resolvedInputImages.push(resolved);
                 }
@@ -390,7 +393,7 @@ export default {
                             if (isAvatar && needsBaseAvatarSet && successfulImages.length > 0) {
                                 try {
                                     const firstImage = successfulImages[0];
-                                    const entityConfig = loadEntityConfig(entityIdForAvatar);
+                                    const entityConfig = await loadEntityConfig(entityIdForAvatar);
                                     if (entityConfig) {
                                         const avatarImage = {
                                             url: firstImage.fileEntry?.url || firstImage.url,
@@ -408,14 +411,7 @@ export default {
                                             }
                                         };
                                         
-                                        const updatedEntityId = await entityStore.upsertEntity(updatedEntity);
-                                        if (updatedEntityId) {
-                                            // Update global config cache
-                                            const currentEntityConfig = config.get('entityConfig') || {};
-                                            currentEntityConfig[entityIdForAvatar] = updatedEntity;
-                                            config.set('entityConfig', currentEntityConfig);
-                                            // Successfully set base avatar
-                                        }
+                                        await entityStore.upsertEntity(updatedEntity);
                                     }
                                 } catch (avatarSetError) {
                                     // Log but don't fail - base avatar setting is a convenience feature
@@ -454,7 +450,7 @@ export default {
                 const agentContext = args.agentContext;
                 
                 // Load current entity config
-                const entityConfig = loadEntityConfig(entityId);
+                const entityConfig = await loadEntityConfig(entityId);
                 if (!entityConfig) {
                     throw new Error(`Entity not found: ${entityId}`);
                 }
@@ -464,7 +460,7 @@ export default {
                 const foundFile = findFileInCollection(args.file, collection);
                 
                 if (!foundFile) {
-                    throw new Error(`File not found: "${args.file}". Use ListFileCollection or SearchFileCollection to find available files.`);
+                    throw new Error(`File not found: "${args.file}". Use FileCollection to find available files.`);
                 }
                 
                 // Validate it's an image
@@ -497,12 +493,7 @@ export default {
                 if (!updatedEntityId) {
                     throw new Error("Failed to update entity avatar in database");
                 }
-                
-                // Update global config cache
-                const currentEntityConfig = config.get('entityConfig') || {};
-                currentEntityConfig[entityId] = updatedEntity;
-                config.set('entityConfig', currentEntityConfig);
-                
+
                 pathwayResolver.tool = JSON.stringify({ toolUsed: "SetBaseAvatar" });
                 
                 return JSON.stringify({

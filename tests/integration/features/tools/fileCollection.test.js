@@ -2270,7 +2270,9 @@ test('Analyzer tool: Returns error JSON format when file not found', async t => 
     }
 });
 
-test('Analyzer tool: Works with legacy contextId/contextKey parameters (backward compatibility)', async t => {
+// These analyzer tests must run serially to avoid race conditions when parallel tests
+// upload the same PDF file (same hash) and one test's cleanup affects the other
+test.serial('Analyzer tool: Works with legacy contextId/contextKey parameters (backward compatibility)', async t => {
     const contextId = createTestContext();
     let uploadedHash = null;
     
@@ -2283,7 +2285,7 @@ test('Analyzer tool: Works with legacy contextId/contextKey parameters (backward
         }
         uploadedHash = uploadResult.hash || null;
 
-        await callPathway('sys_tool_file_collection', {
+        const addResult = await callPathway('sys_tool_file_collection', {
             agentContext: [{ contextId, contextKey: null, default: true }],
             contextId,
             contextKey: null,
@@ -2292,11 +2294,29 @@ test('Analyzer tool: Works with legacy contextId/contextKey parameters (backward
             filename: 'sample-local-pdf.pdf',
             userMessage: 'Add test file for analyzer'
         });
-        
+
+        // Verify the add operation succeeded
+        const parsedAddResult = JSON.parse(addResult);
+        if (!parsedAddResult.success) {
+            t.fail(`Failed to add file: ${JSON.stringify(parsedAddResult)}`);
+            return;
+        }
+
         // Get the file ID from the collection
         const collection = await loadFileCollection(contextId, { useCache: false });
+        if (!collection || collection.length === 0) {
+            t.fail(`Collection is empty after add operation`);
+            return;
+        }
         const fileId = collection[0].id;
-        
+
+        // Verify the file can be found before calling analyzer
+        const foundFile = collection.find(f => f.id === fileId);
+        if (!foundFile) {
+            t.fail(`File with ID ${fileId} not found in collection of ${collection.length} files`);
+            return;
+        }
+
         // Test analyzer tool with legacy contextId/contextKey (without agentContext)
         // This tests that the tool correctly handles backward compatibility
         const result = await callPathway('sys_tool_analyzefile', {
@@ -2330,7 +2350,7 @@ test('Analyzer tool: Works with legacy contextId/contextKey parameters (backward
     }
 });
 
-test('Analyzer tool: File resolution works with agentContext', async t => {
+test.serial('Analyzer tool: File resolution works with agentContext', async t => {
     const contextId = createTestContext();
     let uploadedHash = null;
     
@@ -2343,7 +2363,7 @@ test('Analyzer tool: File resolution works with agentContext', async t => {
         }
         uploadedHash = uploadResult.hash || null;
 
-        await callPathway('sys_tool_file_collection', {
+        const addResult = await callPathway('sys_tool_file_collection', {
             agentContext: [{ contextId, contextKey: null, default: true }],
             contextId,
             contextKey: null,
@@ -2352,11 +2372,29 @@ test('Analyzer tool: File resolution works with agentContext', async t => {
             filename: 'sample-local-pdf.pdf',
             userMessage: 'Add test file'
         });
-        
+
+        // Verify the add operation succeeded
+        const parsedAddResult = JSON.parse(addResult);
+        if (!parsedAddResult.success) {
+            t.fail(`Failed to add file: ${JSON.stringify(parsedAddResult)}`);
+            return;
+        }
+
         // Get the file ID from the collection
         const collection = await loadFileCollection(contextId, { useCache: false });
+        if (!collection || collection.length === 0) {
+            t.fail(`Collection is empty after add operation`);
+            return;
+        }
         const fileId = collection[0].id;
-        
+
+        // Verify the file can be found before calling analyzer
+        const foundFile = collection.find(f => f.id === fileId);
+        if (!foundFile) {
+            t.fail(`File with ID ${fileId} not found in collection of ${collection.length} files`);
+            return;
+        }
+
         // Test analyzer tool with agentContext (modern format)
         const result = await callPathway('sys_tool_analyzefile', {
             agentContext: [{ contextId, contextKey: null, default: true }],

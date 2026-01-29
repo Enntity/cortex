@@ -620,32 +620,27 @@ const bootstrapSystemEntity = async (entityStore, entityTemplate) => {
  */
 const loadEntitiesFromMongo = async () => {
     const entityStore = getEntityStore();
-    
+
     if (!entityStore.isConfigured()) {
         logger.warn('MongoDB not configured (MONGO_URI not set) - entities will not be available');
         logger.warn('Run scripts/migrate-entities-to-mongo.js to set up entities in MongoDB');
         return false;
     }
-    
+
     try {
-        // Bootstrap system entities first (creates if they don't exist)
+        // Bootstrap system entities (creates if they don't exist)
+        // These are loaded on-demand like other entities, but we ensure they exist at startup
         await bootstrapSystemEntity(entityStore, ENNTITY_DEFAULT_SYSTEM_ENTITY);
         await bootstrapSystemEntity(entityStore, VESPER_MATCHMAKER_SYSTEM_ENTITY);
         await bootstrapSystemEntity(entityStore, WEB_AGENT_SYSTEM_ENTITY);
         await bootstrapSystemEntity(entityStore, CREATIVE_AGENT_SYSTEM_ENTITY);
-        
-        // Load entities from MongoDB
-        const mongoEntities = await entityStore.loadAllEntities();
-        
-        if (mongoEntities && Object.keys(mongoEntities).length > 0) {
-            config.set('entityConfig', mongoEntities);
-            return true;
-        }
-        
-        logger.error('Failed to load entities from MongoDB');
-        return false;
+
+        // Entities are now loaded on-demand via MongoEntityStore.getEntity()
+        // No bulk load needed - scales to thousands of entities
+        logger.info('Entity store initialized (on-demand loading enabled)');
+        return true;
     } catch (error) {
-        logger.error(`Error loading entities from MongoDB: ${error.message}`);
+        logger.error(`Error initializing entity store: ${error.message}`);
         return false;
     }
 };

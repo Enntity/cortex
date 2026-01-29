@@ -121,7 +121,7 @@ async function collectSubscriptionEvents(subscription, timeout = 180000) {
 async function getWebAgentEntityId() {
     // Import the helper function to look up the WebAgent entity
     const { getSystemEntity } = await import('../../../../pathways/system/entity/tools/shared/sys_entity_tools.js');
-    const webAgent = getSystemEntity('WebAgent');
+    const webAgent = await getSystemEntity('WebAgent');
     if (!webAgent || !webAgent.id) {
         throw new Error('WebAgent system entity not found');
     }
@@ -133,8 +133,8 @@ test.serial('WebAgent system entity is bootstrapped correctly', async (t) => {
     t.timeout(30000);
     
     const { getSystemEntity } = await import('../../../../pathways/system/entity/tools/shared/sys_entity_tools.js');
-    const webAgent = getSystemEntity('WebAgent');
-    
+    const webAgent = await getSystemEntity('WebAgent');
+
     t.truthy(webAgent, 'WebAgent entity should exist');
     t.is(webAgent.name, 'WebAgent', 'Entity name should be WebAgent');
     t.true(webAgent.isSystem, 'WebAgent should be a system entity');

@@ -4,6 +4,7 @@ import serverFactory from '../../../../../index.js';
 import { createWsClient, ensureWsConnection, collectSubscriptionEvents, validateProgressMessage } from '../../../../helpers/subscriptions.js';
 import { config } from '../../../../../config.js';
 import { PathwayResolver } from '../../../../../server/pathwayResolver.js';
+import { getEntityStore } from '../../../../../lib/MongoEntityStore.js';
 
 const buildToolDefinition = (name, pathwayName) => ({
   pathwayName,
@@ -34,7 +35,6 @@ const buildToolCall = (name, args = { userMessage: 'run test' }, id = 'call-1') 
 });
 
 const setupConfig = () => {
-  const originalGet = config.get.bind(config);
   const originalPathways = config.get('pathways') || {};
   const originalEntityTools = config.get('entityTools') || {};
 
@@ -43,13 +43,12 @@ const setupConfig = () => {
   };
 
   const entityId = 'entity-test-stream-errors';
-  const entityConfig = {
-    [entityId]: {
-      id: entityId,
-      isDefault: true,
-      tools: Object.keys(tools),
-      customTools: tools,
-    },
+  const testEntity = {
+    id: entityId,
+    name: 'Test Stream Errors Entity',
+    isDefault: true,
+    tools: Object.keys(tools),
+    customTools: tools,
   };
 
   const pathways = {
@@ -71,16 +70,14 @@ const setupConfig = () => {
     entityTools: {},
   });
 
-  config.get = (key) => {
-    if (key === 'entityConfig') {
-      return entityConfig;
-    }
-    return originalGet(key);
-  };
+  // Inject test entity into MongoEntityStore cache (bypasses MongoDB)
+  const entityStore = getEntityStore();
+  entityStore._entityCache.set(entityId, testEntity);
+  entityStore._cacheTimestamps.set(entityId, Date.now());
 
   return {
     entityId,
-    originalGet,
+    testEntity,
     originalPathways,
     originalEntityTools,
   };
@@ -91,7 +88,11 @@ const restoreConfig = (originals) => {
     pathways: originals.originalPathways,
     entityTools: originals.originalEntityTools,
   });
-  config.get = originals.originalGet;
+
+  // Clear test entity from cache
+  const entityStore = getEntityStore();
+  entityStore._entityCache.delete(originals.entityId);
+  entityStore._cacheTimestamps.delete(originals.entityId);
 };
 
 let testServer;

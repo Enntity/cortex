@@ -13,9 +13,10 @@ export default {
         contextKey: '',
     },
     timeout: 300,
+    // DEPRECATED: Use CreateMedia tool instead (sys_tool_create_media.js)
     toolDefinition: [{
         type: "function",
-        enabled: true,
+        enabled: false, // Replaced by CreateMedia
         icon: "🎨",
         function: {
             name: "GenerateImage",
@@ -40,7 +41,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]
@@ -62,7 +63,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "An array of images from your available files (from Available Files section or ListFileCollection or SearchFileCollection) to use as references for the image modification. You can provide up to 3 images. Each image should be the hash or filename."
+                        description: "An array of images from your available files (from Available Files section or FileCollection) to use as references for the image modification. You can provide up to 3 images. Each image should be the hash or filename."
                     },
                     detailedInstructions: {
                         type: "string",
@@ -81,7 +82,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["inputImages", "detailedInstructions", "userMessage"]
@@ -102,7 +103,7 @@ export default {
             const resolvedInputImages = [];
             if (args.inputImages && Array.isArray(args.inputImages)) {
                 if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
-                    throw new Error("agentContext is required when using the 'inputImages' parameter. Use ListFileCollection or SearchFileCollection to find available files.");
+                    throw new Error("agentContext is required when using the 'inputImages' parameter. Use FileCollection to find available files.");
                 }
                 
                 // Limit to 3 images maximum
@@ -112,7 +113,7 @@ export default {
                     const imageRef = imagesToProcess[i];
                     const resolved = await resolveFileParameter(imageRef, args.agentContext, { preferGcs: true });
                     if (!resolved) {
-                        throw new Error(`File not found: "${imageRef}". Use ListFileCollection or SearchFileCollection to find available files.`);
+                        throw new Error(`File not found: "${imageRef}". Use FileCollection to find available files.`);
                     }
                     resolvedInputImages.push(resolved);
                 }

@@ -10,4 +10,4 @@ deploy/env.production
 test-files/
 **/tests/temp/*
 **/src/files/*
-test_output.log
+test_output.logrun.log

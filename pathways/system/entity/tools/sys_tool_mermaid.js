@@ -90,7 +90,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["detailedInstructions", "userMessage"]

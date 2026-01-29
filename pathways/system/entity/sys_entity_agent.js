@@ -7,6 +7,7 @@ const CONTEXT_COMPRESSION_THRESHOLD = 0.7; // Compress when context reaches 70% 
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000; // Default context limit if not available from model
 
 import { callPathway, callTool, say, sendToolStart, sendToolFinish, withTimeout } from '../../../lib/pathwayTools.js';
+import { publishRequestProgress } from '../../../lib/redisSubscription.js';
 import { encode } from '../../../lib/encodeCache.js';
 import logger from '../../../lib/logger.js';
 import { config } from '../../../config.js';
@@ -382,9 +383,25 @@ export default {
                         
                         // Get timeout from tool definition or use default
                         const toolTimeout = toolDefinition?.timeout || TOOL_TIMEOUT_MS;
-                        
-                        // Get the user message for the tool
-                        const toolUserMessage = toolArgs.userMessage || `Executing tool: ${toolCall.function.name}`;
+
+                        // Get the user message for the tool - use natural voice-friendly fallbacks
+                        const voiceFallbacks = {
+                            'GoogleSearch': 'Let me look that up.',
+                            'GoogleNews': 'Checking the news.',
+                            'SearchX': 'Searching for that now.',
+                            'GenerateImage': 'Creating that image for you.',
+                            'EditImage': 'Working on that image.',
+                            'AnalyzeFile': 'Taking a look at that.',
+                            'AnalyzeImage': 'Looking at this image.',
+                            'CallModel': 'Let me think about that.',
+                            'DelegateCreative': 'Working on that for you.',
+                            'Planner': 'Planning that out.',
+                            'WebBrowser': 'Checking that page.',
+                            'default': 'One moment.'
+                        };
+                        const toolName = toolCall.function.name;
+                        const fallbackMessage = voiceFallbacks[toolName] || voiceFallbacks.default;
+                        const toolUserMessage = toolArgs.userMessage || fallbackMessage;
                         
                         // Send tool start message (unless execution is hidden)
                         if (!hideExecution) {
@@ -449,48 +466,6 @@ export default {
                             name: toolCall.function.name,
                             content: toolResultContent
                         });
-
-                        // Add the screenshots/images using OpenAI image format
-                        if (toolResult?.toolImages && toolResult.toolImages.length > 0) {
-                            toolMessages.push({
-                                role: "user",
-                                content: [
-                                    {
-                                        type: "text",
-                                        text: "The tool with id " + toolCall.id + " has also supplied you with these images."
-                                    },
-                                    ...toolResult.toolImages.map(toolImage => {
-                                        // Handle both base64 strings (screenshots) and image_url objects (file collection images)
-                                        if (typeof toolImage === 'string') {
-                                            // Base64 string format (screenshots)
-                                            return {
-                                                type: "image_url",
-                                                image_url: {
-                                                    url: `data:image/png;base64,${toolImage}`
-                                                }
-                                            };
-                                        } else if (typeof toolImage === 'object' && toolImage.image_url) {
-                                            // Image URL object format (file collection images)
-                                            return {
-                                                type: "image_url",
-                                                url: toolImage.url,
-                                                gcs: toolImage.gcs,
-                                                image_url: toolImage.image_url,
-                                                originalFilename: toolImage.originalFilename
-                                            };
-                                        } else {
-                                            // Fallback for any other format
-                                            return {
-                                                type: "image_url",
-                                                image_url: {
-                                                    url: toolImage.url || toolImage
-                                                }
-                                            };
-                                        }
-                                    })
-                                ]
-                            });
-                        }
 
                         // Check for errors in tool result
                         // callTool returns { result: parsedResult, toolImages: [] }
@@ -713,16 +688,27 @@ export default {
                 
                 // Check if promptAndParse returned null (model call failed)
                 if (!result) {
-                    const errorMessage = pathwayResolver.errors.length > 0 
+                    const errorMessage = pathwayResolver.errors.length > 0
                         ? pathwayResolver.errors.join(', ')
                         : 'Model request failed - no response received';
                     logger.error(`promptAndParse returned null during tool callback: ${errorMessage}`);
                     const errorResponse = await generateErrorResponse(new Error(errorMessage), args, pathwayResolver);
                     // Ensure errors are cleared before returning
                     pathwayResolver.errors = [];
+
+                    // In streaming mode, the toolCallback is invoked fire-and-forget by the plugin,
+                    // so we must stream the error response directly to the client and close the stream
+                    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+                    publishRequestProgress({
+                        requestId,
+                        progress: 1,
+                        data: JSON.stringify(errorResponse),
+                        info: JSON.stringify(pathwayResolver.pathwayResultData || {}),
+                        error: ''
+                    });
                     return errorResponse;
                 }
-                
+
                 return result;
             } catch (parseError) {
                 // If promptAndParse fails, generate error response instead of re-throwing
@@ -730,6 +716,17 @@ export default {
                 const errorResponse = await generateErrorResponse(parseError, args, pathwayResolver);
                 // Ensure errors are cleared before returning
                 pathwayResolver.errors = [];
+
+                // In streaming mode, the toolCallback is invoked fire-and-forget by the plugin,
+                // so we must stream the error response directly to the client and close the stream
+                const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+                publishRequestProgress({
+                    requestId,
+                    progress: 1,
+                    data: JSON.stringify(errorResponse),
+                    info: JSON.stringify(pathwayResolver.pathwayResultData || {}),
+                    error: ''
+                });
                 return errorResponse;
             }
         }
@@ -741,8 +738,8 @@ export default {
         // Load input parameters and information into args
         const { entityId, voiceResponse, chatId, researchMode } = { ...pathwayResolver.pathway.inputParameters, ...args };
         
-        // Load entity config - cache is kept in sync by MongoEntityStore._syncConfigCache()
-        const entityConfig = loadEntityConfig(entityId);
+        // Load entity config on-demand from MongoDB
+        const entityConfig = await loadEntityConfig(entityId);
         const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
         // Support both new field name (identity) and legacy (instructions)
         const entityName = entityConfig?.name;
@@ -792,6 +789,9 @@ export default {
             ));
         }
 
+        // Get userInfo from args if provided
+        const userInfo = args.userInfo || '';
+
         args = {
             ...args,
             ...config.get('entityConstants'),
@@ -801,7 +801,8 @@ export default {
             entityInstructions,
             voiceResponse,
             chatId,
-            researchMode
+            researchMode,
+            userInfo
         };
 
         pathwayResolver.args = {...args};
@@ -812,14 +813,34 @@ export default {
             : (entityInstructions ? entityInstructions + '\n\n' : '');
 
         // Use plain text instructions for system onboarding entity (Vesper), markdown for others
-        const commonInstructionsTemplate = entityConfig?.isSystem 
+        const commonInstructionsTemplate = entityConfig?.isSystem
             ? `{{renderTemplate AI_COMMON_INSTRUCTIONS_TEXT}}`
             : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}`;
         const instructionTemplates = `${commonInstructionsTemplate}\n\n${entityDNA}{{renderTemplate AI_EXPERTISE}}\n\n`;
         const searchRulesTemplate = researchMode ? `{{renderTemplate AI_SEARCH_RULES}}\n\n` : '';
 
+        // Voice-specific instructions for natural spoken interaction
+        const voiceInstructions = voiceResponse ? `
+## Voice Response Guidelines
+You are speaking to the user through voice. Follow these guidelines for natural conversation:
+
+1. **Responses**: Keep responses concise and conversational - this is voice, not text. Use natural pacing and speak as you would in a real conversation.
+
+2. **Tool userMessage**: When calling tools, your userMessage should be a brief, natural voice phrase that sounds like something you'd actually say while doing something:
+   - GOOD: "Let me look that up", "One moment", "Searching now", "Let me check on that"
+   - BAD: "Searching for information about X", "Executing search tool", "Looking up: query terms"
+   The userMessage will be spoken aloud, so it must sound natural and human.
+
+3. **Avoid**: Numbered lists, markdown formatting, URLs, or anything that doesn't translate well to speech. Read numbers naturally (e.g., "about fifteen hundred" not "1,500").
+
+4. **Emotion**: Match the emotional tone to the content - be excited about good news, empathetic about problems, curious when exploring topics.
+` : '';
+
+        // Only include tool instructions if entity has tools available
+        const toolsTemplate = entityToolsOpenAiFormat.length > 0 ? '{{renderTemplate AI_TOOLS}}\n\n' : '';
+
         const promptMessages = [
-            {"role": "system", "content": `${instructionTemplates}{{renderTemplate AI_TOOLS}}\n\n${searchRulesTemplate}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+            {"role": "system", "content": `${instructionTemplates}${toolsTemplate}${searchRulesTemplate}${voiceInstructions}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
             "{{chatHistory}}",
         ];
 
@@ -858,7 +879,11 @@ export default {
         } catch (compressionError) {
             logger.warn(`Initial context compression failed: ${compressionError.message}`);
         }
-      
+
+        // Update pathwayResolver.args with stripped/compressed chatHistory
+        // This ensures toolCallback receives the processed history, not the original
+        pathwayResolver.args = {...args};
+
         try {
             let currentMessages = JSON.parse(JSON.stringify(args.chatHistory));
 

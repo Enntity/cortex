@@ -33,7 +33,7 @@ export default {
         try {
             const matchmakerName = config.get('systemEntities.matchmakerName');
             // Get the matchmaker system entity by name + isSystem flag
-            const entity = getSystemEntity(matchmakerName);
+            const entity = await getSystemEntity(matchmakerName);
             
             if (!entity) {
                 return JSON.stringify({

@@ -85,7 +85,7 @@ export default {
                     properties: {
                         file: {
                             type: "string",
-                            description: "The file to modify: can be the file ID, filename, URL, or hash from your file collection. You can find available files in the Available Files section or ListFileCollection or SearchFileCollection."
+                            description: "The file to modify: can be the file ID, filename, URL, or hash from your file collection. You can find available files in the Available Files section or FileCollection."
                         },
                         startLine: {
                             type: "number",
@@ -101,7 +101,7 @@ export default {
                         },
                         userMessage: {
                             type: "string",
-                            description: "A user-friendly message that describes what you're doing with this tool"
+                            description: 'Brief message to display while this action runs'
                         }
                     },
                     required: ["file", "startLine", "endLine", "content", "userMessage"]
@@ -119,7 +119,7 @@ export default {
                     properties: {
                         file: {
                             type: "string",
-                            description: "The file to modify: can be the file ID, filename, URL, or hash from your file collection. You can find available files in the Available Files section or ListFileCollection or SearchFileCollection."
+                            description: "The file to modify: can be the file ID, filename, URL, or hash from your file collection. You can find available files in the Available Files section or FileCollection."
                         },
                         oldString: {
                             type: "string",
@@ -135,7 +135,7 @@ export default {
                         },
                         userMessage: {
                             type: "string",
-                            description: "A user-friendly message that describes what you're doing with this tool"
+                            description: 'Brief message to display while this action runs'
                         }
                     },
                     required: ["file", "oldString", "newString", "userMessage"]
@@ -251,7 +251,7 @@ export default {
             if (!foundFile) {
                 const errorResult = {
                     success: false,
-                    error: `File not found in collection: "${file}". Use ListFileCollection or SearchFileCollection to find available files.`
+                    error: `File not found in collection: "${file}". Use FileCollection to find available files.`
                 };
                 resolver.tool = JSON.stringify({ toolUsed: toolName });
                 return JSON.stringify(errorResult);

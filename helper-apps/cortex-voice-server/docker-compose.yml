@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  cortex-voice-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-3001}:3001"
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=3001
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - CORTEX_API_URL=${CORTEX_API_URL:-http://host.docker.internal:4000/graphql}
+      - DEFAULT_VOICE_PROVIDER=${DEFAULT_VOICE_PROVIDER:-openai-realtime}
+      # CORS_ORIGINS must be explicitly configured (e.g., https://yourdomain.com)
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

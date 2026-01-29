@@ -96,7 +96,7 @@ Nuanced resonance states:
                     },
                     userMessage: {
                         type: 'string',
-                        description: 'A user-friendly message describing what you are remembering'
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ['content', 'memoryType', 'userMessage']

@@ -86,6 +86,40 @@ services:
       - "traefik.http.services.cortex.loadbalancer.server.port=4000"
       - "traefik.docker.network=cortex_web"
 
+  # Voice Server - Real-time voice interaction service
+  voice-server:
+    image: ghcr.io/${GITHUB_REPOSITORY_CORTEX}-voice-server:${IMAGE_TAG:-latest}
+    container_name: cortex-voice-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - CORTEX_API_URL=http://cortex:4000/graphql?cortex-api-key=${CORTEX_API_KEY}
+      - AUTH_SECRET=${VOICE_AUTH_SECRET}
+      - CORS_ORIGINS=https://ai.enntity.com
+      - DEFAULT_VOICE_PROVIDER=${DEFAULT_VOICE_PROVIDER:-openai-realtime}
+      - STT_PROVIDER=${STT_PROVIDER:-elevenlabs}
+    depends_on:
+      - cortex
+    networks:
+      - web
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.voice.rule=Host(`voice.${DOMAIN}`)"
+      - "traefik.http.routers.voice.entrypoints=websecure"
+      - "traefik.http.routers.voice.tls.certresolver=letsencrypt"
+      - "traefik.http.services.voice.loadbalancer.server.port=3001"
+      - "traefik.docker.network=cortex_web"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
   # Cortex File Handler - File processing service (internal + private network)
   file-handler:
     image: ghcr.io/${GITHUB_REPOSITORY_CORTEX}-file-handler:${IMAGE_TAG:-latest}

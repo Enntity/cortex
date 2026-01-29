@@ -101,7 +101,7 @@ export default {
                 properties: {
                     file: {
                         type: "string",
-                        description: "The file to read: can be the file ID, filename, URL, or hash from your file collection. You can find available files in the Available Files section or ListFileCollection or SearchFileCollection."
+                        description: "The file to read: can be the file ID, filename, URL, or hash from your file collection. You can find available files in the Available Files section or FileCollection."
                     },
                     startChar: {
                         type: "number",
@@ -121,7 +121,7 @@ export default {
                     },
                     userMessage: {
                         type: "string",
-                        description: "A user-friendly message that describes what you're doing with this tool"
+                        description: 'Brief message to display while this action runs'
                     }
                 },
                 required: ["userMessage"]
@@ -142,7 +142,7 @@ export default {
                 if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
                     const errorResult = {
                         success: false,
-                        error: "agentContext is required when using the 'file' parameter. Use ListFileCollection or SearchFileCollection to find available files."
+                        error: "agentContext is required when using the 'file' parameter. Use FileCollection to find available files."
                     };
                     resolver.tool = JSON.stringify({ toolUsed: "ReadFile" });
                     return JSON.stringify(errorResult);
@@ -152,7 +152,7 @@ export default {
                 if (!resolvedUrl) {
                     const errorResult = {
                         success: false,
-                        error: `File not found: "${file}". Use ListFileCollection or SearchFileCollection to find available files.`
+                        error: `File not found: "${file}". Use FileCollection to find available files.`
                     };
                     resolver.tool = JSON.stringify({ toolUsed: "ReadFile" });
                     return JSON.stringify(errorResult);
