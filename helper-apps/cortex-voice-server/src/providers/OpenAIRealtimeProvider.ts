@@ -83,9 +83,11 @@ export class OpenAIRealtimeProvider extends BaseVoiceProvider {
     }
 
     private configureSession(config: VoiceConfig): void {
-        // Available voices: alloy, ash, ballad, coral, sage, shimmer, verse, echo
-        // ash, coral, sage, verse are more natural/expressive
-        const voice = config.voiceId || 'verse';
+        const validVoices = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar'];
+        const voice = (config.voiceId && validVoices.includes(config.voiceId)) ? config.voiceId : 'verse';
+        if (config.voiceId && !validVoices.includes(config.voiceId)) {
+            console.warn(`[OpenAI Realtime] Voice '${config.voiceId}' not supported, falling back to '${voice}'`);
+        }
 
         const sessionConfig = {
             event_id: this.generateEventId(),
