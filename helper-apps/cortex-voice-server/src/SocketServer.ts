@@ -5,6 +5,7 @@
  * and coordinates with voice providers.
  */
 
+import { createHmac } from 'crypto';
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HTTPServer } from 'http';
 import {
@@ -33,6 +34,11 @@ interface SessionData {
     audioBlockTimeout: NodeJS.Timeout | null;
 }
 
+const MAX_SESSIONS = 100;
+const MAX_SESSIONS_PER_IP = 5;
+const MAX_AUDIO_MESSAGE_SIZE = 100 * 1024; // 100KB base64
+const MAX_TEXT_LENGTH = 10000;
+
 export class SocketServer {
     private io: SocketIOServer;
     private sessions: Map<string, SessionData> = new Map();
@@ -49,6 +55,53 @@ export class SocketServer {
             },
             pingTimeout: 60000,
             pingInterval: 25000,
+            maxHttpBufferSize: 200 * 1024, // 200KB
+        });
+
+        // Authentication middleware
+        this.io.use((socket, next) => {
+            const token = socket.handshake.auth?.token;
+            if (!token || typeof token !== 'string') {
+                return next(new Error('Authentication required'));
+            }
+            
+            if (!config.authSecret) {
+                console.warn('[SocketServer] AUTH_SECRET not configured - rejecting connection');
+                return next(new Error('Server authentication not configured'));
+            }
+            
+            try {
+                // Verify token format: base64(JSON payload).HMAC signature
+                const parts = token.split('.');
+                if (parts.length !== 2) {
+                    return next(new Error('Invalid token format'));
+                }
+                
+                const [payloadB64, signature] = parts;
+                const expectedSig = createHmac('sha256', config.authSecret)
+                    .update(payloadB64)
+                    .digest('hex');
+                
+                if (signature !== expectedSig) {
+                    return next(new Error('Invalid token'));
+                }
+                
+                const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString());
+                
+                // Check expiration
+                if (payload.exp && Date.now() > payload.exp) {
+                    return next(new Error('Token expired'));
+                }
+                
+                // Store authenticated user info on socket
+                socket.data.userId = payload.userId;
+                socket.data.contextId = payload.contextId;
+                socket.data.contextKey = payload.contextKey;
+                
+                next();
+            } catch (err) {
+                return next(new Error('Invalid token'));
+            }
         });
 
         this.setupEventHandlers();
@@ -65,7 +118,7 @@ export class SocketServer {
 
             // End session
             socket.on('session:end', () => {
-                this.handleSessionEnd(socket);
+                this.handleSessionEndForSocket(socket);
             });
 
             // Receive audio from client
@@ -121,7 +174,7 @@ export class SocketServer {
             // Handle disconnection
             socket.on('disconnect', (reason) => {
                 console.log(`[SocketServer] Client disconnected: ${socket.id}, reason: ${reason}`);
-                this.handleSessionEnd(socket);
+                this.handleSessionEndForSocket(socket);
             });
         });
     }
@@ -132,6 +185,40 @@ export class SocketServer {
         // Check if session already exists
         if (this.sessions.has(sessionId)) {
             socket.emit('session:error', { message: 'Session already active' });
+            return;
+        }
+
+        // Check global session limit
+        if (this.sessions.size >= MAX_SESSIONS) {
+            socket.emit('session:error', { message: 'Server at maximum capacity' });
+            return;
+        }
+
+        // Check per-IP session limit
+        const clientIP = socket.handshake.address;
+        const allSockets = await this.io.fetchSockets();
+        const ipSessionCount = allSockets.filter(s => s.handshake.address === clientIP && this.sessions.has(s.id)).length;
+        if (ipSessionCount >= MAX_SESSIONS_PER_IP) {
+            socket.emit('session:error', { message: 'Too many sessions from this address' });
+            return;
+        }
+
+        // Override identity from authenticated session - never trust client
+        config.userId = socket.data.userId;
+        config.contextId = socket.data.contextId;
+        config.contextKey = socket.data.contextKey;
+
+        // Validate required fields
+        if (!config.entityId || typeof config.entityId !== 'string') {
+            socket.emit('error', { message: 'Invalid entityId' });
+            return;
+        }
+        if (config.entityId.length > 100) {
+            socket.emit('error', { message: 'entityId too long' });
+            return;
+        }
+        if (config.userInfo && typeof config.userInfo === 'string' && config.userInfo.length > 5000) {
+            socket.emit('error', { message: 'userInfo too long' });
             return;
         }
 
@@ -249,6 +336,11 @@ export class SocketServer {
                     content: event.content,
                     timestamp: event.timestamp,
                 });
+
+                // Cap conversation history to prevent unbounded memory growth
+                if (state.conversationHistory.length > 100) {
+                    state.conversationHistory = state.conversationHistory.slice(-100);
+                }
             }
         });
 
@@ -295,7 +387,7 @@ export class SocketServer {
         });
     }
 
-    private handleSessionEnd(socket: Socket): void {
+    private handleSessionEndForSocket(socket: Socket): void {
         const sessionId = socket.id;
         const sessionData = this.sessions.get(sessionId);
 
@@ -325,6 +417,29 @@ export class SocketServer {
         }
     }
 
+    /**
+     * Public session end handler (for shutdown cleanup by socket ID)
+     */
+    handleSessionEnd(socketId: string): void {
+        const sessionData = this.sessions.get(socketId);
+
+        if (sessionData) {
+            if (sessionData.idleTimeout) {
+                clearTimeout(sessionData.idleTimeout);
+            }
+            if (sessionData.audioBlockTimeout) {
+                clearTimeout(sessionData.audioBlockTimeout);
+            }
+
+            sessionData.provider.disconnect().catch(err => {
+                console.error(`[SocketServer] Error disconnecting provider:`, err);
+            });
+
+            this.sessions.delete(socketId);
+            console.log(`[SocketServer] Session ended: ${socketId}`);
+        }
+    }
+
     private handleAudioInput(socket: Socket, data: AudioData): void {
         const sessionData = this.sessions.get(socket.id);
 
@@ -337,6 +452,11 @@ export class SocketServer {
             return;
         }
 
+        if (data.data.length > MAX_AUDIO_MESSAGE_SIZE) {
+            console.warn(`[SocketServer] Audio message too large: ${data.data.length} bytes`);
+            return;
+        }
+
         sessionData.state.lastActivityAt = Date.now();
         sessionData.provider.sendAudio(data);
 
@@ -346,6 +466,15 @@ export class SocketServer {
     }
 
     private async handleTextInput(socket: Socket, text: string): Promise<void> {
+        if (typeof text !== 'string' || text.length === 0) {
+            console.warn('[SocketServer] Invalid text input');
+            return;
+        }
+        if (text.length > MAX_TEXT_LENGTH) {
+            console.warn(`[SocketServer] Text input too long: ${text.length}`);
+            return;
+        }
+
         const sessionData = this.sessions.get(socket.id);
 
         if (!sessionData) {
@@ -498,5 +627,13 @@ export class SocketServer {
      */
     getSessions(): SessionState[] {
         return Array.from(this.sessions.values()).map(s => s.state);
+    }
+
+    getSessionsMap(): Map<string, SessionData> {
+        return this.sessions;
+    }
+
+    getIO(): SocketIOServer {
+        return this.io;
     }
 }

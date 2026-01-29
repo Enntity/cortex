@@ -183,6 +183,11 @@ The entity has access to many tools including search, image generation, calculat
                         content: event.transcript,
                         timestamp: Date.now(),
                     });
+
+                    // Cap conversation history to prevent unbounded memory growth
+                    if (this.conversationHistory.length > 100) {
+                        this.conversationHistory = this.conversationHistory.slice(-100);
+                    }
                 }
                 break;
 
@@ -216,6 +221,11 @@ The entity has access to many tools including search, image generation, calculat
                         content: event.transcript,
                         timestamp: Date.now(),
                     });
+
+                    // Cap conversation history to prevent unbounded memory growth
+                    if (this.conversationHistory.length > 100) {
+                        this.conversationHistory = this.conversationHistory.slice(-100);
+                    }
                 }
                 break;
 
@@ -365,6 +375,11 @@ The entity has access to many tools including search, image generation, calculat
             content: text,
             timestamp: Date.now(),
         });
+
+        // Cap conversation history to prevent unbounded memory growth
+        if (this.conversationHistory.length > 100) {
+            this.conversationHistory = this.conversationHistory.slice(-100);
+        }
 
         this.emit('transcript', {
             type: 'user',

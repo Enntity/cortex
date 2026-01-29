@@ -1,5 +1,6 @@
 import { Prompt } from '../../../server/prompt.js';
 import { loadEntityConfig } from './tools/shared/sys_entity_tools.js';
+import logger from '../../../lib/logger.js';
 
 export default {
     prompt:
@@ -92,7 +93,7 @@ Return only valid JSON, no markdown or explanation.`},
                 return fillers;
             }
         } catch (e) {
-            // Fall back to defaults if parsing fails
+            logger.warn(`Voice filler parsing failed: ${e.message}, using defaults`);
         }
 
         // Default fillers if generation fails

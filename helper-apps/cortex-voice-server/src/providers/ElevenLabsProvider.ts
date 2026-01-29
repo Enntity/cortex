@@ -60,6 +60,10 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
     // Flag to gate interim transcripts after finalization
     private isFinalizingTranscript: boolean = false;
 
+    // STT reconnection backoff
+    private sttReconnectAttempts: number = 0;
+    private static readonly MAX_STT_RECONNECT_ATTEMPTS = 3;
+
     constructor(
         cortexBridge: ICortexBridge,
         private elevenlabsApiKey: string,
@@ -133,6 +137,11 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                     content: fullText,
                     timestamp: Date.now(),
                 });
+
+                // Cap conversation history to prevent unbounded memory growth
+                if (this.conversationHistory.length > 100) {
+                    this.conversationHistory = this.conversationHistory.slice(-100);
+                }
 
                 // Emit final transcript for client-side history recording
                 // This triggers _addToHistory() on the client when voice mode ends
@@ -269,8 +278,15 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         // Reconnect if STT was disconnected (e.g., server-side idle timeout)
         if (this.streamingSTT) {
             if (!this.streamingSTT.connected) {
-                console.log('[ElevenLabs] STT disconnected, reconnecting...');
-                this.streamingSTT.start().catch(err => {
+                if (this.sttReconnectAttempts >= ElevenLabsProvider.MAX_STT_RECONNECT_ATTEMPTS) {
+                    console.error('[ElevenLabsProvider] Max STT reconnection attempts reached');
+                    return;
+                }
+                this.sttReconnectAttempts++;
+                console.log('[ElevenLabs] STT disconnected, reconnecting... (attempt ' + this.sttReconnectAttempts + ')');
+                this.streamingSTT.start().then(() => {
+                    this.sttReconnectAttempts = 0;
+                }).catch(err => {
                     console.error('[ElevenLabs] Failed to reconnect STT:', err);
                 });
             }
@@ -451,6 +467,12 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         this.pendingBatch = [];
         this.isFirstChunk = true;
         this.isFinalizingTranscript = false; // Allow interim transcripts for new speech
+
+        // Resolve all pending track completions to prevent dangling promises
+        for (const [, resolve] of this.pendingTrackCompletions) {
+            resolve();
+        }
+        this.pendingTrackCompletions.clear();
     }
 
     /**
@@ -574,6 +596,11 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                 timestamp: Date.now(),
             });
 
+            // Cap conversation history to prevent unbounded memory growth
+            if (this.conversationHistory.length > 100) {
+                this.conversationHistory = this.conversationHistory.slice(-100);
+            }
+
             // Use streaming or non-streaming based on bridge type
             if (this.streamingBridge) {
                 // Streaming mode - sentences will arrive via events
@@ -628,6 +655,11 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
             content: response.result,
             timestamp: Date.now(),
         });
+
+        // Cap conversation history to prevent unbounded memory growth
+        if (this.conversationHistory.length > 100) {
+            this.conversationHistory = this.conversationHistory.slice(-100);
+        }
 
         // Emit final transcript for client-side history recording
         this.emit('transcript', {
@@ -729,6 +761,11 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
                 timestamp: Date.now(),
             });
 
+            // Cap conversation history to prevent unbounded memory growth
+            if (this.conversationHistory.length > 100) {
+                this.conversationHistory = this.conversationHistory.slice(-100);
+            }
+
             this.setState('processing');
 
             if (this.streamingBridge) {
@@ -762,9 +799,12 @@ export class ElevenLabsProvider extends BaseVoiceProvider {
         if (this.streamingSTT) {
             this.streamingSTT.clearTranscript();
             // Ensure STT is connected for new input
+            this.sttReconnectAttempts = 0; // Reset reconnect counter on interrupt
             if (!this.streamingSTT.connected) {
                 console.log('[ElevenLabs] Reconnecting STT after interrupt');
-                this.streamingSTT.start().catch(err => {
+                this.streamingSTT.start().then(() => {
+                    this.sttReconnectAttempts = 0;
+                }).catch(err => {
                     console.error('[ElevenLabs] Failed to reconnect STT:', err);
                 });
             }

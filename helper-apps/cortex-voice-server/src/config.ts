@@ -37,7 +37,11 @@ function getEnvBoolean(key: string, defaultValue: boolean): boolean {
 
 function getCorsOrigins(): string | string[] {
     const origins = process.env.CORS_ORIGINS;
-    if (!origins || origins === '*') {
+    if (!origins) {
+        console.warn('[Config] CORS_ORIGINS not configured - blocking all cross-origin requests');
+        return [];
+    }
+    if (origins === '*') {
         return '*';
     }
     return origins.split(',').map(o => o.trim());
@@ -76,6 +80,7 @@ export function loadConfig(): ServerConfig {
         idleTimeoutMaxMs: getEnvNumber('IDLE_TIMEOUT_MAX_MS', 60000),
         audioBlockTimeoutMs: getEnvNumber('AUDIO_BLOCK_TIMEOUT_MS', 180000),
         debug: getEnvBoolean('DEBUG', false),
+        authSecret: process.env.AUTH_SECRET || '',
     };
 }
 

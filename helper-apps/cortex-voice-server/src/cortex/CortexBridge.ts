@@ -151,6 +151,9 @@ export class CortexBridge implements ICortexBridge {
         });
 
         try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 30000);
+
             const response = await fetch(this.apiUrl, {
                 method: 'POST',
                 headers: {
@@ -160,7 +163,10 @@ export class CortexBridge implements ICortexBridge {
                     query: SYS_ENTITY_AGENT_QUERY,
                     variables,
                 }),
+                signal: controller.signal,
             });
+
+            clearTimeout(timeout);
 
             if (!response.ok) {
                 throw new Error(`Cortex API error: ${response.status} ${response.statusText}`);
@@ -196,6 +202,9 @@ export class CortexBridge implements ICortexBridge {
 
     async getVoiceSample(entityId: string): Promise<string | null> {
         try {
+            const vsController = new AbortController();
+            const vsTimeout = setTimeout(() => vsController.abort(), 30000);
+
             const response = await fetch(this.apiUrl, {
                 method: 'POST',
                 headers: {
@@ -205,7 +214,10 @@ export class CortexBridge implements ICortexBridge {
                     query: VOICE_SAMPLE_QUERY,
                     variables: { entityId },
                 }),
+                signal: vsController.signal,
             });
+
+            clearTimeout(vsTimeout);
 
             if (!response.ok) {
                 return null;

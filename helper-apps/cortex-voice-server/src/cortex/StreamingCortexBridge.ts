@@ -227,6 +227,9 @@ export class StreamingCortexBridge extends EventEmitter {
         if (this.fillersLoaded) return;
 
         try {
+            const fillerController = new AbortController();
+            const fillerTimeout = setTimeout(() => fillerController.abort(), 30000);
+
             const response = await fetch(this.httpUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -237,7 +240,10 @@ export class StreamingCortexBridge extends EventEmitter {
                         chatHistory: [],
                     },
                 }),
+                signal: fillerController.signal,
             });
+
+            clearTimeout(fillerTimeout);
 
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
@@ -387,6 +393,8 @@ export class StreamingCortexBridge extends EventEmitter {
             await this.subscribeToProgress(subscriptionId);
 
         } catch (error) {
+            this.stopFillerTimer();
+            this.cleanup();
             this.isProcessing = false;
             console.error('[StreamingCortexBridge] Query error:', error);
             this.emit('error', error instanceof Error ? error : new Error(String(error)));
@@ -398,6 +406,9 @@ export class StreamingCortexBridge extends EventEmitter {
      * Make initial query to get subscription ID
      */
     private async getSubscriptionId(variables: Record<string, unknown>): Promise<string> {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+
         const response = await fetch(this.httpUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -405,7 +416,10 @@ export class StreamingCortexBridge extends EventEmitter {
                 query: SYS_ENTITY_AGENT_QUERY,
                 variables,
             }),
+            signal: controller.signal,
         });
+
+        clearTimeout(timeout);
 
         if (!response.ok) {
             throw new Error(`Cortex API error: ${response.status} ${response.statusText}`);
@@ -494,11 +508,12 @@ export class StreamingCortexBridge extends EventEmitter {
                         console.log('[StreamingCortexBridge] Subscription complete');
                         this.flushBuffer();
                         this.isProcessing = false;
-                        this.cleanup();
                         if (!resolved) {
                             resolved = true;
+                            this.emit('complete', this.fullResponse);
                             resolve();
                         }
+                        this.cleanup();
                     },
                 }
             );

@@ -226,4 +226,5 @@ export interface ServerConfig {
     idleTimeoutMaxMs: number;
     audioBlockTimeoutMs: number;
     debug: boolean;
+    authSecret: string;
 }

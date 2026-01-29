@@ -34,9 +34,14 @@ async function main(): Promise<void> {
     const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
         const url = req.url || '/';
 
-        // CORS headers for all responses
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        // CORS headers - validate origin against configured origins
+        const allowedOrigins = config.corsOrigins;
+        const origin = req.headers.origin;
+        if (origin && (allowedOrigins.includes('*') || allowedOrigins.includes(origin))) {
+            res.setHeader('Access-Control-Allow-Origin', origin);
+            res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        }
         res.setHeader('Content-Type', 'application/json');
 
         if (req.method === 'OPTIONS') {
@@ -121,6 +126,19 @@ async function main(): Promise<void> {
     // Graceful shutdown
     const shutdown = () => {
         console.log('\n\n👋 Shutting down...');
+
+        // Clean up all active sessions
+        if (socketServer) {
+            const sessions = socketServer.getSessionsMap();
+            for (const [socketId] of sessions) {
+                try {
+                    socketServer.handleSessionEnd(socketId);
+                } catch (err) {
+                    console.error(`[Shutdown] Error cleaning up session ${socketId}:`, err);
+                }
+            }
+            socketServer.getIO().close();
+        }
 
         httpServer.close(() => {
             console.log('✅ Server closed');

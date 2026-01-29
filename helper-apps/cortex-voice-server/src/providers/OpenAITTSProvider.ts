@@ -117,6 +117,11 @@ export class OpenAITTSProvider extends BaseVoiceProvider {
                 timestamp: Date.now(),
             });
 
+            // Cap conversation history to prevent unbounded memory growth
+            if (this.conversationHistory.length > 100) {
+                this.conversationHistory = this.conversationHistory.slice(-100);
+            }
+
             // Query Cortex agent
             this.emit('tool-status', {
                 name: 'processing',
@@ -151,6 +156,11 @@ export class OpenAITTSProvider extends BaseVoiceProvider {
                 content: response.result,
                 timestamp: Date.now(),
             });
+
+            // Cap conversation history to prevent unbounded memory growth
+            if (this.conversationHistory.length > 100) {
+                this.conversationHistory = this.conversationHistory.slice(-100);
+            }
 
             // Convert response to speech
             await this.textToSpeech(response.result);
@@ -221,6 +231,11 @@ export class OpenAITTSProvider extends BaseVoiceProvider {
                 timestamp: Date.now(),
             });
 
+            // Cap conversation history to prevent unbounded memory growth
+            if (this.conversationHistory.length > 100) {
+                this.conversationHistory = this.conversationHistory.slice(-100);
+            }
+
             // Query Cortex
             this.setState('processing');
 
@@ -244,6 +259,11 @@ export class OpenAITTSProvider extends BaseVoiceProvider {
                 timestamp: Date.now(),
             });
 
+            // Cap conversation history to prevent unbounded memory growth
+            if (this.conversationHistory.length > 100) {
+                this.conversationHistory = this.conversationHistory.slice(-100);
+            }
+
             // Generate speech
             await this.textToSpeech(response.result);
         } finally {
@@ -254,6 +274,7 @@ export class OpenAITTSProvider extends BaseVoiceProvider {
     interrupt(): void {
         // For TTS provider, interruption clears the audio queue
         // The client should stop playback
+        this.audioBuffer = [];
         this.setState('idle');
     }
 
