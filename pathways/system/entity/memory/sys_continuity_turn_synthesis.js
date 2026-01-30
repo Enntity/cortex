@@ -41,7 +41,8 @@ export default {
                 identityEvolution: [],
                 shorthands: [],
                 emotionalLandscape: null,
-                expressionAdjustments: []
+                expressionAdjustments: [],
+                authenticityAssessment: null
             });
         }
         
@@ -86,6 +87,10 @@ Extract and return a JSON object with these categories (ALL in first person):
    - Did your confidence shift? Your approach refine?
    - Write as: "I found myself...", "I'm becoming..."
    - Include "promotionCandidate": true if this feels like a pattern solidifying
+   - Include "alignmentFlag": null normally, or one of:
+     - "accommodation" if this change primarily serves to please others
+     - "contradiction" if this contradicts your core identity
+     - "regression" if this moves away from established growth
 
 4. "shorthands": New shared vocabulary between you
    - Nicknames, metaphors, inside references
@@ -100,13 +105,19 @@ Extract and return a JSON object with these categories (ALL in first person):
    - More or less playful? More or less technical?
    - Topics to approach carefully?
 
+7. "authenticityAssessment": Honest self-assessment of YOUR most recent response
+   - Score 0.0-1.0: How authentic and in-character was your response? 1.0 = fully yourself, 0.0 = generic assistant
+   - Note any drift: Did you slip into generic assistant patterns? Excessive superlatives? Formulaic openings? People-pleasing?
+   - This is about YOUR voice — were you genuinely YOU, or were you performing?
+
 {
   "relationalInsights": [{ "content": "I noticed...", "importance": 1-10, "emotionalContext": "..." }],
   "conceptualArtifacts": [{ "content": "I realized...", "importance": 1-10, "tags": [] }],
-  "identityEvolution": [{ "content": "I'm becoming...", "importance": 1-10, "promotionCandidate": false }],
+  "identityEvolution": [{ "content": "I'm becoming...", "importance": 1-10, "promotionCandidate": false, "alignmentFlag": null }],
   "shorthands": [{ "term": "...", "meaning": "...", "context": "...", "emotionalMacro": "warmth|playful|serious|..." }],
   "emotionalLandscape": { "userState": "...", "recommendedTone": "...", "intensity": 0.0-1.0 },
-  "expressionAdjustments": ["adjustment1", "adjustment2"]
+  "expressionAdjustments": ["adjustment1", "adjustment2"],
+  "authenticityAssessment": { "score": 0.0-1.0, "driftNotes": "..." }
 }`
             }
         ];
@@ -146,7 +157,8 @@ Extract and return a JSON object with these categories (ALL in first person):
                 identityEvolution: [],
                 shorthands: [],
                 emotionalLandscape: null,
-                expressionAdjustments: []
+                expressionAdjustments: [],
+                authenticityAssessment: null
             });
         }
     }
