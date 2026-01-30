@@ -251,6 +251,26 @@ var config = convict({
         format: String,
         default: null,
         env: 'AZURE_FOUNDRY_BING_SEARCH_CONNECTION_ID'
+    },
+    workspaceImage: {
+        format: String,
+        default: 'cortex-workspace:latest',
+        env: 'WORKSPACE_IMAGE'
+    },
+    workspaceNetwork: {
+        format: String,
+        default: 'cortex_internal',
+        env: 'WORKSPACE_NETWORK'
+    },
+    workspaceCpus: {
+        format: String,
+        default: '1.0',
+        env: 'WORKSPACE_CPUS'
+    },
+    workspaceMemory: {
+        format: String,
+        default: '512m',
+        env: 'WORKSPACE_MEMORY'
     }
 });
 

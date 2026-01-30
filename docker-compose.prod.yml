@@ -72,6 +72,8 @@ services:
     ports:
       # Expose on private network for Concierge to access
       - "10.0.0.2:4000:4000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       redis:
         condition: service_healthy
