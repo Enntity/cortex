@@ -222,7 +222,10 @@ jobs:
             set -a
             source .env
             set +a
-            
+
+            # Detect docker group GID for workspace socket access
+            export DOCKER_GID=$(getent group docker | cut -d: -f3 || echo "988")
+
             # Deploy with docker-compose
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
             

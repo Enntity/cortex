@@ -59,6 +59,8 @@ services:
     image: ghcr.io/${GITHUB_REPOSITORY_CORTEX}:${IMAGE_TAG:-latest}
     container_name: cortex
     restart: unless-stopped
+    group_add:
+      - "${DOCKER_GID:-988}"
     env_file:
       - .env
     environment:
