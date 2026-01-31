@@ -9,6 +9,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "✍️",
+        toolCost: 1,
         function: {
             name: "WorkspaceWrite",
             description: "Write or create a file in your workspace container. Creates parent directories by default. Supports base64 encoding for binary content. Files are written to the container's filesystem.",

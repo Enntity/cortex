@@ -375,7 +375,7 @@ test.serial('executePathway returns error response when tool recursion times out
   t.true(result.includes('Tool recursion timeout'));
 });
 
-test.serial('toolCallback injects max tool call message once limit reached', async (t) => {
+test.serial('toolCallback injects budget exhausted message once limit reached', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -384,7 +384,7 @@ test.serial('toolCallback injects max tool call message once limit reached', asy
 
   let promptArgs;
   const resolver = buildResolver({
-    toolCallCount: 50,
+    toolBudgetUsed: 500,
     promptAndParse: async (args) => {
       promptArgs = args;
       return 'tool-handled';
@@ -403,10 +403,139 @@ test.serial('toolCallback injects max tool call message once limit reached', asy
   const systemMessage = promptArgs.chatHistory.find((entry) => (
     entry.role === 'user' &&
     typeof entry.content === 'string' &&
-    entry.content.includes('Maximum tool call limit reached')
+    entry.content.includes('Tool budget exhausted')
   ));
 
   t.truthy(systemMessage);
+});
+
+// === TOOL BUDGET COST TESTS ===
+
+test.serial('toolCallback charges toolCost from tool definition (cheap tool costs 1)', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  // Create a cheap tool with toolCost: 1
+  const cheapToolPathways = {
+    ...config.get('pathways'),
+    test_tool_cheap: {
+      rootResolver: async () => ({
+        result: JSON.stringify({ success: true }),
+      }),
+    },
+  };
+  config.load({ pathways: cheapToolPathways });
+
+  const tools = {
+    ...originals.testEntity.customTools,
+    cheaptool: buildToolDefinition('CheapTool', 'test_tool_cheap', { toolCost: 1 }),
+  };
+
+  const modifiedEntity = {
+    ...originals.testEntity,
+    tools: [...originals.testEntity.tools, 'cheaptool'],
+    customTools: tools,
+  };
+
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(modifiedEntity);
+
+  const resolver = buildResolver({
+    promptAndParse: async () => 'done',
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'use cheap tool' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+  };
+
+  const message = { tool_calls: [buildToolCall('CheapTool')] };
+  await sysEntityAgent.toolCallback(args, message, resolver);
+
+  // Cheap tool should cost 1, not 10
+  t.is(resolver.toolBudgetUsed, 1);
+  t.is(resolver.toolCallRound, 1);
+});
+
+test.serial('toolCallback charges DEFAULT_TOOL_COST (10) for tools without toolCost', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  const resolver = buildResolver({
+    promptAndParse: async () => 'done',
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'use tool' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+  };
+
+  // ErrorJson has no toolCost defined, should default to 10
+  const message = { tool_calls: [buildToolCall('ErrorJson')] };
+  await sysEntityAgent.toolCallback(args, message, resolver);
+
+  t.is(resolver.toolBudgetUsed, 10);
+  t.is(resolver.toolCallRound, 1);
+});
+
+test.serial('toolCallback accumulates budget across multiple rounds', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const cheapToolPathways = {
+    ...config.get('pathways'),
+    test_tool_cheap: {
+      rootResolver: async () => ({
+        result: JSON.stringify({ success: true }),
+      }),
+    },
+  };
+  config.load({ pathways: cheapToolPathways });
+
+  const tools = {
+    ...originals.testEntity.customTools,
+    cheaptool: buildToolDefinition('CheapTool', 'test_tool_cheap', { toolCost: 1 }),
+  };
+
+  const modifiedEntity = {
+    ...originals.testEntity,
+    tools: [...originals.testEntity.tools, 'cheaptool'],
+    customTools: tools,
+  };
+
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(modifiedEntity);
+
+  const resolver = buildResolver({
+    promptAndParse: async () => 'done',
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'use tools' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+  };
+
+  // Round 1: one cheap tool (cost 1)
+  await sysEntityAgent.toolCallback(
+    args,
+    { tool_calls: [buildToolCall('CheapTool', { userMessage: 'run' }, 'call-1')] },
+    resolver,
+  );
+  t.is(resolver.toolBudgetUsed, 1);
+  t.is(resolver.toolCallRound, 1);
+
+  // Round 2: one expensive tool (cost 10, default)
+  await sysEntityAgent.toolCallback(
+    args,
+    { tool_calls: [buildToolCall('ErrorJson', { userMessage: 'run' }, 'call-2')] },
+    resolver,
+  );
+  t.is(resolver.toolBudgetUsed, 11);
+  t.is(resolver.toolCallRound, 2);
 });
 
 // === NEW TESTS FOR ROBUSTNESS FEATURES ===

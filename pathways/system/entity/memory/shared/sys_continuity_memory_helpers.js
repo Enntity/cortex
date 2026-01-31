@@ -46,7 +46,7 @@ export const EMOTIONAL_VALENCE_MAP = {
  * 
  * @param {Object} params - Memory storage parameters
  * @param {string} params.entityId - Entity UUID (required)
- * @param {string} params.userId - User/context identifier (required)
+ * @param {string|null} params.userId - User/context identifier (null for entity-level memories)
  * @param {string} params.content - Memory content (required)
  * @param {string} params.memoryType - Memory type: ANCHOR, ARTIFACT, IDENTITY, CORE, etc. (required)
  * @param {number} [params.importance=5] - Importance level 1-10
@@ -75,13 +75,10 @@ export async function storeContinuityMemory({
         };
     }
     
-    if (!userId) {
-        return {
-            success: false,
-            error: 'userId is required for memory operations.'
-        };
-    }
-    
+    // Note: null/undefined userId is valid — creates entity-level memories
+    // (e.g. pulse wakes, autonomous operations). The storage layer handles
+    // this by setting assocEntityIds: [entityId] as a sentinel for entity-scoped visibility.
+
     if (!content || content.trim().length === 0) {
         return {
             success: false,

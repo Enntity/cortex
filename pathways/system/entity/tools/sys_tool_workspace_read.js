@@ -9,6 +9,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "📖",
+        toolCost: 1,
         function: {
             name: "WorkspaceRead",
             description: "Read file contents from your workspace container. Supports line ranges for large files and base64 encoding for binary files. Files are read from the container's filesystem (default root: /workspace).",

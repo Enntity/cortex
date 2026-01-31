@@ -10,6 +10,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "💾",
+        toolCost: 1,
         function: {
             name: "WorkspaceBackup",
             description: "Create a backup of your entire workspace and save it to cloud storage. The backup is a compressed archive of everything in /workspace. Use this before risky operations or periodically to protect your work. Backups are stored in your file collection and can be restored with WorkspaceRestore.",

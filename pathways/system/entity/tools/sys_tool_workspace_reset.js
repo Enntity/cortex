@@ -10,6 +10,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "🔄",
+        toolCost: 1,
         function: {
             name: "WorkspaceReset",
             description: "Reset your workspace to a clean state. By default, wipes all files in /workspace except optionally preserved paths. With destroy=true, stops and removes the entire container (it will be auto-reprovisioned on next use). The persistent volume is preserved by default so data survives re-provisioning.",

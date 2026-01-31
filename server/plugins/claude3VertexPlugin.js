@@ -310,19 +310,16 @@ class Claude3VertexPlugin extends OpenAIVisionPlugin {
 
       // Handle regular text responses
       const textContent = content.find(item => item.type === "text");
-      if (textContent) {
-        // Create standardized CortexResponse object for text responses
-        const cortexResponse = new CortexResponse({
-          output_text: textContent.text || "",
-          finishReason: stop_reason === "tool_use" ? "tool_calls" : "stop",
-          usage: usage || null,
-          metadata: {
-            model: this.modelName
-          }
-        });
+      const outputText = textContent?.text || "";
 
-        return cortexResponse;
-      }
+      return new CortexResponse({
+        output_text: outputText,
+        finishReason: stop_reason === "tool_use" ? "tool_calls" : "stop",
+        usage: usage || null,
+        metadata: {
+          model: this.modelName
+        }
+      });
     }
 
     return data;

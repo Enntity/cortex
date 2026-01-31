@@ -9,6 +9,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "✏️",
+        toolCost: 1,
         function: {
             name: "WorkspaceEdit",
             description: "Edit a file in your workspace container using exact search-and-replace. Finds the exact oldString in the file and replaces it with newString. Use replaceAll to replace all occurrences.",

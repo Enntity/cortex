@@ -34,6 +34,7 @@ export default {
     toolDefinition: [{
         type: "function",
         icon: "💾",
+        toolCost: 1,
         function: {
             name: "StoreContinuityMemory",
             description: `Store a specific memory in your long-term narrative memory. Use this when you want to explicitly remember something important that might not be captured by automatic synthesis, or when the user asks you to remember something specific.

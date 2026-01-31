@@ -9,6 +9,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "📊",
+        toolCost: 1,
         function: {
             name: "WorkspaceStatus",
             description: "Get system status of your workspace container. Returns uptime, disk usage, memory usage, CPU load, running processes, and background job status.",

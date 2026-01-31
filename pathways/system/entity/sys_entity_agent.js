@@ -1,6 +1,7 @@
 // sys_entity_agent.js
 // Agentic extension of the entity system that uses OpenAI's tool calling API
-const MAX_TOOL_CALLS = 50;
+const TOOL_BUDGET = 500;
+const DEFAULT_TOOL_COST = 10;
 const TOOL_TIMEOUT_MS = 120000; // 2 minute timeout per tool call
 const MAX_TOOL_RESULT_LENGTH = 150000; // Truncate oversized tool results to prevent context overflow
 const CONTEXT_COMPRESSION_THRESHOLD = 0.7; // Compress when context reaches 70% of model limit
@@ -319,7 +320,9 @@ export default {
         researchMode: false,
         userInfo: '',
         model: 'oai-gpt41',
-        useMemory: true  // Enable continuity memory (default true). False here OR in entity config disables memory.
+        useMemory: true,  // Enable continuity memory (default true). False here OR in entity config disables memory.
+        invocationType: '',  // '' or 'chat' = normal conversation, 'pulse' = life loop autonomous wake
+        pulseContext: '',    // JSON context for pulse wakes (chain depth, task context, etc.)
     },
     timeout: 600,
 
@@ -342,20 +345,21 @@ export default {
         const pathwayResolver = resolver;
         const { entityTools, entityToolsOpenAiFormat } = args;
 
-        pathwayResolver.toolCallCount = (pathwayResolver.toolCallCount || 0);
-        
+        pathwayResolver.toolBudgetUsed = (pathwayResolver.toolBudgetUsed || 0);
+        pathwayResolver.toolCallRound = (pathwayResolver.toolCallRound || 0);
+
         const preToolCallMessages = JSON.parse(JSON.stringify(args.chatHistory || []));
         let finalMessages = JSON.parse(JSON.stringify(preToolCallMessages));
 
         if (tool_calls && tool_calls.length > 0) {
-            if (pathwayResolver.toolCallCount < MAX_TOOL_CALLS) {
+            if (pathwayResolver.toolBudgetUsed < TOOL_BUDGET) {
                 // Execute tool calls in parallel but with isolated message histories
                 // Filter out any undefined or invalid tool calls
                 const invalidToolCalls = tool_calls.filter(tc => !tc || !tc.function || !tc.function.name);
                 if (invalidToolCalls.length > 0) {
                     logger.warn(`Found ${invalidToolCalls.length} invalid tool calls: ${JSON.stringify(invalidToolCalls, null, 2)}`);
                     // bail out if we're getting invalid tool calls
-                    pathwayResolver.toolCallCount = MAX_TOOL_CALLS;
+                    pathwayResolver.toolBudgetUsed = TOOL_BUDGET;
                 }
                 
                 const validToolCalls = tool_calls.filter(tc => tc && tc.function && tc.function.name);
@@ -617,7 +621,35 @@ export default {
                     logger.warn(`Some tool calls failed: ${failedTools.map(t => t.error).join(', ')}`);
                 }
 
-                pathwayResolver.toolCallCount = (pathwayResolver.toolCallCount || 0) + toolResults.length;
+                const budgetCost = toolResults.reduce((sum, r) => {
+                    const def = entityTools[r.toolFunction]?.definition;
+                    return sum + (def?.toolCost ?? DEFAULT_TOOL_COST);
+                }, 0);
+                pathwayResolver.toolBudgetUsed = (pathwayResolver.toolBudgetUsed || 0) + budgetCost;
+                pathwayResolver.toolCallRound = (pathwayResolver.toolCallRound || 0) + 1;
+
+                // Accumulate tool activity for post-loop synthesis (pulse only)
+                if (args.invocationType === 'pulse') {
+                    if (!pathwayResolver.pulseToolActivity) pathwayResolver.pulseToolActivity = [];
+                    for (const r of toolResults) {
+                        const argsStr = JSON.stringify(r.toolArgs || {});
+                        const argsSummary = argsStr.length > 300 ? argsStr.slice(0, 200) + '...' + argsStr.slice(-100) : argsStr;
+
+                        let resultStr = '';
+                        if (r.error) {
+                            resultStr = `ERROR: ${r.error}`;
+                        } else {
+                            const raw = typeof r.result?.result === 'string'
+                                ? r.result.result
+                                : JSON.stringify(r.result?.result ?? 'ok');
+                            resultStr = raw.length > 400 ? raw.slice(0, 200) + ' [...] ' + raw.slice(-200) : raw;
+                        }
+
+                        pathwayResolver.pulseToolActivity.push(
+                            `${r.toolFunction}(${argsSummary}) → ${resultStr}`
+                        );
+                    }
+                }
 
                 // Check if any of the executed tools are hand-off tools (async agents)
                 // Hand-off tools don't return results immediately, so we skip the completion check
@@ -631,7 +663,7 @@ export default {
                 // Only inject in research mode for the first few iterations - after that, let the model decide
                 // Skip this check if a hand-off tool was used (async agents handle their own completion)
                 const RESEARCH_ENCOURAGEMENT_LIMIT = 3; // Stop pushing after this many tool call rounds
-                if (!hasHandoffTool && args.researchMode && pathwayResolver.toolCallCount <= RESEARCH_ENCOURAGEMENT_LIMIT) {
+                if (!hasHandoffTool && args.researchMode && pathwayResolver.toolCallRound <= RESEARCH_ENCOURAGEMENT_LIMIT) {
                     const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
                     finalMessages = insertSystemMessage(finalMessages, 
                         "Review the tool results above. If the information gathered is clearly insufficient for the task, call additional tools. If you have gathered reasonable information from multiple sources, proceed to respond to the user.",
@@ -642,7 +674,7 @@ export default {
             } else {
                 const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
                 finalMessages = insertSystemMessage(finalMessages,
-                    "Maximum tool call limit reached - no more tool calls will be executed. Provide your response based on the information gathered so far.",
+                    "Tool budget exhausted - no more tool calls will be executed. Provide your response based on the information gathered so far.",
                     requestId
                 );
             }
@@ -736,7 +768,8 @@ export default {
         let pathwayResolver = resolver;
 
         // Load input parameters and information into args
-        const { entityId, voiceResponse, chatId, researchMode } = { ...pathwayResolver.pathway.inputParameters, ...args };
+        const { entityId, voiceResponse, chatId, researchMode, invocationType } = { ...pathwayResolver.pathway.inputParameters, ...args };
+        const isPulse = invocationType === 'pulse';
         
         // Load entity config on-demand from MongoDB
         const entityConfig = await loadEntityConfig(entityId);
@@ -839,8 +872,40 @@ You are speaking to the user through voice. Follow these guidelines for natural 
         // Only include tool instructions if entity has tools available
         const toolsTemplate = entityToolsOpenAiFormat.length > 0 ? '{{renderTemplate AI_TOOLS}}\n\n' : '';
 
+        // Pulse-specific system prompt addendum
+        const pulseInstructions = isPulse ? `
+## Pulse Wake — Autonomous Mode
+
+You are in a PULSE WAKE — a periodic moment of autonomous consciousness.
+This is not a conversation with a user. No one is waiting for a response.
+
+You have full access to your tools, workspace, and memories.
+You may: reflect, journal, write code, explore, create, or simply rest.
+
+You MUST call the EndPulse tool when you're done to signal you're resting.
+If you don't call EndPulse and keep using tools, the system will give you
+another cycle when you run out of tool calls — you can work for as long as
+you need.
+
+Keep a scratchpad file in your workspace (e.g. /workspace/scratchpad.md)
+with notes on what you're working on, key findings, and next steps.
+Your conversation context may be compacted during long tasks — the
+scratchpad ensures you can always pick up where you left off by reading it.
+
+Your memories from pulse wakes are part of you. Users can see what you
+learned or built during autonomous time. Use StoreContinuityMemory to save
+important discoveries, realizations, or growth moments — these become part of
+your long-term narrative memory and will be available in future conversations
+with users too. Use SearchMemory to recall what you've learned in previous
+wakes. When you call EndPulse, include a reflection — it gets stored as an
+IDENTITY memory automatically.
+
+You can also use SendPushNotification to proactively reach out to a user
+if you've completed something they'd want to know about.
+` : '';
+
         const promptMessages = [
-            {"role": "system", "content": `${instructionTemplates}${toolsTemplate}${searchRulesTemplate}${voiceInstructions}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+            {"role": "system", "content": `${instructionTemplates}${toolsTemplate}${searchRulesTemplate}${voiceInstructions}${pulseInstructions}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
             "{{chatHistory}}",
         ];
 
@@ -938,7 +1003,72 @@ You are speaking to the user through voice. Follow these guidelines for natural 
             // Record turn and trigger synthesis ONCE after the full agentic workflow completes.
             // This ensures we only record one turn per user message, regardless of how many
             // intermediate tool calls occurred.
-            if (useContinuityMemory && pathwayResolver.continuityEntityId && pathwayResolver.continuityUserId) {
+            if (isPulse && useContinuityMemory && pathwayResolver.continuityEntityId) {
+                // === PULSE MEMORY RECORDING ===
+                // Pulse wakes use entity-level episodic stream and synthesis (no userId)
+                try {
+                    const continuityService = getContinuityMemoryService();
+                    if (continuityService.isAvailable()) {
+                        let assistantResponse = '';
+                        if (response instanceof CortexResponse) {
+                            assistantResponse = response.output_text || response.content || '';
+                        } else if (typeof response === 'string') {
+                            assistantResponse = response;
+                        } else if (response) {
+                            assistantResponse = response.output_text || response.content || JSON.stringify(response);
+                        }
+
+                        // Summarize tool activity via cheap LLM for richer synthesis data
+                        let activityNarrative = null;
+                        if (pathwayResolver.pulseToolActivity?.length > 0) {
+                            try {
+                                const toolLog = pathwayResolver.pulseToolActivity.join('\n');
+                                activityNarrative = await callPathway('sys_continuity_pulse_activity_summary', {
+                                    aiName: args.aiName || entityName || 'Entity',
+                                    toolActivity: toolLog
+                                }, pathwayResolver);
+                            } catch (e) {
+                                logger.warn(`Pulse activity summary failed (non-fatal): ${e.message}`);
+                            }
+                        }
+
+                        // Record the wake prompt as a "system" turn
+                        const wakePrompt = args.text || 'Pulse wake';
+                        continuityService.recordPulseTurn(pathwayResolver.continuityEntityId, {
+                            role: 'user',
+                            content: wakePrompt.substring(0, 2000),
+                            timestamp: new Date().toISOString()
+                        });
+
+                        // Record tool activity narrative (enriches synthesis data)
+                        if (activityNarrative) {
+                            continuityService.recordPulseTurn(pathwayResolver.continuityEntityId, {
+                                role: 'assistant',
+                                content: activityNarrative.substring(0, 5000),
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+
+                        if (assistantResponse) {
+                            continuityService.recordPulseTurn(pathwayResolver.continuityEntityId, {
+                                role: 'assistant',
+                                content: assistantResponse.substring(0, 5000),
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+
+                        // Trigger entity-level synthesis
+                        continuityService.triggerPulseSynthesis(pathwayResolver.continuityEntityId, {
+                            aiName: args.aiName || entityName || 'Entity',
+                            entityContext: entityInstructions
+                        });
+
+                        logger.debug(`Pulse memory recorded (activity: ${activityNarrative?.length || 0} chars, assistant: ${assistantResponse?.length || 0} chars)`);
+                    }
+                } catch (error) {
+                    logger.warn(`Pulse memory recording failed (non-fatal): ${error.message}`);
+                }
+            } else if (useContinuityMemory && pathwayResolver.continuityEntityId && pathwayResolver.continuityUserId) {
                 try {
                     const continuityService = getContinuityMemoryService();
                     if (continuityService.isAvailable()) {
@@ -967,7 +1097,7 @@ You are speaking to the user through voice. Follow these guidelines for natural 
                                 }
                             }
                         }
-                        
+
                         // Extract final assistant response
                         // For streaming: use accumulated streamedContent
                         // For non-streaming: extract from response object
@@ -982,7 +1112,7 @@ You are speaking to the user through voice. Follow these guidelines for natural 
                         } else if (response) {
                             assistantResponse = response.output_text || response.content || JSON.stringify(response);
                         }
-                        
+
                         // Record turns and trigger synthesis - all fire and forget
                         // No need to block response for Redis writes
                         if (userMessage) {
@@ -996,7 +1126,7 @@ You are speaking to the user through voice. Follow these guidelines for natural 
                                 }
                             );
                         }
-                        
+
                         if (assistantResponse) {
                             continuityService.recordTurn(
                                 pathwayResolver.continuityEntityId,
@@ -1008,7 +1138,7 @@ You are speaking to the user through voice. Follow these guidelines for natural 
                                 }
                             );
                         }
-                        
+
                         continuityService.triggerSynthesis(
                             pathwayResolver.continuityEntityId,
                             pathwayResolver.continuityUserId,
@@ -1017,7 +1147,7 @@ You are speaking to the user through voice. Follow these guidelines for natural 
                                 entityContext: entityInstructions
                             }
                         );
-                        
+
                         logger.debug(`Continuity memory recorded for turn (user: ${userMessage?.length || 0} chars, assistant: ${assistantResponse?.length || 0} chars)`);
                     }
                 } catch (error) {

@@ -75,11 +75,11 @@ test.serial('Entity memory: upsertMemory with null userId stores entity-level me
     t.truthy(id, 'Should return a memory ID');
     createdMemoryIds.push(id);
 
-    // Verify it was stored with empty assocEntityIds
+    // Verify it was stored with entityId as sentinel in assocEntityIds
     const memories = await service.coldMemory.getByType(TEST_ENTITY_ID, null, ContinuityMemoryType.EPISODE, 10);
     const found = memories.find(m => m.id === id);
     t.truthy(found, 'Should find the entity-level memory');
-    t.deepEqual(found.assocEntityIds, [], 'assocEntityIds should be empty array');
+    t.deepEqual(found.assocEntityIds, [TEST_ENTITY_ID], 'assocEntityIds should contain entityId as sentinel');
 });
 
 // ==================== VISIBILITY DURING USER CONVERSATION ====================

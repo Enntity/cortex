@@ -12,6 +12,7 @@ export default {
         {
             type: "function",
             icon: "📁",
+            toolCost: 1,
             function: {
                 name: "FileCollection",
                 description: `Manage your file collection. Operations are inferred from parameters:
@@ -115,6 +116,7 @@ export default {
             type: "function",
             enabled: false,
             icon: "📁",
+            toolCost: 1,
             function: {
                 name: "AddFileToCollection",
                 description: "DEPRECATED: Use FileCollection with fileUrl/url + filename instead.",

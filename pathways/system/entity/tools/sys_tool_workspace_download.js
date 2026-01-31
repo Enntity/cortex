@@ -11,6 +11,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "📥",
+        toolCost: 1,
         function: {
             name: "WorkspaceDownload",
             description: "Download a file from your file collection into your workspace container. Resolves a file reference (ID, filename, or hash) to its cloud URL, downloads it, and writes it to the specified workspace path.",

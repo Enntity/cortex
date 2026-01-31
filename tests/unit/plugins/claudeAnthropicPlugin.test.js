@@ -80,6 +80,24 @@ test('parseResponse - tool calls response', (t) => {
     t.truthy(result.toolCalls[0].function.arguments === '{"location":"San Francisco"}');
 });
 
+test('parseResponse - empty content array returns CortexResponse not raw object', (t) => {
+    const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
+
+    // Opus occasionally returns content: [] with stop_reason: "end_turn"
+    const dataWithEmptyContent = {
+        content: [],
+        usage: { input_tokens: 21894, output_tokens: 2 },
+        stop_reason: 'end_turn'
+    };
+    const result = plugin.parseResponse(dataWithEmptyContent);
+    t.is(result.output_text, '');
+    t.is(result.finishReason, 'stop');
+    t.truthy(result.usage);
+    // Must be a CortexResponse, not the raw API object
+    t.is(typeof result.toString, 'function');
+    t.is(result.toString(), '');
+});
+
 test('getRequestParameters includes model in body', async (t) => {
     const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
     

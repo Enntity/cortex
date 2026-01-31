@@ -26,6 +26,7 @@ export default {
     toolDefinition: [{
         type: "function",
         icon: "🧠",
+        toolCost: 1,
         function: {
             name: "SearchMemory",
             description: `Search your narrative memory for relational context, insights, and identity notes. Use this when you need to explicitly recall:

@@ -11,6 +11,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "⏪",
+        toolCost: 1,
         function: {
             name: "WorkspaceRestore",
             description: "Restore your workspace from a previously created backup. Downloads the backup archive from cloud storage and extracts it into /workspace, restoring all files. Existing files with the same names will be overwritten. Use FileCollection to find available backups (tagged 'workspace-backup').",

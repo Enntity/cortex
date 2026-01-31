@@ -10,6 +10,7 @@ export default {
     toolDefinition: { 
         type: "function",
         icon: "👀",
+        toolCost: 1,
         function: {
             name: "ViewImages",
             description: "View one or more image files from your file collection. This allows you to see the images, but does not show them to the user.",

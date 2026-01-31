@@ -42,7 +42,17 @@ const ALLOWED_PROPERTIES = new Set([
     'voiceStability',    // voice.settings.stability (0.0 - 1.0)
     'voiceSimilarity',   // voice.settings.similarity (0.0 - 1.0)
     'voiceStyle',        // voice.settings.style (0.0 - 1.0)
-    'voiceSpeakerBoost'  // voice.settings.speakerBoost (boolean)
+    'voiceSpeakerBoost', // voice.settings.speakerBoost (boolean)
+    // Pulse fields (these update nested pulse object)
+    'pulseEnabled',              // pulse.enabled (boolean)
+    'pulseWakeIntervalMinutes',  // pulse.wakeIntervalMinutes (number, 5-1440)
+    'pulseMaxChainDepth',        // pulse.maxChainDepth (number, 1-50)
+    'pulseModel',                // pulse.model (string, model ID)
+    'pulseDailyBudgetWakes',     // pulse.dailyBudgetWakes (number, 1-500)
+    'pulseDailyBudgetTokens',    // pulse.dailyBudgetTokens (number)
+    'pulseActiveHoursStart',     // pulse.activeHours.start (HH:MM)
+    'pulseActiveHoursEnd',       // pulse.activeHours.end (HH:MM)
+    'pulseActiveHoursTimezone',  // pulse.activeHours.tz (IANA timezone)
 ]);
 
 // Valid values for reasoningEffort
@@ -88,7 +98,17 @@ export default {
         voiceStability: { type: 'number', default: undefined },    // voice.settings.stability (0.0 - 1.0)
         voiceSimilarity: { type: 'number', default: undefined },   // voice.settings.similarity (0.0 - 1.0)
         voiceStyle: { type: 'number', default: undefined },        // voice.settings.style (0.0 - 1.0)
-        voiceSpeakerBoost: { type: 'boolean', default: undefined } // voice.settings.speakerBoost
+        voiceSpeakerBoost: { type: 'boolean', default: undefined }, // voice.settings.speakerBoost
+        // Pulse fields - update nested pulse object (life loop)
+        pulseEnabled: { type: 'boolean', default: undefined },
+        pulseWakeIntervalMinutes: { type: 'number', default: undefined },
+        pulseMaxChainDepth: { type: 'number', default: undefined },
+        pulseModel: undefined,
+        pulseDailyBudgetWakes: { type: 'number', default: undefined },
+        pulseDailyBudgetTokens: { type: 'number', default: undefined },
+        pulseActiveHoursStart: undefined,
+        pulseActiveHoursEnd: undefined,
+        pulseActiveHoursTimezone: undefined,
     },
     model: 'oai-gpt41-mini',
     isMutation: true,
@@ -297,6 +317,88 @@ export default {
                     updateData.voice = updateData.voice || {};
                     updateData.voice.settings = updateData.voice.settings || {};
                     updateData.voice.settings.speakerBoost = value === true || value === 'true';
+                } else if (key === 'pulseEnabled') {
+                    updateData.pulse = updateData.pulse || {};
+                    updateData.pulse.enabled = value === true || value === 'true';
+                } else if (key === 'pulseWakeIntervalMinutes') {
+                    const numValue = typeof value === 'number' ? value : parseInt(value, 10);
+                    if (isNaN(numValue) || numValue < 5 || numValue > 1440) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'pulseWakeIntervalMinutes must be between 5 and 1440'
+                        });
+                    }
+                    updateData.pulse = updateData.pulse || {};
+                    updateData.pulse.wakeIntervalMinutes = numValue;
+                } else if (key === 'pulseMaxChainDepth') {
+                    const numValue = typeof value === 'number' ? value : parseInt(value, 10);
+                    if (isNaN(numValue) || numValue < 1 || numValue > 50) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'pulseMaxChainDepth must be between 1 and 50'
+                        });
+                    }
+                    updateData.pulse = updateData.pulse || {};
+                    updateData.pulse.maxChainDepth = numValue;
+                } else if (key === 'pulseModel') {
+                    if (typeof value === 'string' && value.length > 100) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'pulseModel exceeds maximum length of 100 characters'
+                        });
+                    }
+                    updateData.pulse = updateData.pulse || {};
+                    updateData.pulse.model = value || null;
+                } else if (key === 'pulseDailyBudgetWakes') {
+                    const numValue = typeof value === 'number' ? value : parseInt(value, 10);
+                    if (isNaN(numValue) || numValue < 1 || numValue > 500) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'pulseDailyBudgetWakes must be between 1 and 500'
+                        });
+                    }
+                    updateData.pulse = updateData.pulse || {};
+                    updateData.pulse.dailyBudgetWakes = numValue;
+                } else if (key === 'pulseDailyBudgetTokens') {
+                    const numValue = typeof value === 'number' ? value : parseInt(value, 10);
+                    if (isNaN(numValue) || numValue < 10000) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'pulseDailyBudgetTokens must be at least 10000'
+                        });
+                    }
+                    updateData.pulse = updateData.pulse || {};
+                    updateData.pulse.dailyBudgetTokens = numValue;
+                } else if (key === 'pulseActiveHoursStart') {
+                    if (typeof value === 'string' && !/^\d{2}:\d{2}$/.test(value)) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'pulseActiveHoursStart must be in HH:MM format'
+                        });
+                    }
+                    updateData.pulse = updateData.pulse || {};
+                    updateData.pulse.activeHours = updateData.pulse.activeHours || {};
+                    updateData.pulse.activeHours.start = value || null;
+                } else if (key === 'pulseActiveHoursEnd') {
+                    if (typeof value === 'string' && !/^\d{2}:\d{2}$/.test(value)) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'pulseActiveHoursEnd must be in HH:MM format'
+                        });
+                    }
+                    updateData.pulse = updateData.pulse || {};
+                    updateData.pulse.activeHours = updateData.pulse.activeHours || {};
+                    updateData.pulse.activeHours.end = value || null;
+                } else if (key === 'pulseActiveHoursTimezone') {
+                    if (typeof value === 'string' && value.length > 100) {
+                        return JSON.stringify({
+                            success: false,
+                            error: 'pulseActiveHoursTimezone exceeds maximum length'
+                        });
+                    }
+                    updateData.pulse = updateData.pulse || {};
+                    updateData.pulse.activeHours = updateData.pulse.activeHours || {};
+                    updateData.pulse.activeHours.tz = value || 'UTC';
                 } else if (MAX_LENGTHS[key] && typeof value === 'string') {
                     // Check string length limits
                     if (value.length > MAX_LENGTHS[key]) {

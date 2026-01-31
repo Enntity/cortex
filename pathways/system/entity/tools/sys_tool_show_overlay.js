@@ -11,6 +11,7 @@ export default {
         type: "function",
         icon: "🖼️",
         hideExecution: true,
+        toolCost: 1,
         function: {
             name: "ShowOverlay",
             description: "Display an overlay containing images, videos, or text in a prominent area of the UI. Provide an array of items to show in sequence with an optional duration and label. Use this any time you want to show something special to the user outside of the chat markdown - great for showing selfies, etc. The items will be displayed in the order they are provided in the array.",

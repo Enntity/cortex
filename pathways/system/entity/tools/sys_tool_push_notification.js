@@ -9,6 +9,7 @@ export default {
     toolDefinition: { 
         type: "function",
         icon: "🔔",
+        toolCost: 1,
         function: {
             name: "SendPushNotification",
             description: "Send a push notification to the user. Use this when you want to proactively reach out to the user with important updates, reminders, or messages when they may not be actively engaged in conversation. The notification will appear on their device if they have notifications enabled.",

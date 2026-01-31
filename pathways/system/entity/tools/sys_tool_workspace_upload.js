@@ -10,6 +10,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "📤",
+        toolCost: 1,
         function: {
             name: "WorkspaceUpload",
             description: "Upload a file from your workspace container to cloud storage, making it available in your file collection. Use this to share workspace files with the user or persist artifacts. The file is read from the workspace container and uploaded to cloud storage.",

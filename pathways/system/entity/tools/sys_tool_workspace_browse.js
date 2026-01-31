@@ -9,6 +9,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "📂",
+        toolCost: 1,
         function: {
             name: "WorkspaceBrowse",
             description: "List directory contents in your workspace container. Returns file names, types, sizes, and modification dates. Supports recursive listing with configurable depth.",

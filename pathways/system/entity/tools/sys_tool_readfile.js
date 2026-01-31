@@ -93,6 +93,7 @@ export default {
     toolDefinition: { 
         type: "function",
         icon: "📖",
+        toolCost: 1,
         function: {
             name: "ReadTextFile",
             description: "Read text content from a text type file. Can read the file using line ranges (for line-based files) or character ranges (for files like JSON where line-based reading doesn't work well). Use this to access text files from your file collection. Supports text files, markdown files, html, csv, json, and other document formats that can be converted to text. DOES NOT support binary files, images, videos, or audio files or pdfs. Reading large files in chunks is recommended to avoid token limits. Use character ranges (startChar/endChar) for JSON and other structured formats. Use line ranges (startLine/endLine) for code and text files. If no range is specified, reads from the beginning with default limits.",

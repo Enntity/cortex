@@ -9,6 +9,7 @@ export default {
     toolDefinition: {
         type: "function",
         icon: "💻",
+        toolCost: 1,
         function: {
             name: "WorkspaceShell",
             description: "Execute a shell command in your workspace container. Supports sync execution (waits for result), background execution (returns immediately with a processId to poll later), and polling a background process result. Use background mode for long-running commands. The workspace is a full Linux environment where you can install software, run builds, manage services, etc.",
