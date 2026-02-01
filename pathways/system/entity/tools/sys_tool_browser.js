@@ -35,6 +35,21 @@ export default {
         }
     },
 
+    summarize: (content) => {
+        try {
+            const parsed = JSON.parse(content);
+            if (parsed._type === 'SearchResponse' && Array.isArray(parsed.value)) {
+                const compressed = parsed.value.map(r => ({
+                    searchResultId: r.searchResultId,
+                    title: r.title, url: r.url,
+                    content: (r.content || '').substring(0, 500) + (r.content?.length > 500 ? '...' : '')
+                }));
+                return JSON.stringify({ _type: 'SearchResponse', value: compressed, _compressed: true });
+            }
+        } catch { /* not JSON */ }
+        return content.substring(0, 500) + '\n\n[Compressed — full content will be restored for final synthesis]';
+    },
+
     executePathway: async ({args, runAllPrompts, resolver}) => {
         // Check if browser service URL is available
         const browserServiceUrl = config.get('browserServiceUrl');

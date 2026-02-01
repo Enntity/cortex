@@ -169,7 +169,8 @@ export const getAvailableEntities = async (options = {}) => {
                 modelOverride: entity.modelOverride || null,
                 baseModel: entity.baseModel || null,
                 reasoningEffort: entity.reasoningEffort || 'medium',
-                voice: entity.voice || null
+                voice: entity.voice || null,
+                pulse: entity.pulse || null
                 // Note: assocUserIds and createdBy intentionally not exposed for privacy
             };
         });

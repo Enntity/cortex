@@ -31,14 +31,36 @@ class ClaudeAnthropicPlugin extends Claude4VertexPlugin {
 
     // Remove Vertex-specific anthropic_version from body
     delete requestParameters.anthropic_version;
-    
+
     // Add model to request body (required for direct Anthropic API)
     // The model name should come from the endpoint params or model config
-    const modelName = this.model.params?.model || 
+    const modelName = this.model.params?.model ||
                       this.model.endpoints?.[0]?.params?.model ||
                       this.modelName;
     requestParameters.model = modelName;
-    
+
+    // Extended thinking support: map reasoningEffort to budget_tokens
+    // Anthropic uses { thinking: { type: "enabled", budget_tokens: N } }
+    // Minimum budget_tokens is 1024. Thinking is off unless explicitly enabled.
+    const reasoningEffort = parameters.reasoningEffort || this.promptParameters.reasoningEffort;
+    if (reasoningEffort) {
+      const effort = reasoningEffort.toLowerCase();
+      if (effort !== 'none') {
+        const budgetMap = {
+          low: 1024,
+          medium: 4096,
+          high: 16384,
+          xhigh: 65536,
+        };
+        requestParameters.thinking = {
+          type: 'enabled',
+          budget_tokens: budgetMap[effort] || 4096,
+        };
+        // Temperature must be 1 when thinking is enabled
+        requestParameters.temperature = 1;
+      }
+    }
+
     return requestParameters;
   }
 
@@ -69,10 +91,12 @@ class ClaudeAnthropicPlugin extends Claude4VertexPlugin {
     // Set Anthropic-specific headers
     // The x-api-key should already be in the model config headers
     // but we need to add the anthropic-version header
-    cortexRequest.headers = {
+    const headers = {
       ...(cortexRequest.headers || {}),
-      "anthropic-version": "2023-06-01"
+      "anthropic-version": "2023-06-01",
     };
+
+    cortexRequest.headers = headers;
 
     // For direct Anthropic API, authentication is handled via headers in config
     // (x-api-key: {{ANTHROPIC_API_KEY}})

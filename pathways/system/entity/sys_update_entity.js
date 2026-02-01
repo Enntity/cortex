@@ -56,7 +56,7 @@ const ALLOWED_PROPERTIES = new Set([
 ]);
 
 // Valid values for reasoningEffort
-const VALID_REASONING_EFFORTS = new Set(['high', 'medium', 'low']);
+const VALID_REASONING_EFFORTS = new Set(['none', 'high', 'medium', 'low']);
 
 // Max lengths for string fields
 const MAX_LENGTHS = {

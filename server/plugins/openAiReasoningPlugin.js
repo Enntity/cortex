@@ -61,6 +61,10 @@ class OpenAIReasoningPlugin extends OpenAIChatPlugin {
             const effort = reasoningEffort.toLowerCase();
             if (['high', 'medium', 'low'].includes(effort)) {
                 requestParameters.reasoning_effort = effort;
+            } else if (effort === 'xhigh') {
+                requestParameters.reasoning_effort = 'high';
+            } else if (effort === 'none') {
+                requestParameters.reasoning_effort = 'low';
             } else {
                 requestParameters.reasoning_effort = 'low';
             }

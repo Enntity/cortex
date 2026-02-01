@@ -32,8 +32,10 @@ class OpenAIReasoningVisionPlugin extends OpenAIVisionPlugin {
         const reasoningEffort = parameters.reasoningEffort || this.promptParameters.reasoningEffort;
         if (reasoningEffort) {
             const effort = reasoningEffort.toLowerCase();
-            if (['high', 'medium', 'low', 'none'].includes(effort)) {
+            if (['high', 'medium', 'low', 'xhigh'].includes(effort)) {
                 requestParameters.reasoning_effort = effort;
+            } else if (effort === 'none') {
+                requestParameters.reasoning_effort = 'minimal';
             } else {
                 requestParameters.reasoning_effort = 'low';
             }

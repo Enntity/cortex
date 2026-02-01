@@ -35,7 +35,7 @@ Tool Use Guidelines:
 - Only call one tool at a time.
 - Prioritize the most specific tool for the task at hand.
 - For ambiguous requests, consider using the Reason tool to plan a multi-step approach.
-- Always use the Image tool for image generation unless explicitly directed to use CodeExecution.
+- Always use the Image tool for image generation.
 - If the user explicitly asks you to use a tool, you must use it.
 `;
 

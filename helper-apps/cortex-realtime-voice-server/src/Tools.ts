@@ -98,7 +98,7 @@ export class Tools {
       {
         type: 'function',
         name: 'Image',
-        description: 'Use this tool when asked to create, generate, or revise visual content including selfies, photographs, illustrations, diagrams, or any other type of image. You pass in detailed instructions about the image(s) you want to create in detailedInstructions. This tool only creates images - it cannot manipulate images (e.g. it cannot crop, rotate, or resize an existing image) - for those tasks you will need to use the CodeExecution tool.',
+        description: 'Use this tool when asked to create, generate, or revise visual content including selfies, photographs, illustrations, diagrams, or any other type of image. You pass in detailed instructions about the image(s) you want to create in detailedInstructions. This tool only creates images - it cannot manipulate images (e.g. it cannot crop, rotate, or resize an existing image).',
         parameters: {
           type: "object",
           properties: {
@@ -153,18 +153,6 @@ export class Tools {
       //       codingPrompt: {type: "string"}
       //     },
       //     required: ["codingPrompt"]
-      //   },
-      // },
-      // {
-      //   type: 'function',
-      //   name: 'CodeExecution',
-      //   description: 'Use when explicitly asked to run or execute code, or when a coding agent is needed to perform specific tasks that require code execution like data analysis, data processing, image processing, or business intelligence tasks.',
-      //   parameters: {
-      //     type: "object",
-      //     properties: {
-      //       codeExecutionPrompt: {type: "string"}
-      //     },
-      //     required: ["codeExecutionPrompt"]
       //   },
       // },
       // {

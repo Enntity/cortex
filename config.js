@@ -923,7 +923,8 @@ const buildPathways = async (config) => {
                     // Add tool to entityTools registry
                     entityTools[name] = {
                         definition: toolDef,
-                        pathwayName: key
+                        pathwayName: key,
+                        summarize: pathway.summarize || null
                     };
 
                     logger.info(`Registered tool ${name} from pathway ${key}`);

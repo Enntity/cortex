@@ -6,17 +6,459 @@ const TOOL_TIMEOUT_MS = 120000; // 2 minute timeout per tool call
 const MAX_TOOL_RESULT_LENGTH = 150000; // Truncate oversized tool results to prevent context overflow
 const CONTEXT_COMPRESSION_THRESHOLD = 0.7; // Compress when context reaches 70% of model limit
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000; // Default context limit if not available from model
+const TOOL_LOOP_MODEL = 'oai-gpt5-mini'; // Cheap model for tool orchestration during tool loop
+const SYNTHESIS_TOOLS = true; // true = synthesis can call tools, false = synthesis is text-only
+
+// Normalize token usage across providers into { inputTokens, outputTokens, totalTokens }
+function summarizeUsage(usage) {
+    if (!usage) return undefined;
+    const entries = Array.isArray(usage) ? usage : [usage];
+    let inputTokens = 0;
+    let outputTokens = 0;
+    for (const u of entries) {
+        if (!u) continue;
+        inputTokens += u.prompt_tokens || u.input_tokens || u.promptTokenCount || 0;
+        outputTokens += u.completion_tokens || u.output_tokens || u.candidatesTokenCount || 0;
+    }
+    if (inputTokens === 0 && outputTokens === 0) return undefined;
+    return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
 
 import { callPathway, callTool, say, sendToolStart, sendToolFinish, withTimeout } from '../../../lib/pathwayTools.js';
 import { publishRequestProgress } from '../../../lib/redisSubscription.js';
 import { encode } from '../../../lib/encodeCache.js';
 import logger from '../../../lib/logger.js';
+import { logEvent, logEventError, logEventDebug } from '../../../lib/requestLogger.js';
 import { config } from '../../../config.js';
 import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
 import { Prompt } from '../../../server/prompt.js';
 import { getToolsForEntity, loadEntityConfig } from './tools/shared/sys_entity_tools.js';
+import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults } from './tools/shared/tool_result_compression.js';
 import CortexResponse from '../../../lib/cortexResponse.js';
 import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
+
+// Merge parallel tool results into a single assistant message + tool result messages.
+// Each tool's messages array ends with [assistant(one_tool_call), tool_result].
+// We combine all tool_calls into ONE assistant message so the model sees them as
+// parallel (not sequential) — sequential split confuses synthesis with tool_choice:none.
+export function mergeParallelToolResults(toolResults, preToolCallMessages) {
+    const merged = [];
+    const allToolCallEntries = [];
+    const allToolResultMessages = [];
+    for (const result of toolResults) {
+        if (!result?.messages) continue;
+        try {
+            const newMessages = result.messages.slice(preToolCallMessages.length);
+            for (const msg of newMessages) {
+                if (msg.role === 'assistant' && msg.tool_calls) {
+                    allToolCallEntries.push(...msg.tool_calls);
+                } else if (msg.role === 'tool') {
+                    allToolResultMessages.push(msg);
+                } else {
+                    allToolResultMessages.push(msg);
+                }
+            }
+        } catch { /* skip unmerge-able result */ }
+    }
+    if (allToolCallEntries.length > 0) {
+        merged.push({
+            role: 'assistant',
+            content: '',
+            tool_calls: allToolCallEntries,
+        });
+        merged.push(...allToolResultMessages);
+    }
+    return merged;
+}
+
+// Extract tool_calls from either CortexResponse or plain objects
+export function extractToolCalls(message) {
+    if (!message) return [];
+    if (message instanceof CortexResponse) {
+        const calls = [...(message.toolCalls || [])];
+        if (message.functionCall) calls.push(message.functionCall);
+        return calls;
+    }
+    return [...(message.tool_calls || [])];
+}
+
+// Process one round of tool calls: execute tools in parallel, merge results,
+// update budget/round, handle pulse logging, challenge injection, truncation,
+// and compression. Returns { messages, budgetExhausted }.
+async function processToolCallRound(toolCalls, args, pathwayResolver, entityTools, entityToolsOpenAiFormat) {
+    const preToolCallMessages = JSON.parse(JSON.stringify(args.chatHistory || []));
+    let finalMessages = JSON.parse(JSON.stringify(preToolCallMessages));
+
+    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+
+    if (!toolCalls || toolCalls.length === 0) {
+        return { messages: finalMessages, budgetExhausted: false };
+    }
+
+    if (pathwayResolver.toolBudgetUsed >= TOOL_BUDGET) {
+        finalMessages = insertSystemMessage(finalMessages,
+            "Tool budget exhausted - no more tool calls will be executed. Provide your response based on the information gathered so far.",
+            requestId
+        );
+        args.chatHistory = finalMessages;
+        return { messages: finalMessages, budgetExhausted: true };
+    }
+
+    // Filter out any undefined or invalid tool calls
+    const invalidToolCalls = toolCalls.filter(tc => !tc || !tc.function || !tc.function.name);
+    if (invalidToolCalls.length > 0) {
+        logEvent(requestId, 'tool.round', { round: (pathwayResolver.toolCallRound || 0) + 1, invalidCount: invalidToolCalls.length, budgetExhausted: true });
+        pathwayResolver.toolBudgetUsed = TOOL_BUDGET;
+        args.chatHistory = finalMessages;
+        return { messages: finalMessages, budgetExhausted: true };
+    }
+
+    const validToolCalls = toolCalls.filter(tc => tc && tc.function && tc.function.name);
+
+    const toolResults = await Promise.all(validToolCalls.map(async (toolCall) => {
+        const toolFunction = toolCall?.function?.name?.toLowerCase() || 'unknown';
+        const toolCallId = toolCall?.id;
+        const toolStart = Date.now();
+
+        try {
+            if (!toolCall?.function?.arguments) {
+                throw new Error('Invalid tool call structure: missing function arguments');
+            }
+
+            const toolArgs = JSON.parse(toolCall.function.arguments);
+            const toolMessages = JSON.parse(JSON.stringify(preToolCallMessages));
+
+            // Duplicate tool call detection: skip re-execution and return cached result
+            const cacheKey = `${toolCall.function.name}:${toolCall.function.arguments}`;
+            const cachedResult = pathwayResolver.toolCallCache?.get(cacheKey);
+            if (cachedResult) {
+                logEvent(requestId, 'tool.exec', {
+                    tool: toolCall.function.name,
+                    round: (pathwayResolver.toolCallRound || 0) + 1,
+                    durationMs: 0,
+                    success: true,
+                    duplicate: true,
+                });
+                const toolCallEntry = {
+                    id: toolCall.id,
+                    type: "function",
+                    function: { name: toolCall.function.name, arguments: JSON.stringify(toolArgs) }
+                };
+                if (toolCall.thoughtSignature) toolCallEntry.thoughtSignature = toolCall.thoughtSignature;
+                toolMessages.push({ role: "assistant", content: "", tool_calls: [toolCallEntry] });
+                toolMessages.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    name: toolCall.function.name,
+                    content: `This tool was already called with these exact arguments. Previous result: ${cachedResult}`,
+                });
+                return { messages: toolMessages, success: true };
+            }
+
+            const toolDefinition = entityTools[toolFunction]?.definition;
+            const toolIcon = toolDefinition?.icon || '🛠️';
+            const hideExecution = toolDefinition?.hideExecution === true;
+            const toolTimeout = toolDefinition?.timeout || TOOL_TIMEOUT_MS;
+
+            const voiceFallbacks = {
+                'GoogleSearch': 'Let me look that up.',
+                'GoogleNews': 'Checking the news.',
+                'SearchX': 'Searching for that now.',
+                'GenerateImage': 'Creating that image for you.',
+                'EditImage': 'Working on that image.',
+                'AnalyzeFile': 'Taking a look at that.',
+                'AnalyzeImage': 'Looking at this image.',
+                'CallModel': 'Let me think about that.',
+                'DelegateCreative': 'Working on that for you.',
+                'Planner': 'Planning that out.',
+                'WebBrowser': 'Checking that page.',
+                'default': 'One moment.'
+            };
+            const toolName = toolCall.function.name;
+            const fallbackMessage = voiceFallbacks[toolName] || voiceFallbacks.default;
+            const toolUserMessage = toolArgs.userMessage || fallbackMessage;
+
+            if (!hideExecution) {
+                try {
+                    await sendToolStart(requestId, toolCallId, toolIcon, toolUserMessage, toolCall.function.name, toolArgs);
+                } catch { /* UI event failure — non-fatal */ }
+            }
+
+            const toolResult = await withTimeout(
+                callTool(toolFunction, {
+                    ...args,
+                    ...toolArgs,
+                    toolFunction,
+                    chatHistory: toolMessages,
+                    stream: false,
+                    useMemory: false
+                }, entityTools, pathwayResolver),
+                toolTimeout,
+                `Tool ${toolCall.function.name} timed out after ${toolTimeout / 1000}s`
+            );
+
+            const toolCallEntry = {
+                id: toolCall.id,
+                type: "function",
+                function: {
+                    name: toolCall.function.name,
+                    arguments: JSON.stringify(toolArgs)
+                }
+            };
+            if (toolCall.thoughtSignature) {
+                toolCallEntry.thoughtSignature = toolCall.thoughtSignature;
+            }
+            toolMessages.push({
+                role: "assistant",
+                content: "",
+                tool_calls: [toolCallEntry]
+            });
+
+            let toolResultContent;
+            if (typeof toolResult === 'string') {
+                toolResultContent = toolResult;
+            } else if (typeof toolResult?.result === 'string') {
+                toolResultContent = toolResult.result;
+            } else if (toolResult?.result !== undefined) {
+                toolResultContent = JSON.stringify(toolResult.result);
+            } else {
+                toolResultContent = JSON.stringify(toolResult);
+            }
+
+            toolMessages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                name: toolCall.function.name,
+                content: toolResultContent
+            });
+
+            // Cache successful tool results for duplicate detection
+            pathwayResolver.toolCallCache?.set(cacheKey, toolResultContent);
+
+            let hasError = false;
+            let errorMessage = null;
+
+            if (toolResult?.error !== undefined) {
+                hasError = true;
+                errorMessage = typeof toolResult.error === 'string' ? toolResult.error : String(toolResult.error);
+            } else if (toolResult?.result) {
+                if (typeof toolResult.result === 'string') {
+                    try {
+                        const parsed = JSON.parse(toolResult.result);
+                        if (parsed.error !== undefined) {
+                            hasError = true;
+                            if (parsed.message) {
+                                errorMessage = parsed.message;
+                            } else if (typeof parsed.error === 'string') {
+                                errorMessage = parsed.error;
+                            } else {
+                                errorMessage = `Tool ${toolCall?.function?.name || 'unknown'} returned an error`;
+                            }
+                        }
+                    } catch (e) {
+                        // Not JSON, ignore
+                    }
+                } else if (typeof toolResult.result === 'object' && toolResult.result !== null) {
+                    if (toolResult.result.error !== undefined) {
+                        hasError = true;
+                        if (toolResult.result.message) {
+                            errorMessage = toolResult.result.message;
+                        } else if (typeof toolResult.result.error === 'string') {
+                            errorMessage = toolResult.result.error;
+                        } else {
+                            errorMessage = `Tool ${toolCall?.function?.name || 'unknown'} returned an error`;
+                        }
+                    }
+                }
+            }
+
+            if (!hideExecution) {
+                try {
+                    await sendToolFinish(requestId, toolCallId, !hasError, errorMessage, toolCall.function.name);
+                } catch { /* UI event failure — non-fatal */ }
+            }
+
+            logEvent(requestId, 'tool.exec', {
+                tool: toolCall.function.name,
+                round: (pathwayResolver.toolCallRound || 0) + 1,
+                durationMs: Date.now() - toolStart,
+                success: !hasError,
+                ...(hasError && { error: errorMessage }),
+                resultChars: toolResultContent?.length || 0,
+                ...(toolResultContent?.length > MAX_TOOL_RESULT_LENGTH && { truncated: true }),
+            });
+
+            return {
+                success: !hasError,
+                result: toolResult,
+                error: errorMessage,
+                toolCall,
+                toolArgs,
+                toolFunction,
+                messages: toolMessages
+            };
+        } catch (error) {
+            logEvent(requestId, 'tool.exec', {
+                tool: toolCall?.function?.name || 'unknown',
+                round: (pathwayResolver.toolCallRound || 0) + 1,
+                durationMs: Date.now() - toolStart,
+                success: false,
+                error: error.message,
+                timeout: !!error.message?.includes('timed out'),
+            });
+
+            const errorToolDefinition = entityTools[toolFunction]?.definition;
+            const hideExecution = errorToolDefinition?.hideExecution === true;
+            if (!hideExecution) {
+                try {
+                    await sendToolFinish(requestId, toolCallId, false, error.message, toolCall?.function?.name || null);
+                } catch { /* UI event failure — non-fatal */ }
+            }
+
+            const errorMessages = JSON.parse(JSON.stringify(preToolCallMessages));
+            const errorToolCallEntry = {
+                id: toolCall?.id,
+                type: "function",
+                function: {
+                    name: toolCall?.function?.name || toolFunction,
+                    arguments: typeof toolCall?.function?.arguments === 'string'
+                        ? toolCall.function.arguments
+                        : JSON.stringify(toolCall?.function?.arguments || {})
+                }
+            };
+            if (toolCall?.thoughtSignature) {
+                errorToolCallEntry.thoughtSignature = toolCall.thoughtSignature;
+            }
+            errorMessages.push({
+                role: "assistant",
+                content: "",
+                tool_calls: [errorToolCallEntry]
+            });
+            errorMessages.push({
+                role: "tool",
+                tool_call_id: toolCall?.id || toolCallId,
+                name: toolCall?.function?.name || toolFunction,
+                content: `Error: ${error.message}`
+            });
+
+            return {
+                success: false,
+                error: error.message,
+                toolCall,
+                toolArgs: toolCall?.function?.arguments ?
+                    (typeof toolCall.function.arguments === 'string'
+                        ? JSON.parse(toolCall.function.arguments)
+                        : toolCall.function.arguments)
+                    : {},
+                toolFunction,
+                messages: errorMessages
+            };
+        }
+    }));
+
+    // Merge parallel tool calls into one assistant message + tool results
+    const mergedMessages = mergeParallelToolResults(toolResults, preToolCallMessages);
+    finalMessages.push(...mergedMessages);
+
+    const failedTools = toolResults.filter(result => result && !result.success);
+
+    const budgetCost = toolResults.reduce((sum, r) => {
+        const def = entityTools[r.toolFunction]?.definition;
+        return sum + (def?.toolCost ?? DEFAULT_TOOL_COST);
+    }, 0);
+    pathwayResolver.toolBudgetUsed = (pathwayResolver.toolBudgetUsed || 0) + budgetCost;
+    pathwayResolver.toolCallRound = (pathwayResolver.toolCallRound || 0) + 1;
+
+    logEvent(requestId, 'tool.round', {
+        round: pathwayResolver.toolCallRound,
+        toolCount: validToolCalls.length,
+        failed: failedTools.length,
+        budgetUsed: pathwayResolver.toolBudgetUsed,
+        budgetTotal: TOOL_BUDGET,
+    });
+
+    // Accumulate tool activity for post-loop synthesis (pulse only)
+    if (args.invocationType === 'pulse') {
+        if (!pathwayResolver.pulseToolActivity) pathwayResolver.pulseToolActivity = [];
+        for (const r of toolResults) {
+            const argsStr = JSON.stringify(r.toolArgs || {});
+            const argsSummary = argsStr.length > 300 ? argsStr.slice(0, 200) + '...' + argsStr.slice(-100) : argsStr;
+
+            let resultStr = '';
+            if (r.error) {
+                resultStr = `ERROR: ${r.error}`;
+            } else {
+                const raw = typeof r.result?.result === 'string'
+                    ? r.result.result
+                    : JSON.stringify(r.result?.result ?? 'ok');
+                resultStr = raw.length > 400 ? raw.slice(0, 200) + ' [...] ' + raw.slice(-200) : raw;
+            }
+
+            pathwayResolver.pulseToolActivity.push(
+                `${r.toolFunction}(${argsSummary}) → ${resultStr}`
+            );
+        }
+    }
+
+    // Check if any of the executed tools are hand-off tools (async agents)
+    const hasHandoffTool = toolResults.some(result => {
+        if (!result || !result.toolFunction) return false;
+        const toolDefinition = entityTools[result.toolFunction]?.definition;
+        return toolDefinition?.handoff === true;
+    });
+
+    // Inject challenge message after tools are executed to encourage task completion
+    const RESEARCH_ENCOURAGEMENT_LIMIT = 3;
+    if (!hasHandoffTool && args.researchMode && pathwayResolver.toolCallRound <= RESEARCH_ENCOURAGEMENT_LIMIT) {
+        finalMessages = insertSystemMessage(finalMessages,
+            "Review the tool results above. If the information gathered is clearly insufficient for the task, call additional tools. If you have gathered reasonable information from multiple sources, proceed to respond to the user.",
+            requestId
+        );
+    }
+
+    // Truncate oversized individual tool results
+    let processedMessages = finalMessages.map(msg => {
+        if (msg.role === 'tool' && msg.content && msg.content.length > MAX_TOOL_RESULT_LENGTH) {
+            return {
+                ...msg,
+                content: msg.content.substring(0, MAX_TOOL_RESULT_LENGTH) + '\n\n[Content truncated due to length]'
+            };
+        }
+        return msg;
+    });
+
+    // Register large tool results in the compression store
+    for (const msg of processedMessages) {
+        if (msg.role === 'tool' && msg.tool_call_id &&
+            msg.content && msg.content.length > COMPRESSION_THRESHOLD &&
+            !pathwayResolver.toolResultStore.has(msg.tool_call_id)) {
+            pathwayResolver.toolResultStore.set(msg.tool_call_id, {
+                toolName: msg.name || 'unknown',
+                fullContent: msg.content,
+                charCount: msg.content.length,
+                round: pathwayResolver.toolCallRound,
+                compressed: false
+            });
+        }
+    }
+
+    // Compress older large tool results
+    processedMessages = compressOlderToolResults(processedMessages, pathwayResolver.toolResultStore, pathwayResolver.toolCallRound, entityTools);
+
+    // Compress context if approaching model limits
+    try {
+        processedMessages = await compressContextIfNeeded(processedMessages, pathwayResolver, args);
+    } catch (compressionError) {
+        logEventError(requestId, 'request.error', { phase: 'compression', error: compressionError.message });
+    }
+
+    args.chatHistory = processedMessages;
+
+    // clear any accumulated pathwayResolver errors from the tools
+    pathwayResolver.errors = [];
+
+    return { messages: processedMessages, budgetExhausted: pathwayResolver.toolBudgetUsed >= TOOL_BUDGET };
+}
 
 // Helper function to generate a smart error response using the agent
 async function generateErrorResponse(error, args, pathwayResolver) {
@@ -43,7 +485,7 @@ async function generateErrorResponse(error, args, pathwayResolver) {
 }
 
 // Helper function to insert a system message, removing any existing ones first
-function insertSystemMessage(messages, text, requestId = null) {
+export function insertSystemMessage(messages, text, requestId = null) {
     // Create a unique marker to avoid collisions with legitimate content
     const marker = requestId ? `[system message: ${requestId}]` : '[system message]';
     
@@ -189,9 +631,9 @@ async function compressContextIfNeeded(messages, pathwayResolver, args) {
     if (currentTokens <= threshold) {
         return messages; // No compression needed
     }
-    
-    logger.info(`Context compression triggered: ${currentTokens} tokens (${((currentTokens/maxTokens)*100).toFixed(0)}% of ${maxTokens} limit)`);
-    
+
+    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+
     // Separate system messages (always keep)
     const systemMessages = messages.filter(m => m.role === 'system');
     const nonSystemMessages = messages.filter(m => m.role !== 'system');
@@ -200,7 +642,6 @@ async function compressContextIfNeeded(messages, pathwayResolver, args) {
     const splitIndex = findSafeSplitPoint(nonSystemMessages);
     
     if (splitIndex < 3) {
-        logger.debug('Not enough messages to compress');
         return messages; // Not enough to compress
     }
     
@@ -210,7 +651,6 @@ async function compressContextIfNeeded(messages, pathwayResolver, args) {
     // Count tool-related messages to compress
     const toolMessages = toCompress.filter(m => m.tool_calls || m.role === 'tool');
     if (toolMessages.length < 2) {
-        logger.debug('Not enough tool messages to compress');
         return messages; // Not enough tool data to warrant compression
     }
     
@@ -228,7 +668,6 @@ async function compressContextIfNeeded(messages, pathwayResolver, args) {
     }
     
     // Send tool UI message
-    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
     const compressId = `compress-${Date.now()}`;
     try {
         await sendToolStart(requestId, compressId, '🗜️', 'Compacting conversation context...', 'ContextCompression');
@@ -268,7 +707,6 @@ async function compressContextIfNeeded(messages, pathwayResolver, args) {
         const validatedToKeep = toKeep.filter(msg => {
             if (msg.role === 'tool' && msg.tool_call_id) {
                 if (!toolCallsInKeep.has(msg.tool_call_id)) {
-                    logger.warn(`Removing orphaned tool result ${msg.tool_call_id} during compression`);
                     return false;
                 }
             }
@@ -284,13 +722,19 @@ async function compressContextIfNeeded(messages, pathwayResolver, args) {
         ];
         
         const newTokens = estimateTokens(compressed);
-        logger.info(`Context compressed: ${currentTokens} -> ${newTokens} tokens (${toolMessages.length} tool messages summarized)`);
-        
+        logEvent(requestId, 'compression', {
+            type: 'context',
+            beforeTokens: currentTokens,
+            afterTokens: newTokens,
+            pctOfLimit: Math.round((currentTokens / maxTokens) * 100),
+            toolMsgCount: toolMessages.length,
+        });
+
         await sendToolFinish(requestId, compressId, true, null, 'ContextCompression');
         
         return compressed;
     } catch (error) {
-        logger.error(`Context compression failed: ${error.message}`);
+        logEventError(requestId, 'request.error', { phase: 'compression', error: error.message });
         await sendToolFinish(requestId, compressId, false, error.message, 'ContextCompression');
         return messages; // Return original on failure
     }
@@ -331,436 +775,171 @@ export default {
             return;
         }
 
-        // Handle both CortexResponse objects and plain message objects
-        let tool_calls;
-        if (message instanceof CortexResponse) {
-            tool_calls = [...(message.toolCalls || [])];
-            if (message.functionCall) {
-                tool_calls.push(message.functionCall);
-            }
-        } else {
-            tool_calls = [...(message.tool_calls || [])];
-        }
-        
         const pathwayResolver = resolver;
         const { entityTools, entityToolsOpenAiFormat } = args;
 
         pathwayResolver.toolBudgetUsed = (pathwayResolver.toolBudgetUsed || 0);
         pathwayResolver.toolCallRound = (pathwayResolver.toolCallRound || 0);
+        if (!pathwayResolver.toolResultStore) pathwayResolver.toolResultStore = new Map();
+        if (!pathwayResolver.toolCallCache) pathwayResolver.toolCallCache = new Map();
 
-        const preToolCallMessages = JSON.parse(JSON.stringify(args.chatHistory || []));
-        let finalMessages = JSON.parse(JSON.stringify(preToolCallMessages));
+        let currentToolCalls = extractToolCalls(message);
 
-        if (tool_calls && tool_calls.length > 0) {
-            if (pathwayResolver.toolBudgetUsed < TOOL_BUDGET) {
-                // Execute tool calls in parallel but with isolated message histories
-                // Filter out any undefined or invalid tool calls
-                const invalidToolCalls = tool_calls.filter(tc => !tc || !tc.function || !tc.function.name);
-                if (invalidToolCalls.length > 0) {
-                    logger.warn(`Found ${invalidToolCalls.length} invalid tool calls: ${JSON.stringify(invalidToolCalls, null, 2)}`);
-                    // bail out if we're getting invalid tool calls
-                    pathwayResolver.toolBudgetUsed = TOOL_BUDGET;
-                }
-                
-                const validToolCalls = tool_calls.filter(tc => tc && tc.function && tc.function.name);
-                
-                const toolResults = await Promise.all(validToolCalls.map(async (toolCall) => {
-                    // Get tool info for error handling even if early failure
-                    const toolFunction = toolCall?.function?.name?.toLowerCase() || 'unknown';
-                    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
-                    const toolCallId = toolCall?.id;
-                    
-                    try {
-                        if (!toolCall?.function?.arguments) {
-                            throw new Error('Invalid tool call structure: missing function arguments');
-                        }
-
-                        const toolArgs = JSON.parse(toolCall.function.arguments);
-                        
-                        // Create an isolated copy of messages for this tool
-                        const toolMessages = JSON.parse(JSON.stringify(preToolCallMessages));
-                        
-                        // Get the tool definition to check for icon and visibility
-                        const toolDefinition = entityTools[toolFunction]?.definition;
-                        const toolIcon = toolDefinition?.icon || '🛠️';
-                        const hideExecution = toolDefinition?.hideExecution === true;
-                        
-                        // Get timeout from tool definition or use default
-                        const toolTimeout = toolDefinition?.timeout || TOOL_TIMEOUT_MS;
-
-                        // Get the user message for the tool - use natural voice-friendly fallbacks
-                        const voiceFallbacks = {
-                            'GoogleSearch': 'Let me look that up.',
-                            'GoogleNews': 'Checking the news.',
-                            'SearchX': 'Searching for that now.',
-                            'GenerateImage': 'Creating that image for you.',
-                            'EditImage': 'Working on that image.',
-                            'AnalyzeFile': 'Taking a look at that.',
-                            'AnalyzeImage': 'Looking at this image.',
-                            'CallModel': 'Let me think about that.',
-                            'DelegateCreative': 'Working on that for you.',
-                            'Planner': 'Planning that out.',
-                            'WebBrowser': 'Checking that page.',
-                            'default': 'One moment.'
-                        };
-                        const toolName = toolCall.function.name;
-                        const fallbackMessage = voiceFallbacks[toolName] || voiceFallbacks.default;
-                        const toolUserMessage = toolArgs.userMessage || fallbackMessage;
-                        
-                        // Send tool start message (unless execution is hidden)
-                        if (!hideExecution) {
-                            try {
-                                await sendToolStart(requestId, toolCallId, toolIcon, toolUserMessage, toolCall.function.name, toolArgs);
-                            } catch (startError) {
-                                logger.error(`Error sending tool start message: ${startError.message}`);
-                                // Continue execution even if start message fails
-                            }
-                        }
-
-                        // Wrap tool call with timeout to prevent hanging
-                        const toolResult = await withTimeout(
-                            callTool(toolFunction, {
-                                ...args,
-                                ...toolArgs,
-                                toolFunction,
-                                chatHistory: toolMessages,
-                                stream: false,
-                                useMemory: false  // Disable memory synthesis for tool calls
-                            }, entityTools, pathwayResolver),
-                            toolTimeout,
-                            `Tool ${toolCall.function.name} timed out after ${toolTimeout / 1000}s`
-                        );
-
-                        // Tool calls and results need to be paired together in the message history
-                        // Add the tool call to the isolated message history
-                        // Preserve thoughtSignature for Gemini 3+ models
-                        const toolCallEntry = {
-                            id: toolCall.id,
-                            type: "function",
-                            function: {
-                                name: toolCall.function.name,
-                                arguments: JSON.stringify(toolArgs)
-                            }
-                        };
-                        if (toolCall.thoughtSignature) {
-                            toolCallEntry.thoughtSignature = toolCall.thoughtSignature;
-                        }
-                        toolMessages.push({
-                            role: "assistant",
-                            content: "",
-                            tool_calls: [toolCallEntry]
-                        });
-
-                        // Add the tool result to the isolated message history
-                        // Extract the result - if it's already a string, use it directly; only stringify objects
-                        let toolResultContent;
-                        if (typeof toolResult === 'string') {
-                            toolResultContent = toolResult;
-                        } else if (typeof toolResult?.result === 'string') {
-                            toolResultContent = toolResult.result;
-                        } else if (toolResult?.result !== undefined) {
-                            toolResultContent = JSON.stringify(toolResult.result);
-                        } else {
-                            toolResultContent = JSON.stringify(toolResult);
-                        }
-
-                        toolMessages.push({
-                            role: "tool",
-                            tool_call_id: toolCall.id,
-                            name: toolCall.function.name,
-                            content: toolResultContent
-                        });
-
-                        // Check for errors in tool result
-                        // callTool returns { result: parsedResult, toolImages: [] }
-                        // We need to check if result has an error field
-                        let hasError = false;
-                        let errorMessage = null;
-                        
-                        if (toolResult?.error !== undefined) {
-                            // Direct error from callTool (e.g., tool returned null)
-                            hasError = true;
-                            errorMessage = typeof toolResult.error === 'string' ? toolResult.error : String(toolResult.error);
-                        } else if (toolResult?.result) {
-                            // Check if result is a string that might contain error JSON
-                            if (typeof toolResult.result === 'string') {
-                                try {
-                                    const parsed = JSON.parse(toolResult.result);
-                                    if (parsed.error !== undefined) {
-                                        hasError = true;
-                                        // Tools return { error: true, message: "..." } so we want the message field
-                                        if (parsed.message) {
-                                            errorMessage = parsed.message;
-                                        } else if (typeof parsed.error === 'string') {
-                                            errorMessage = parsed.error;
-                                        } else {
-                                            // error is true/boolean, so use a generic message
-                                            errorMessage = `Tool ${toolCall?.function?.name || 'unknown'} returned an error`;
-                                        }
-                                    }
-                                } catch (e) {
-                                    // Not JSON, ignore
-                                }
-                            } else if (typeof toolResult.result === 'object' && toolResult.result !== null) {
-                                // Check if result object has error field
-                                if (toolResult.result.error !== undefined) {
-                                    hasError = true;
-                                    // Tools return { error: true, message: "..." } so we want the message field
-                                    // If message exists, use it; otherwise fall back to error field (if it's a string)
-                                    if (toolResult.result.message) {
-                                        errorMessage = toolResult.result.message;
-                                    } else if (typeof toolResult.result.error === 'string') {
-                                        errorMessage = toolResult.result.error;
-                                    } else {
-                                        // error is true/boolean, so use a generic message
-                                        errorMessage = `Tool ${toolCall?.function?.name || 'unknown'} returned an error`;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Send tool finish message (unless execution is hidden)
-                        if (!hideExecution) {
-                            try {
-                                await sendToolFinish(requestId, toolCallId, !hasError, errorMessage, toolCall.function.name);
-                            } catch (finishError) {
-                                logger.error(`Error sending tool finish message: ${finishError.message}`);
-                                // Continue execution even if finish message fails
-                            }
-                        }
-
-                        return { 
-                            success: !hasError, 
-                            result: toolResult,
-                            error: errorMessage,
-                            toolCall,
-                            toolArgs,
-                            toolFunction,
-                            messages: toolMessages
-                        };
-                    } catch (error) {
-                        // Detect if this is a timeout error for clearer logging
-                        const isTimeout = error.message?.includes('timed out');
-                        logger.error(`${isTimeout ? 'Timeout' : 'Error'} executing tool ${toolCall?.function?.name || 'unknown'}: ${error.message}`);
-                        
-                        // Send tool finish message (error) - unless execution is hidden
-                        // requestId, toolCallId, and toolFunction are defined at the start of this block
-                        const errorToolDefinition = entityTools[toolFunction]?.definition;
-                        const hideExecution = errorToolDefinition?.hideExecution === true;
-                        if (!hideExecution) {
-                            try {
-                                await sendToolFinish(requestId, toolCallId, false, error.message, toolCall?.function?.name || null);
-                            } catch (finishError) {
-                                logger.error(`Error sending tool finish message: ${finishError.message}`);
-                                // Continue execution even if finish message fails
-                            }
-                        }
-                        
-                        // Create error message history
-                        const errorMessages = JSON.parse(JSON.stringify(preToolCallMessages));
-                        // Preserve thoughtSignature for Gemini 3+ models
-                        const errorToolCallEntry = {
-                            id: toolCall?.id,
-                            type: "function",
-                            function: {
-                                name: toolCall?.function?.name || toolFunction,
-                                arguments: typeof toolCall?.function?.arguments === 'string' 
-                                    ? toolCall.function.arguments 
-                                    : JSON.stringify(toolCall?.function?.arguments || {})
-                            }
-                        };
-                        if (toolCall?.thoughtSignature) {
-                            errorToolCallEntry.thoughtSignature = toolCall.thoughtSignature;
-                        }
-                        errorMessages.push({
-                            role: "assistant",
-                            content: "",
-                            tool_calls: [errorToolCallEntry]
-                        });
-                        errorMessages.push({
-                            role: "tool",
-                            tool_call_id: toolCall?.id || toolCallId,
-                            name: toolCall?.function?.name || toolFunction,
-                            content: `Error: ${error.message}`
-                        });
-
-                        return { 
-                            success: false, 
-                            error: error.message,
-                            toolCall,
-                            toolArgs: toolCall?.function?.arguments ? 
-                                (typeof toolCall.function.arguments === 'string' 
-                                    ? JSON.parse(toolCall.function.arguments) 
-                                    : toolCall.function.arguments) 
-                                : {},
-                            toolFunction,
-                            messages: errorMessages
-                        };
-                    }
-                }));
-
-                // Merge all message histories in order
-                for (const result of toolResults) {
-                    try {
-                        if (!result?.messages) {
-                            logger.error('Invalid tool result structure, skipping message history update');
-                            continue;
-                        }
-
-                        // Add only the new messages from this tool's history
-                        const newMessages = result.messages.slice(preToolCallMessages.length);
-                        finalMessages.push(...newMessages);
-                    } catch (error) {
-                        logger.error(`Error merging message history for tool result: ${error.message}`);
-                    }
-                }
-
-                // Check if any tool calls failed
-                const failedTools = toolResults.filter(result => result && !result.success);
-                if (failedTools.length > 0) {
-                    logger.warn(`Some tool calls failed: ${failedTools.map(t => t.error).join(', ')}`);
-                }
-
-                const budgetCost = toolResults.reduce((sum, r) => {
-                    const def = entityTools[r.toolFunction]?.definition;
-                    return sum + (def?.toolCost ?? DEFAULT_TOOL_COST);
-                }, 0);
-                pathwayResolver.toolBudgetUsed = (pathwayResolver.toolBudgetUsed || 0) + budgetCost;
-                pathwayResolver.toolCallRound = (pathwayResolver.toolCallRound || 0) + 1;
-
-                // Accumulate tool activity for post-loop synthesis (pulse only)
-                if (args.invocationType === 'pulse') {
-                    if (!pathwayResolver.pulseToolActivity) pathwayResolver.pulseToolActivity = [];
-                    for (const r of toolResults) {
-                        const argsStr = JSON.stringify(r.toolArgs || {});
-                        const argsSummary = argsStr.length > 300 ? argsStr.slice(0, 200) + '...' + argsStr.slice(-100) : argsStr;
-
-                        let resultStr = '';
-                        if (r.error) {
-                            resultStr = `ERROR: ${r.error}`;
-                        } else {
-                            const raw = typeof r.result?.result === 'string'
-                                ? r.result.result
-                                : JSON.stringify(r.result?.result ?? 'ok');
-                            resultStr = raw.length > 400 ? raw.slice(0, 200) + ' [...] ' + raw.slice(-200) : raw;
-                        }
-
-                        pathwayResolver.pulseToolActivity.push(
-                            `${r.toolFunction}(${argsSummary}) → ${resultStr}`
-                        );
-                    }
-                }
-
-                // Check if any of the executed tools are hand-off tools (async agents)
-                // Hand-off tools don't return results immediately, so we skip the completion check
-                const hasHandoffTool = toolResults.some(result => {
-                    if (!result || !result.toolFunction) return false;
-                    const toolDefinition = entityTools[result.toolFunction]?.definition;
-                    return toolDefinition?.handoff === true;
-                });
-
-                // Inject challenge message after tools are executed to encourage task completion
-                // Only inject in research mode for the first few iterations - after that, let the model decide
-                // Skip this check if a hand-off tool was used (async agents handle their own completion)
-                const RESEARCH_ENCOURAGEMENT_LIMIT = 3; // Stop pushing after this many tool call rounds
-                if (!hasHandoffTool && args.researchMode && pathwayResolver.toolCallRound <= RESEARCH_ENCOURAGEMENT_LIMIT) {
-                    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
-                    finalMessages = insertSystemMessage(finalMessages, 
-                        "Review the tool results above. If the information gathered is clearly insufficient for the task, call additional tools. If you have gathered reasonable information from multiple sources, proceed to respond to the user.",
-                        requestId
-                    );
-                }
-
-            } else {
-                const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
-                finalMessages = insertSystemMessage(finalMessages,
-                    "Tool budget exhausted - no more tool calls will be executed. Provide your response based on the information gathered so far.",
-                    requestId
-                );
-            }
-
-            // Truncate oversized individual tool results
-            let processedMessages = finalMessages.map(msg => {
-                if (msg.role === 'tool' && msg.content && msg.content.length > MAX_TOOL_RESULT_LENGTH) {
-                    logger.warn(`Truncating oversized tool result (${msg.content.length} chars) for ${msg.name || 'unknown tool'}`);
-                    return {
-                        ...msg,
-                        content: msg.content.substring(0, MAX_TOOL_RESULT_LENGTH) + '\n\n[Content truncated due to length]'
-                    };
-                }
-                return msg;
-            });
-
-            // Compress context if approaching model limits
-            try {
-                processedMessages = await compressContextIfNeeded(processedMessages, pathwayResolver, args);
-            } catch (compressionError) {
-                logger.error(`Context compression error: ${compressionError.message}`);
-                // Continue with uncompressed messages
-            }
-            
-            args.chatHistory = processedMessages;
-
-            // clear any accumulated pathwayResolver errors from the tools
+        // Helper to handle promptAndParse errors uniformly
+        const handlePromptError = async (error) => {
+            const errorMessage = error?.message || (pathwayResolver.errors.length > 0
+                ? pathwayResolver.errors.join(', ')
+                : 'Model request failed - no response received');
+            const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+            logEventError(requestId, 'request.error', { phase: 'model_call', error: errorMessage });
+            const errorResponse = await generateErrorResponse(new Error(errorMessage), args, pathwayResolver);
             pathwayResolver.errors = [];
 
-            // Add a line break to avoid running output together
+            // In streaming mode, publish the error response directly to the client
+            publishRequestProgress({
+                requestId,
+                progress: 1,
+                data: JSON.stringify(errorResponse),
+                info: JSON.stringify(pathwayResolver.pathwayResultData || {}),
+                error: ''
+            });
+            return errorResponse;
+        };
+
+        if (args.toolLoopModel) {
+            // === DUAL-MODEL: internal loop + synthesis ===
+            // Works identically for streaming and non-streaming.
+            // Cheap model runs with stream:false inside the loop.
+            // Final synthesis uses primary model with stream:args.stream.
+            while (currentToolCalls?.length > 0 && pathwayResolver.toolBudgetUsed < TOOL_BUDGET) {
+                const { budgetExhausted } = await processToolCallRound(
+                    currentToolCalls, args, pathwayResolver, entityTools, entityToolsOpenAiFormat
+                );
+                if (budgetExhausted) break;
+
+                // Inject SYNTHESIZE hint for the cheap model
+                const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+                args.chatHistory = insertSystemMessage(args.chatHistory,
+                    "If you need more information, call tools. If you have gathered sufficient information to answer the user's request, respond with just: SYNTHESIZE",
+                    requestId
+                );
+
+                try {
+                    // Cheap model decides: more tools or done
+                    logEvent(requestId, 'model.call', {
+                        model: args.toolLoopModel,
+                        purpose: 'tool_loop',
+                        stream: false,
+                        reasoningEffort: 'none',
+                        round: pathwayResolver.toolCallRound,
+                    });
+                    const result = await pathwayResolver.promptAndParse({
+                        ...args,
+                        modelOverride: args.toolLoopModel,
+                        stream: false,
+                        tools: entityToolsOpenAiFormat,
+                        tool_choice: "auto",
+                        reasoningEffort: 'none',
+                        skipMemoryLoad: true,
+                    });
+
+                    if (!result) {
+                        return await handlePromptError(null);
+                    }
+
+                    currentToolCalls = extractToolCalls(result);
+                } catch (parseError) {
+                    return await handlePromptError(parseError);
+                }
+            }
+
+            // Final synthesis: primary model, with original stream setting
+            args.chatHistory = rehydrateAllToolResults(args.chatHistory, pathwayResolver.toolResultStore);
+
+            // Strip the SYNTHESIZE hint — it was for the cheap model, not the primary
+            const synthRequestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+            args.chatHistory = args.chatHistory.filter(msg => {
+                if (msg.role !== 'user') return true;
+                const content = typeof msg.content === 'string' ? msg.content : '';
+                return !content.startsWith(`[system message: ${synthRequestId}]`);
+            });
+
+            // Add a line break before final synthesis output
             await say(pathwayResolver.rootRequestId || pathwayResolver.requestId, `\n`, 1000, false, false);
 
             try {
-                // Use configured reasoning effort for post-tool calls (synthesis/decisions)
-                // Skip memory reload - it was already loaded on the first call
+                logEvent(pathwayResolver.rootRequestId || pathwayResolver.requestId, 'model.call', {
+                    model: args.primaryModel,
+                    purpose: 'synthesis',
+                    stream: args.stream,
+                    reasoningEffort: args.configuredReasoningEffort || 'medium',
+                });
                 const result = await pathwayResolver.promptAndParse({
                     ...args,
-                    tools: entityToolsOpenAiFormat,
-                    tool_choice: "auto",
-                    reasoningEffort: args.configuredReasoningEffort || 'low',
-                    skipMemoryLoad: true,  // Don't reload memory on intermediate tool calls (context already loaded)
+                    modelOverride: args.primaryModel,
+                    stream: args.stream,
+                    tools: SYNTHESIS_TOOLS ? entityToolsOpenAiFormat : undefined,
+                    tool_choice: SYNTHESIS_TOOLS ? "auto" : undefined,
+                    reasoningEffort: args.configuredReasoningEffort || 'medium',
+                    skipMemoryLoad: true,
                 });
-                
-                // Check if promptAndParse returned null (model call failed)
-                if (!result) {
-                    const errorMessage = pathwayResolver.errors.length > 0
-                        ? pathwayResolver.errors.join(', ')
-                        : 'Model request failed - no response received';
-                    logger.error(`promptAndParse returned null during tool callback: ${errorMessage}`);
-                    const errorResponse = await generateErrorResponse(new Error(errorMessage), args, pathwayResolver);
-                    // Ensure errors are cleared before returning
-                    pathwayResolver.errors = [];
 
-                    // In streaming mode, the toolCallback is invoked fire-and-forget by the plugin,
-                    // so we must stream the error response directly to the client and close the stream
-                    const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
-                    publishRequestProgress({
-                        requestId,
-                        progress: 1,
-                        data: JSON.stringify(errorResponse),
-                        info: JSON.stringify(pathwayResolver.pathwayResultData || {}),
-                        error: ''
+                if (!result) {
+                    return await handlePromptError(null);
+                }
+
+                // Only log request.end on the terminal synthesis (no tool_calls).
+                // If synthesis returned tool_calls, the framework will call toolCallback
+                // again, so defer logging until the final invocation.
+                if (extractToolCalls(result).length === 0) {
+                    const rid = pathwayResolver.rootRequestId || pathwayResolver.requestId;
+                    const usage = summarizeUsage(pathwayResolver.pathwayResultData?.usage);
+                    logEvent(rid, 'request.end', {
+                        durationMs: Date.now() - (pathwayResolver.requestStartTime || 0),
+                        toolRounds: pathwayResolver.toolCallRound || 0,
+                        budgetUsed: pathwayResolver.toolBudgetUsed || 0,
+                        ...(usage && { tokens: usage }),
                     });
-                    return errorResponse;
+                    pathwayResolver._requestEndLogged = true;
                 }
 
                 return result;
             } catch (parseError) {
-                // If promptAndParse fails, generate error response instead of re-throwing
-                logger.error(`Error in promptAndParse during tool callback: ${parseError.message}`);
-                const errorResponse = await generateErrorResponse(parseError, args, pathwayResolver);
-                // Ensure errors are cleared before returning
-                pathwayResolver.errors = [];
-
-                // In streaming mode, the toolCallback is invoked fire-and-forget by the plugin,
-                // so we must stream the error response directly to the client and close the stream
-                const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
-                publishRequestProgress({
-                    requestId,
-                    progress: 1,
-                    data: JSON.stringify(errorResponse),
-                    info: JSON.stringify(pathwayResolver.pathwayResultData || {}),
-                    error: ''
-                });
-                return errorResponse;
+                return await handlePromptError(parseError);
             }
+        }
+
+        // === ORIGINAL: single iteration, return for while loop ===
+        // Used when toolLoopModel is null (fallback behavior)
+        await processToolCallRound(currentToolCalls, args, pathwayResolver, entityTools, entityToolsOpenAiFormat);
+
+        // Add a line break to avoid running output together
+        await say(pathwayResolver.rootRequestId || pathwayResolver.requestId, `\n`, 1000, false, false);
+
+        try {
+            logEvent(pathwayResolver.rootRequestId || pathwayResolver.requestId, 'model.call', {
+                model: args.primaryModel,
+                purpose: 'fallback',
+                stream: args.stream,
+                reasoningEffort: args.configuredReasoningEffort || 'low',
+            });
+            const result = await pathwayResolver.promptAndParse({
+                ...args,
+                modelOverride: args.primaryModel,
+                stream: args.stream,
+                tools: entityToolsOpenAiFormat,
+                tool_choice: "auto",
+                reasoningEffort: args.configuredReasoningEffort || 'low',
+                skipMemoryLoad: true,
+            });
+
+            if (!result) {
+                return await handlePromptError(null);
+            }
+
+            return result;
+        } catch (parseError) {
+            return await handlePromptError(parseError);
         }
     },
   
@@ -787,6 +966,9 @@ export default {
         
         // Override model from entity config if defined (use modelOverride for dynamic model switching)
         const modelOverride = entityConfig?.modelOverride ?? args.modelOverride;
+
+        // Dual-model tool loop: use a cheap model for tool orchestration, primary model for synthesis
+        const toolLoopModel = config.get('models')?.[TOOL_LOOP_MODEL] ? TOOL_LOOP_MODEL : null;
 
         // Initialize chat history if needed
         if (!args.chatHistory || args.chatHistory.length === 0) {
@@ -919,9 +1101,6 @@ if you've completed something they'd want to know about.
         if (!reasoningEffort) {
             reasoningEffort = researchMode ? 'high' : 'low';
         }
-        if (entityConfig?.reasoningEffort) {
-            logger.debug(`Using entity reasoningEffort: ${entityConfig.reasoningEffort}`);
-        }
 
         // Limit the chat history to 20 messages to speed up processing
         if (args.messages && args.messages.length > 0) {
@@ -939,29 +1118,48 @@ if you've completed something they'd want to know about.
         args.chatHistory = strippedHistory;
 
         // Compress context if approaching model limits (initial check before first model call)
+        const requestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
         try {
             args.chatHistory = await compressContextIfNeeded(args.chatHistory, pathwayResolver, args);
         } catch (compressionError) {
-            logger.warn(`Initial context compression failed: ${compressionError.message}`);
+            logEventError(requestId, 'request.error', { phase: 'compression', error: compressionError.message });
         }
 
+        // Store configured reasoning effort for use after tool calls
+        // First call uses 'low' for fast tool selection, subsequent calls use configured value
+        args.configuredReasoningEffort = reasoningEffort;
+
+        // Store model assignments for dual-model tool loop
+        // These must be set BEFORE pathwayResolver.args snapshot below, because
+        // streaming plugin callbacks pass pathwayResolver.args to toolCallback
+        args.toolLoopModel = toolLoopModel;
+        args.primaryModel = modelOverride || pathwayResolver.modelName;
+
         // Update pathwayResolver.args with stripped/compressed chatHistory
-        // This ensures toolCallback receives the processed history, not the original
+        // This ensures toolCallback receives the processed history AND model assignments
         pathwayResolver.args = {...args};
+
+        const requestStartTime = Date.now();
+        pathwayResolver.requestStartTime = requestStartTime;
+        logEvent(requestId, 'request.start', {
+            entity: entityId,
+            model: modelOverride || pathwayResolver.modelName,
+            stream: args.stream,
+            invocationType,
+            ...(toolLoopModel && { toolLoopModel }),
+            reasoningEffort,
+        });
 
         try {
             let currentMessages = JSON.parse(JSON.stringify(args.chatHistory));
-
-            // Store configured reasoning effort for use after tool calls
-            // First call uses 'low' for fast tool selection, subsequent calls use configured value
-            args.configuredReasoningEffort = reasoningEffort;
 
             let response = await runAllPrompts({
                 ...args,
                 modelOverride,
                 chatHistory: currentMessages,
                 availableFiles,
-                reasoningEffort: 'low',  // Fast first call - just selecting tools
+                stream: args.stream,  // Always use original stream setting
+                reasoningEffort: 'none',  // Fast first call - just selecting tools
                 tools: entityToolsOpenAiFormat,
                 tool_choice: "auto"
             });
@@ -989,8 +1187,7 @@ if you've completed something they'd want to know about.
                         throw new Error('Tool callback returned null - a model request likely failed');
                     }
                 } catch (toolError) {
-                    // Handle errors in tool callback
-                    logger.error(`Error in tool callback: ${toolError.message}`);
+                    logEventError(requestId, 'request.error', { phase: 'tool_callback', error: toolError.message, durationMs: Date.now() - requestStartTime });
                     // Generate error response for tool callback errors
                     const errorResponse = await generateErrorResponse(toolError, args, pathwayResolver);
                     // Ensure errors are cleared before returning
@@ -1028,7 +1225,7 @@ if you've completed something they'd want to know about.
                                     toolActivity: toolLog
                                 }, pathwayResolver);
                             } catch (e) {
-                                logger.warn(`Pulse activity summary failed (non-fatal): ${e.message}`);
+                                logEventError(requestId, 'request.error', { phase: 'pulse_activity_summary', error: e.message });
                             }
                         }
 
@@ -1063,10 +1260,10 @@ if you've completed something they'd want to know about.
                             entityContext: entityInstructions
                         });
 
-                        logger.debug(`Pulse memory recorded (activity: ${activityNarrative?.length || 0} chars, assistant: ${assistantResponse?.length || 0} chars)`);
+                        logEventDebug(requestId, 'memory.record', { type: 'pulse', activityChars: activityNarrative?.length || 0, assistantChars: assistantResponse?.length || 0 });
                     }
                 } catch (error) {
-                    logger.warn(`Pulse memory recording failed (non-fatal): ${error.message}`);
+                    logEventError(requestId, 'request.error', { phase: 'pulse_memory', error: error.message });
                 }
             } else if (useContinuityMemory && pathwayResolver.continuityEntityId && pathwayResolver.continuityUserId) {
                 try {
@@ -1148,25 +1345,40 @@ if you've completed something they'd want to know about.
                             }
                         );
 
-                        logger.debug(`Continuity memory recorded for turn (user: ${userMessage?.length || 0} chars, assistant: ${assistantResponse?.length || 0} chars)`);
+                        logEventDebug(requestId, 'memory.record', { type: 'continuity', userChars: userMessage?.length || 0, assistantChars: assistantResponse?.length || 0 });
                     }
                 } catch (error) {
-                    // Non-fatal - log and continue
-                    logger.warn(`Continuity memory recording failed (non-fatal): ${error.message}`);
+                    logEventError(requestId, 'request.error', { phase: 'continuity_memory', error: error.message });
                 }
+            }
+
+            if (!pathwayResolver._requestEndLogged) {
+                const usage = summarizeUsage(pathwayResolver.pathwayResultData?.usage);
+                logEvent(requestId, 'request.end', {
+                    durationMs: Date.now() - requestStartTime,
+                    toolRounds: pathwayResolver.toolCallRound || 0,
+                    budgetUsed: pathwayResolver.toolBudgetUsed || 0,
+                    ...(usage && { tokens: usage }),
+                });
             }
 
             return response;
 
         } catch (e) {
-            logger.error(`Error in sys_entity_agent: ${e.message}`);
-            
+            const usage = summarizeUsage(pathwayResolver.pathwayResultData?.usage);
+            logEventError(requestId, 'request.error', {
+                phase: 'executePathway',
+                error: e.message,
+                durationMs: Date.now() - requestStartTime,
+                ...(usage && { tokens: usage }),
+            });
+
             // Generate a smart error response instead of throwing
             const errorResponse = await generateErrorResponse(e, args, pathwayResolver);
-            
+
             // Ensure errors are cleared before returning
             pathwayResolver.errors = [];
-            
+
             return errorResponse;
         }
     }

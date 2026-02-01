@@ -231,6 +231,56 @@ test('getRequestParameters - transforms function role to user role', t => {
     'Should not have any function role messages after transformation');
 });
 
+test('getRequestParameters - parallel tool calls produce one functionCall message', t => {
+  const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
+  const plugin = resolver.modelExecutor.plugin;
+
+  // Simulate 3 parallel tool calls from one assistant message
+  // Parent plugin expects OpenAI format: role:'tool' with tool_call_id (not role:'function')
+  // Tool name is derived from tool_call_id.split('_')[0]
+  const originalGetCompiledPrompt = plugin.getCompiledPrompt.bind(plugin);
+  plugin.getCompiledPrompt = (text, parameters, prompt) => {
+    const result = originalGetCompiledPrompt(text, parameters, prompt);
+    result.modelPromptMessages = [
+      { role: 'user', content: 'Find info' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call_1', function: { name: 'SearchInternet', arguments: '{"q":"cats"}' }, thoughtSignature: 'sig1' },
+          { id: 'call_2', function: { name: 'FileCollection', arguments: '{"action":"LIST"}' }, thoughtSignature: 'sig2' },
+          { id: 'call_3', function: { name: 'ValidateUrl', arguments: '{"url":"http://example.com"}' }, thoughtSignature: 'sig3' },
+        ]
+      },
+      { role: 'tool', tool_call_id: 'SearchInternet_1', content: 'search results' },
+      { role: 'tool', tool_call_id: 'FileCollection_2', content: 'file list' },
+      { role: 'tool', tool_call_id: 'ValidateUrl_3', content: 'url valid' },
+    ];
+    return result;
+  };
+
+  const params = plugin.getRequestParameters('test', {}, { prompt: 'test' }, { pathway: {} });
+
+  // Count model messages that contain functionCall parts
+  const functionCallMessages = params.contents.filter(c =>
+    c.role === 'model' && c.parts?.some(p => p.functionCall)
+  );
+  // Count user messages that contain functionResponse parts
+  const functionResponseMessages = params.contents.filter(c =>
+    c.parts?.some(p => p.functionResponse)
+  );
+
+  t.is(functionCallMessages.length, 1,
+    'Should produce exactly ONE model message with functionCall parts for parallel calls');
+
+  const functionCallParts = functionCallMessages[0].parts.filter(p => p.functionCall);
+  t.is(functionCallParts.length, 3,
+    'The single model message should contain all 3 functionCall parts');
+
+  t.is(functionResponseMessages.length, 3,
+    'Should have 3 functionResponse messages');
+});
+
 test('Gemini3ReasoningVisionPlugin - inherits from Gemini3ImagePlugin', t => {
   const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
   const plugin = resolver.modelExecutor.plugin;

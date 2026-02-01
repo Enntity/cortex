@@ -229,6 +229,54 @@ test('SSE conversion inherits from parent', (t) => {
     t.is(parsed.choices[0].delta.content, 'Hello');
 });
 
+// Extended thinking / reasoningEffort tests
+
+test('reasoningEffort none does not enable thinking', async (t) => {
+    const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
+    const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'none' };
+    const result = await plugin.getRequestParameters('', parameters, {});
+    t.is(result.thinking, undefined);
+});
+
+test('reasoningEffort low sets budget_tokens 1024', async (t) => {
+    const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
+    const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'low' };
+    const result = await plugin.getRequestParameters('', parameters, {});
+    t.deepEqual(result.thinking, { type: 'enabled', budget_tokens: 1024 });
+    t.is(result.temperature, 1);
+});
+
+test('reasoningEffort medium sets budget_tokens 4096', async (t) => {
+    const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
+    const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'medium' };
+    const result = await plugin.getRequestParameters('', parameters, {});
+    t.deepEqual(result.thinking, { type: 'enabled', budget_tokens: 4096 });
+    t.is(result.temperature, 1);
+});
+
+test('reasoningEffort high sets budget_tokens 16384', async (t) => {
+    const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
+    const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'high' };
+    const result = await plugin.getRequestParameters('', parameters, {});
+    t.deepEqual(result.thinking, { type: 'enabled', budget_tokens: 16384 });
+    t.is(result.temperature, 1);
+});
+
+test('reasoningEffort xhigh sets budget_tokens 65536', async (t) => {
+    const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
+    const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'xhigh' };
+    const result = await plugin.getRequestParameters('', parameters, {});
+    t.deepEqual(result.thinking, { type: 'enabled', budget_tokens: 65536 });
+    t.is(result.temperature, 1);
+});
+
+test('no reasoningEffort does not add thinking config', async (t) => {
+    const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
+    const parameters = { messages: [{ role: 'user', content: 'Hi' }] };
+    const result = await plugin.getRequestParameters('', parameters, {});
+    t.is(result.thinking, undefined);
+});
+
 test('SSE conversion handles tool call events', (t) => {
     const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
     

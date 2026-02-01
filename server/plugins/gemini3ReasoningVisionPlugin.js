@@ -59,30 +59,30 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
         // 2. Add functionCall messages for assistant tool_calls (with thoughtSignature)
         if (baseParameters.contents && Array.isArray(baseParameters.contents)) {
             const newContents = [];
-            
-            // Build a map of tool response indices to find where to insert functionCall messages
-            // The pattern is: assistant+tool_calls message followed by tool response messages
-            let lastFunctionResponseIndex = -1;
-            
+
+            // Track which assistant messages (by index in original messages array)
+            // have already been emitted as functionCall messages, so parallel tool
+            // results from the same assistant message only produce ONE functionCall entry.
+            const emittedAssistantIndices = new Set();
+
             for (let i = 0; i < baseParameters.contents.length; i++) {
                 const content = baseParameters.contents[i];
-                
+
                 // Check if we need to insert a functionCall message before this function response
                 if (content.role === 'function' && content.parts?.[0]?.functionResponse) {
-                    // Look for the preceding assistant message with tool_calls in the original messages
-                    // that corresponds to this function response
                     const functionName = content.parts[0].functionResponse.name;
-                    
+
                     // Find matching assistant message with this tool call
-                    for (const message of messages) {
+                    for (let mi = 0; mi < messages.length; mi++) {
+                        const message = messages[mi];
                         if (message.role === 'assistant' && message.tool_calls?.length > 0) {
-                            const hasMatchingToolCall = message.tool_calls.some(tc => 
-                                tc.function?.name === functionName || 
+                            const hasMatchingToolCall = message.tool_calls.some(tc =>
+                                tc.function?.name === functionName ||
                                 tc.id?.startsWith(functionName + '_')
                             );
-                            
-                            if (hasMatchingToolCall && lastFunctionResponseIndex < i) {
-                                // Build functionCall message with thoughtSignature
+
+                            if (hasMatchingToolCall && !emittedAssistantIndices.has(mi)) {
+                                // Build functionCall message with thoughtSignature (once per assistant message)
                                 const parts = [];
                                 if (message.content && typeof message.content === 'string' && message.content.trim()) {
                                     parts.push({ text: message.content });
@@ -91,8 +91,8 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
                                     if (toolCall.function?.name) {
                                         let args = {};
                                         try {
-                                            args = typeof toolCall.function.arguments === 'string' 
-                                                ? JSON.parse(toolCall.function.arguments) 
+                                            args = typeof toolCall.function.arguments === 'string'
+                                                ? JSON.parse(toolCall.function.arguments)
                                                 : (toolCall.function.arguments || {});
                                         } catch (e) { args = {}; }
                                         parts.push(this.buildFunctionCallPart(toolCall, args));
@@ -101,12 +101,12 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
                                 if (parts.length > 0) {
                                     newContents.push({ role: 'model', parts: parts });
                                 }
-                                lastFunctionResponseIndex = i;
+                                emittedAssistantIndices.add(mi);
                                 break;
                             }
                         }
                     }
-                    
+
                     // Transform function response: role 'function' -> 'user', content -> output
                     const fr = content.parts[0].functionResponse;
                     let responseData = fr.response;
@@ -131,7 +131,7 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
                     newContents.push(content);
                 }
             }
-            
+
             baseParameters.contents = newContents;
         }
         
@@ -148,8 +148,8 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
         const reasoningEffort = parameters?.reasoningEffort ?? this.promptParameters?.reasoningEffort;
         if (reasoningEffort && thinkingLevel === undefined) {
             const effort = typeof reasoningEffort === 'string' ? reasoningEffort.toLowerCase() : String(reasoningEffort).toLowerCase();
-            if (effort === 'high' || effort === 'medium') {
-                // High or medium reasoning effort → high thinking level
+            if (effort === 'high' || effort === 'medium' || effort === 'xhigh') {
+                // High, xhigh, or medium reasoning effort → high thinking level
                 thinkingLevel = 'high';
             } else {
                 // Low, minimal, or none → low thinking level (Gemini 3 doesn't support disabling thinking)
@@ -167,7 +167,7 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
             const pathwayEffort = typeof cortexRequest.pathway.reasoningEffort === 'string' 
                 ? cortexRequest.pathway.reasoningEffort.toLowerCase() 
                 : String(cortexRequest.pathway.reasoningEffort).toLowerCase();
-            if (pathwayEffort === 'high' || pathwayEffort === 'medium') {
+            if (pathwayEffort === 'high' || pathwayEffort === 'medium' || pathwayEffort === 'xhigh') {
                 thinkingLevel = 'high';
             } else {
                 thinkingLevel = 'low';
