@@ -59,12 +59,11 @@ class OpenAIReasoningPlugin extends OpenAIChatPlugin {
         const reasoningEffort = parameters.reasoningEffort || this.promptParameters.reasoningEffort;
         if (reasoningEffort) {
             const effort = reasoningEffort.toLowerCase();
-            if (['high', 'medium', 'low'].includes(effort)) {
+            const effortMap = this.model.reasoningEffortMap;
+            if (effortMap && effortMap[effort]) {
+                requestParameters.reasoning_effort = effortMap[effort];
+            } else if (['low', 'medium', 'high'].includes(effort)) {
                 requestParameters.reasoning_effort = effort;
-            } else if (effort === 'xhigh') {
-                requestParameters.reasoning_effort = 'high';
-            } else if (effort === 'none') {
-                requestParameters.reasoning_effort = 'low';
             } else {
                 requestParameters.reasoning_effort = 'low';
             }

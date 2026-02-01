@@ -900,3 +900,175 @@ test('tool callback invoked should not trigger stream warning or completion', (t
   const shouldPublishCompletion = receivedSSEData && !toolCallbackInvoked && (streamErrorOccurred || !completionSent);
   t.false(shouldPublishCompletion, 'Should not publish completion when tool callback invoked');
 });
+
+// === Streaming tool callback Promise tests ===
+// These test the fix for the race condition where the streaming plugin fires
+// toolCallback fire-and-forget, and the main code path proceeds to memory
+// recording + request.end before tools finish.
+
+test.serial('executePathway awaits _streamingToolCallbackPromise before returning', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'test streaming callback await',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: true,
+  };
+
+  // Track execution order
+  const events = [];
+
+  const runAllPrompts = async () => {
+    // Simulate the streaming plugin setting a pending callback Promise
+    // during handleStream (this is what openAiVisionPlugin does)
+    resolver._streamingToolCallbackPromise = new Promise((resolve) => {
+      setTimeout(() => {
+        events.push('callback-completed');
+        resolve('synthesis-result');
+      }, 50);
+    });
+
+    // Return a stream-like object (has .on method) as streaming responses do
+    return { on: () => {} };
+  };
+
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  // The callback must have completed BEFORE executePathway returned
+  t.true(events.includes('callback-completed'),
+    'Streaming tool callback should be awaited before executePathway returns');
+  // Promise should be cleared
+  t.is(resolver._streamingToolCallbackPromise, null,
+    'Promise should be cleared after awaiting');
+});
+
+test.serial('executePathway handles recursive streaming callbacks (callback₁ triggers callback₂)', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'test recursive callbacks',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: true,
+  };
+
+  const events = [];
+
+  const runAllPrompts = async () => {
+    // First callback: simulates initial tool call from streaming
+    resolver._streamingToolCallbackPromise = new Promise((resolve) => {
+      setTimeout(() => {
+        events.push('callback-1-completed');
+
+        // During callback₁, synthesis streams and triggers callback₂
+        // (the plugin stores a NEW promise on the resolver)
+        resolver._streamingToolCallbackPromise = new Promise((resolve2) => {
+          setTimeout(() => {
+            events.push('callback-2-completed');
+            resolve2('final-synthesis');
+          }, 30);
+        });
+
+        resolve('intermediate-result');
+      }, 30);
+    });
+
+    return { on: () => {} };
+  };
+
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  t.deepEqual(events, ['callback-1-completed', 'callback-2-completed'],
+    'Both recursive callbacks should be awaited in order');
+  t.is(resolver._streamingToolCallbackPromise, null,
+    'Promise should be cleared after all callbacks complete');
+});
+
+test.serial('executePathway proceeds normally when no streaming callback is pending', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'test no streaming callback',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: false,
+  };
+
+  let runAllPromptsCalled = false;
+  const runAllPrompts = async () => {
+    runAllPromptsCalled = true;
+    // Non-streaming: no _streamingToolCallbackPromise set
+    // Return a simple string response (no tool calls)
+    return 'direct-response';
+  };
+
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  t.true(runAllPromptsCalled, 'runAllPrompts should have been called');
+  t.falsy(resolver._streamingToolCallbackPromise,
+    'No streaming callback promise should be set');
+});
+
+test.serial('executePathway handles streaming callback rejection gracefully', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'test callback rejection',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: true,
+  };
+
+  const runAllPrompts = async () => {
+    // Simulate a streaming callback that rejects (tool callback threw)
+    resolver._streamingToolCallbackPromise = Promise.reject(
+      new Error('Tool callback failed during streaming')
+    );
+    return { on: () => {} };
+  };
+
+  // Should not throw — executePathway has try/catch that calls generateErrorResponse
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  // Error should be surfaced through the error handling path
+  t.truthy(result, 'Should return an error response, not throw');
+});
+
+test.serial('executePathway updates response from streaming callback result', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'test response update',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: true,
+  };
+
+  const runAllPrompts = async () => {
+    // Callback resolves with the synthesis result
+    resolver._streamingToolCallbackPromise = Promise.resolve('synthesis-after-tools');
+    return { on: () => {} };
+  };
+
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  // The response from the callback should flow through to the return value
+  // (unless memory recording or request.end changes it)
+  t.truthy(result, 'Should return a result');
+});

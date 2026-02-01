@@ -380,7 +380,9 @@ class OpenAIVisionPlugin extends OpenAIChatPlugin {
                             // Clear buffers before invoking callback (next synthesis reuses this plugin)
                             this.toolCallsBuffer = [];
                             this.contentBuffer = '';
-                            this.pathwayToolCallback(pathwayResolver?.args, toolMessage, pathwayResolver);
+                            // Store the Promise so callers can await streaming tool completion
+                            pathwayResolver._streamingToolCallbackPromise =
+                                this.pathwayToolCallback(pathwayResolver?.args, toolMessage, pathwayResolver);
                             // Signal to pathwayResolver that tool callback was invoked - prevents [DONE] from ending stream
                             requestProgress.toolCallbackInvoked = true;
                         }

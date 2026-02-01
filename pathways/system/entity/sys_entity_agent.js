@@ -6,7 +6,7 @@ const TOOL_TIMEOUT_MS = 120000; // 2 minute timeout per tool call
 const MAX_TOOL_RESULT_LENGTH = 150000; // Truncate oversized tool results to prevent context overflow
 const CONTEXT_COMPRESSION_THRESHOLD = 0.7; // Compress when context reaches 70% of model limit
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000; // Default context limit if not available from model
-const TOOL_LOOP_MODEL = 'oai-gpt5-mini'; // Cheap model for tool orchestration during tool loop
+const TOOL_LOOP_MODEL = 'claude-45-haiku'; // Cheap model for tool orchestration during tool loop
 const SYNTHESIS_TOOLS = true; // true = synthesis can call tools, false = synthesis is text-only
 
 // Normalize token usage across providers into { inputTokens, outputTokens, totalTokens }
@@ -894,7 +894,7 @@ export default {
                     stream: args.stream,
                     reasoningEffort: args.configuredReasoningEffort || 'medium',
                 });
-                const result = await pathwayResolver.promptAndParse({
+                let synthesisResult = await pathwayResolver.promptAndParse({
                     ...args,
                     modelOverride: args.primaryModel,
                     stream: args.stream,
@@ -904,14 +904,20 @@ export default {
                     skipMemoryLoad: true,
                 });
 
-                if (!result) {
+                if (!synthesisResult) {
                     return await handlePromptError(null);
                 }
 
-                // Log request.end once. When streaming, the plugin invokes toolCallback
-                // directly (fire-and-forget) for each synthesis that returns tool_calls,
-                // so multiple invocations may reach this point. The flag prevents duplicates.
-                if (extractToolCalls(result).length === 0 && !pathwayResolver._requestEndLogged) {
+                // In streaming mode, synthesis may have returned tool_calls via
+                // fire-and-forget callback. Await it so request.end reflects final state.
+                while (pathwayResolver._streamingToolCallbackPromise) {
+                    const pending = pathwayResolver._streamingToolCallbackPromise;
+                    pathwayResolver._streamingToolCallbackPromise = null;
+                    synthesisResult = await pending;
+                }
+
+                // Log request.end once, after all streaming callbacks complete.
+                if (!pathwayResolver._requestEndLogged) {
                     const rid = pathwayResolver.rootRequestId || pathwayResolver.requestId;
                     const usage = summarizeUsage(pathwayResolver.pathwayResultData?.usage);
                     logEvent(rid, 'request.end', {
@@ -923,7 +929,7 @@ export default {
                     pathwayResolver._requestEndLogged = true;
                 }
 
-                return result;
+                return synthesisResult;
             } catch (parseError) {
                 return await handlePromptError(parseError);
             }
@@ -943,7 +949,7 @@ export default {
                 stream: args.stream,
                 reasoningEffort: args.configuredReasoningEffort || 'low',
             });
-            const result = await pathwayResolver.promptAndParse({
+            let fallbackResult = await pathwayResolver.promptAndParse({
                 ...args,
                 modelOverride: args.primaryModel,
                 stream: args.stream,
@@ -953,11 +959,18 @@ export default {
                 skipMemoryLoad: true,
             });
 
-            if (!result) {
+            if (!fallbackResult) {
                 return await handlePromptError(null);
             }
 
-            return result;
+            // Await any streaming tool callbacks from the fallback call
+            while (pathwayResolver._streamingToolCallbackPromise) {
+                const pending = pathwayResolver._streamingToolCallbackPromise;
+                pathwayResolver._streamingToolCallbackPromise = null;
+                fallbackResult = await pending;
+            }
+
+            return fallbackResult;
         } catch (parseError) {
             return await handlePromptError(parseError);
         }
@@ -972,7 +985,7 @@ export default {
         
         // Load entity config on-demand from MongoDB
         const entityConfig = await loadEntityConfig(entityId);
-        const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+        const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig, { invocationType });
         // Support both new field name (identity) and legacy (instructions)
         const entityName = entityConfig?.name;
         const entityInstructions = entityConfig?.identity || entityConfig?.instructions || '';
@@ -1180,17 +1193,26 @@ if you've completed something they'd want to know about.
                 chatHistory: currentMessages,
                 availableFiles,
                 stream: args.stream,  // Always use original stream setting
-                reasoningEffort: 'none',  // Fast first call - just selecting tools
+                reasoningEffort: args.configuredReasoningEffort || 'low',  // Use entity's configured effort — this may be the only call if no tools are needed
                 tools: entityToolsOpenAiFormat,
                 tool_choice: "auto"
             });
 
             // Handle null response (can happen when ModelExecutor catches an error)
             if (!response) {
-                const errorDetails = pathwayResolver.errors.length > 0 
-                    ? `: ${pathwayResolver.errors.join(', ')}` 
+                const errorDetails = pathwayResolver.errors.length > 0
+                    ? `: ${pathwayResolver.errors.join(', ')}`
                     : '';
                 throw new Error(`Model execution returned null - the model request likely failed${errorDetails}`);
+            }
+
+            // In streaming mode, the plugin may have fired toolCallback during stream
+            // processing (fire-and-forget). Await it so memory recording and request.end
+            // happen after all tool work completes, not prematurely.
+            while (pathwayResolver._streamingToolCallbackPromise) {
+                const pendingCallback = pathwayResolver._streamingToolCallbackPromise;
+                pathwayResolver._streamingToolCallbackPromise = null;
+                response = await pendingCallback;
             }
 
             let toolCallback = pathwayResolver.pathway.toolCallback;

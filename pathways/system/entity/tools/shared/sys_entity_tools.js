@@ -35,37 +35,61 @@ const sanitizeOpenAiToolDefinition = (toolDefinition, toolName) => {
     };
 };
 
+// Category filtering rules:
+// - 'pulse' category: only included when invocationType === 'pulse'
+// - 'system' category: excluded from wildcard (*) expansion; only included when explicitly named
+// - no category: always included
+const shouldIncludeTool = (toolDef, category, isWildcard, invocationType) => {
+    if (!category) return true;
+    if (category === 'pulse') return invocationType === 'pulse';
+    if (category === 'system') return !isWildcard;
+    return true;
+};
+
 // Helper function to get tools for a specific entity
-export const getToolsForEntity = (entityConfig) => {
+// options.invocationType: '' | 'chat' | 'pulse' — controls category filtering
+// When options is omitted, no category filtering is applied (backward compatible)
+export const getToolsForEntity = (entityConfig, options) => {
+    const invocationType = options?.invocationType;
+    const applyCategories = options !== undefined;
+
     // Get system tools from config
     const systemTools = config.get('entityTools') || {};
-    
+
     // Convert all tool names to lowercase in system tools
     const normalizedSystemTools = Object.fromEntries(
         Object.entries(systemTools).map(([key, value]) => [key.toLowerCase(), value])
     );
-    
+
     // Convert custom tools to lowercase if they exist
-    const normalizedCustomTools = entityConfig?.customTools ? 
+    const normalizedCustomTools = entityConfig?.customTools ?
         Object.fromEntries(
             Object.entries(entityConfig.customTools).map(([key, value]) => [key.toLowerCase(), value])
         ) : {};
-    
+
     // Convert CUSTOM_TOOLS to lowercase
     const normalizedCUSTOM_TOOLS = Object.fromEntries(
         Object.entries(CUSTOM_TOOLS).map(([key, value]) => [key.toLowerCase(), value])
     );
-    
+
     // Merge system tools with custom tools (custom tools override system tools)
     const allTools = { ...normalizedSystemTools, ...normalizedCustomTools, ...normalizedCUSTOM_TOOLS };
 
-    // If no tools property specified or array contains *, return all tools
+    // If no tools property specified or array contains *, return all tools (with category filtering)
     // Note: ['*'] is supported for backward compatibility but should be phased out
     // New entities should use explicit tool lists
     if (!entityConfig?.tools || entityConfig.tools.includes('*')) {
+        const filtered = applyCategories
+            ? Object.fromEntries(
+                Object.entries(allTools).filter(([, tool]) => {
+                    const category = tool.definition?.category;
+                    return shouldIncludeTool(tool.definition, category, true, invocationType);
+                })
+            )
+            : allTools;
         return {
-            entityTools: allTools,
-            entityToolsOpenAiFormat: Object.entries(allTools)
+            entityTools: filtered,
+            entityToolsOpenAiFormat: Object.entries(filtered)
                 .map(([toolName, tool]) => sanitizeOpenAiToolDefinition(tool.definition, toolName))
                 .filter(Boolean)
         };
@@ -73,7 +97,7 @@ export const getToolsForEntity = (entityConfig) => {
 
     // Get the list of tool names for this entity, applying any migrations for renamed/consolidated tools
     const entityToolNames = migrateToolList(entityConfig.tools);
-    
+
     // Add custom tools to the list of allowed tools if they exist
     if (entityConfig.customTools) {
         Object.keys(entityConfig.customTools).forEach(toolName => {
@@ -82,12 +106,21 @@ export const getToolsForEntity = (entityConfig) => {
             }
         });
     }
-    
-    // Filter the tools to only include those specified for this entity
+
+    // Filter the tools to only include those specified for this entity (with category filtering)
+    // During pulse, auto-inject pulse-category tools even if not in the entity's explicit list
     const filteredTools = Object.fromEntries(
-        Object.entries(allTools).filter(([toolName]) =>
-            entityToolNames.includes(toolName.toLowerCase())
-        )
+        Object.entries(allTools).filter(([toolName, tool]) => {
+            const category = tool.definition?.category;
+            const inEntityList = entityToolNames.includes(toolName.toLowerCase());
+
+            if (applyCategories && category === 'pulse') {
+                return invocationType === 'pulse';
+            }
+            if (!inEntityList) return false;
+            if (!applyCategories) return true;
+            return shouldIncludeTool(tool.definition, category, false, invocationType);
+        })
     );
 
     return {
@@ -151,7 +184,7 @@ export const getAvailableEntities = async (options = {}) => {
         const entities = await entityStore.getAllEntities({ includeSystem, userId });
 
         return entities.map(entity => {
-            const { entityTools } = getToolsForEntity(entity);
+            const { entityTools } = getToolsForEntity(entity, { invocationType: '' });
             return {
                 id: entity.id,
                 name: entity.name,

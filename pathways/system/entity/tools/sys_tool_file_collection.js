@@ -110,58 +110,6 @@ export default {
                     required: ["userMessage"]
                 }
             }
-        },
-        // Legacy tool definitions (disabled - use FileCollection instead)
-        {
-            type: "function",
-            enabled: false,
-            icon: "📁",
-            toolCost: 1,
-            function: {
-                name: "AddFileToCollection",
-                description: "DEPRECATED: Use FileCollection with fileUrl/url + filename instead.",
-                parameters: { type: "object", properties: {}, required: [] }
-            }
-        },
-        {
-            type: "function",
-            enabled: false,
-            icon: "🔍",
-            function: {
-                name: "SearchFileCollection",
-                description: "DEPRECATED: Use FileCollection with query parameter instead.",
-                parameters: { type: "object", properties: {}, required: [] }
-            }
-        },
-        {
-            type: "function",
-            enabled: false,
-            icon: "📋",
-            function: {
-                name: "ListFileCollection",
-                description: "DEPRECATED: Use FileCollection with no action parameters instead.",
-                parameters: { type: "object", properties: {}, required: [] }
-            }
-        },
-        {
-            type: "function",
-            enabled: false,
-            icon: "🗑️",
-            function: {
-                name: "RemoveFileFromCollection",
-                description: "DEPRECATED: Use FileCollection with fileIds parameter instead.",
-                parameters: { type: "object", properties: {}, required: [] }
-            }
-        },
-        {
-            type: "function",
-            enabled: false,
-            icon: "✏️",
-            function: {
-                name: "UpdateFileMetadata",
-                description: "DEPRECATED: Use FileCollection with file + metadata parameters instead.",
-                parameters: { type: "object", properties: {}, required: [] }
-            }
         }
     ],
 

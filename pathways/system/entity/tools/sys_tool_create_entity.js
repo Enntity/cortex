@@ -42,6 +42,7 @@ export default {
     // Tool definition for OpenAI format
     toolDefinition: [{
         type: "function",
+        category: "system",
         icon: "✨",
         function: {
             name: "CreateEntity",

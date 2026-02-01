@@ -561,7 +561,9 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
                 // Clear buffers before invoking callback (next synthesis reuses this plugin)
                 this.toolCallsBuffer = [];
                 this.contentBuffer = '';
-                this.pathwayToolCallback(pathwayResolver?.args, toolMessage, pathwayResolver);
+                // Store the Promise so callers can await streaming tool completion
+                pathwayResolver._streamingToolCallbackPromise =
+                    this.pathwayToolCallback(pathwayResolver?.args, toolMessage, pathwayResolver);
                 // Signal to pathwayResolver that stream close is expected (tool callback invoked)
                 requestProgress.toolCallbackInvoked = true;
             } else {

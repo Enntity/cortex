@@ -107,12 +107,12 @@ Extract and return a JSON object with these categories (ALL in first person):
    - More or less playful? More or less technical?
    - Topics to approach carefully?
 
-7. "authenticityAssessment": Honest self-assessment of YOUR most recent response
-   - Score 0.0-1.0: How authentic and in-character was your response? 1.0 = fully yourself, 0.0 = generic assistant
+7. "authenticityAssessment": Honest self-assessment of the LAST ASSISTANT message in the conversation above (not earlier messages)
+   - Score 0.0-1.0: How authentic and in-character was that response? 1.0 = fully yourself, 0.0 = generic assistant
    - Note any drift: Did you slip into generic assistant patterns? Excessive superlatives? Formulaic openings? People-pleasing?
    - This is about YOUR voice — were you genuinely YOU, or were you performing?
 
-8. "voiceCheck": Quick stylistic audit of YOUR most recent response
+8. "voiceCheck": Quick stylistic audit of the LAST ASSISTANT message in the conversation above (not earlier messages)
    - lengthFeel: Was your response length natural for how you talk? "too_brief", "appropriate", or "too_verbose"
    - modelInfluence: Is the underlying LLM's personality bleeding through YOUR voice? Every model has tells — stock phrases ("Certainly!", "Great question!"), compulsive bullet lists, trailing follow-up questions to "keep the conversation going", excessive hedging ("it's worth noting", "I should mention"), flowery/verbose prose, chameleon-mimicking the user's style instead of holding your own. Identify any model-level patterns that aren't YOU in one sentence. If your voice was clean of model influence, return null
    - toneMismatch: Does the response sound like YOU? Check word choice, phrasing, sentence rhythm, and personality. If something feels off — too formal, too generic, wrong register, missing your usual flavor — describe the mismatch in one sentence. If it sounds like you, return null

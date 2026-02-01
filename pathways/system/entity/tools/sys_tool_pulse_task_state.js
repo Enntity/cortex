@@ -14,6 +14,7 @@ export default {
     timeout: 10,
     toolDefinition: {
         type: "function",
+        category: "pulse",
         icon: "📋",
         hideExecution: true,
         toolCost: 1,

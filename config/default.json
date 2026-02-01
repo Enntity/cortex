@@ -253,6 +253,7 @@
         },
         "oai-o3": {
             "type": "OPENAI-REASONING",
+            "reasoningEffortMap": { "none": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
             "endpoints": [
                 {
                     "name": "default",
@@ -291,6 +292,7 @@
         "oai-gpt52": {
             "type": "OPENAI-REASONING-VISION",
             "emulateOpenAIChatModel": "gpt-5.2",
+            "reasoningEffortMap": { "none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
             "endpoints": [
                 {
                     "name": "default",
@@ -333,6 +335,7 @@
         "oai-gpt51": {
             "type": "OPENAI-REASONING-VISION",
             "emulateOpenAIChatModel": "gpt-5.1",
+            "reasoningEffortMap": { "none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
             "endpoints": [
                 {
                     "name": "default",
@@ -753,6 +756,7 @@
         "oai-gpt5": {
             "type": "OPENAI-REASONING-VISION",
             "emulateOpenAIChatModel": "gpt-5",
+            "reasoningEffortMap": { "none": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
             "endpoints": [
                 {
                     "name": "default",
@@ -773,6 +777,7 @@
         },
         "oai-gpt5-mini": {
             "type": "OPENAI-REASONING-VISION",
+            "reasoningEffortMap": { "none": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
             "endpoints": [
                 {
                     "name": "default",
@@ -813,6 +818,7 @@
         },
         "oai-o1": {
             "type": "OPENAI-REASONING",
+            "reasoningEffortMap": { "none": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
             "endpoints": [
                 {
                     "name": "default",
@@ -833,6 +839,7 @@
         },
         "oai-o3-mini": {
             "type": "OPENAI-REASONING",
+            "reasoningEffortMap": { "none": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
             "emulateOpenAIChatModel": "o3-mini",
             "restStreaming": {
                 "enableDuplicateRequests": false
