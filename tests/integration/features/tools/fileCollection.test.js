@@ -2646,19 +2646,6 @@ test('Converted files: loadFileCollection should use converted values as primary
         // Verify converted files can be read (text type)
         const { isTextMimeType } = await import('../../../../lib/fileUtils.js');
         t.true(isTextMimeType(file.mimeType), 'Converted file should be recognized as text type');
-        
-        // Verify converted files cannot be edited
-        const editResult = await callPathway('sys_tool_editfile', {
-            agentContext: [{ contextId, contextKey: null, default: true }],
-            file: 'original.docx',
-            startLine: 1,
-            endLine: 1,
-            content: 'test',
-            userMessage: 'Try to edit converted file'
-        });
-        const editParsed = JSON.parse(editResult);
-        t.is(editParsed.success, false, 'Should not allow editing converted files');
-        t.true(editParsed.error.includes('converted') || editParsed.error.includes('Cannot edit'), 'Error should mention converted files cannot be edited');
     } finally {
         await cleanup(contextId);
     }

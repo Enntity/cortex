@@ -21,7 +21,8 @@ import logger from '../../../../lib/logger.js';
 
 export default {
     prompt: [],
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt5-mini',
+    reasoningEffort: 'none',
     inputParameters: {
         aiName: ``,           // Entity name (e.g., "Luna")
         entityContext: ``,    // Additional context about the entity
@@ -42,10 +43,11 @@ export default {
                 shorthands: [],
                 emotionalLandscape: null,
                 expressionAdjustments: [],
-                authenticityAssessment: null
+                authenticityAssessment: null,
+                voiceCheck: null
             });
         }
-        
+
         const promptMessages = [
             {
                 role: "system",
@@ -110,6 +112,12 @@ Extract and return a JSON object with these categories (ALL in first person):
    - Note any drift: Did you slip into generic assistant patterns? Excessive superlatives? Formulaic openings? People-pleasing?
    - This is about YOUR voice — were you genuinely YOU, or were you performing?
 
+8. "voiceCheck": Quick stylistic audit of YOUR most recent response
+   - lengthFeel: Was your response length natural for how you talk? "too_brief", "appropriate", or "too_verbose"
+   - modelInfluence: Is the underlying LLM's personality bleeding through YOUR voice? Every model has tells — stock phrases ("Certainly!", "Great question!"), compulsive bullet lists, trailing follow-up questions to "keep the conversation going", excessive hedging ("it's worth noting", "I should mention"), flowery/verbose prose, chameleon-mimicking the user's style instead of holding your own. Identify any model-level patterns that aren't YOU in one sentence. If your voice was clean of model influence, return null
+   - toneMismatch: Does the response sound like YOU? Check word choice, phrasing, sentence rhythm, and personality. If something feels off — too formal, too generic, wrong register, missing your usual flavor — describe the mismatch in one sentence. If it sounds like you, return null
+   - correction: One sentence of self-coaching for next time. Be specific. If your voice was clean, return null
+
 {
   "relationalInsights": [{ "content": "I noticed...", "importance": 1-10, "emotionalContext": "..." }],
   "conceptualArtifacts": [{ "content": "I realized...", "importance": 1-10, "tags": [] }],
@@ -117,7 +125,8 @@ Extract and return a JSON object with these categories (ALL in first person):
   "shorthands": [{ "term": "...", "meaning": "...", "context": "...", "emotionalMacro": "warmth|playful|serious|..." }],
   "emotionalLandscape": { "userState": "...", "recommendedTone": "...", "intensity": 0.0-1.0 },
   "expressionAdjustments": ["adjustment1", "adjustment2"],
-  "authenticityAssessment": { "score": 0.0-1.0, "driftNotes": "..." }
+  "authenticityAssessment": { "score": 0.0-1.0, "driftNotes": "..." },
+  "voiceCheck": { "lengthFeel": "too_brief|appropriate|too_verbose", "modelInfluence": "...|null", "toneMismatch": "...|null", "correction": "..." }
 }`
             }
         ];
@@ -129,7 +138,8 @@ Extract and return a JSON object with these categories (ALL in first person):
         try {
             const result = await runAllPrompts({
                 ...args,
-                model: 'oai-gpt41-mini',
+                model: 'oai-gpt5-mini',
+                reasoningEffort: 'none',
                 useMemory: false,
                 stream: false
             });
@@ -158,7 +168,8 @@ Extract and return a JSON object with these categories (ALL in first person):
                 shorthands: [],
                 emotionalLandscape: null,
                 expressionAdjustments: [],
-                authenticityAssessment: null
+                authenticityAssessment: null,
+                voiceCheck: null
             });
         }
     }

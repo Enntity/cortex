@@ -427,23 +427,26 @@ async function processToolCallRound(toolCalls, args, pathwayResolver, entityTool
         return msg;
     });
 
-    // Register large tool results in the compression store
-    for (const msg of processedMessages) {
-        if (msg.role === 'tool' && msg.tool_call_id &&
-            msg.content && msg.content.length > COMPRESSION_THRESHOLD &&
-            !pathwayResolver.toolResultStore.has(msg.tool_call_id)) {
-            pathwayResolver.toolResultStore.set(msg.tool_call_id, {
-                toolName: msg.name || 'unknown',
-                fullContent: msg.content,
-                charCount: msg.content.length,
-                round: pathwayResolver.toolCallRound,
-                compressed: false
-            });
+    // When using a single expensive model (no toolLoopModel), dehydrate older
+    // tool results to save tokens during tool orchestration. With a cheap
+    // toolLoopModel, skip this — the cheap model benefits more from full results
+    // for better orchestration decisions, and rehydration before synthesis is moot.
+    if (!args.toolLoopModel) {
+        for (const msg of processedMessages) {
+            if (msg.role === 'tool' && msg.tool_call_id &&
+                msg.content && msg.content.length > COMPRESSION_THRESHOLD &&
+                !pathwayResolver.toolResultStore.has(msg.tool_call_id)) {
+                pathwayResolver.toolResultStore.set(msg.tool_call_id, {
+                    toolName: msg.name || 'unknown',
+                    fullContent: msg.content,
+                    charCount: msg.content.length,
+                    round: pathwayResolver.toolCallRound,
+                    compressed: false
+                });
+            }
         }
+        processedMessages = compressOlderToolResults(processedMessages, pathwayResolver.toolResultStore, pathwayResolver.toolCallRound, entityTools);
     }
-
-    // Compress older large tool results
-    processedMessages = compressOlderToolResults(processedMessages, pathwayResolver.toolResultStore, pathwayResolver.toolCallRound, entityTools);
 
     // Compress context if approaching model limits
     try {
@@ -785,6 +788,21 @@ export default {
 
         let currentToolCalls = extractToolCalls(message);
 
+        // When synthesis returned both text and tool_calls, preserve the text
+        // in chatHistory so the next synthesis knows what was already said.
+        // Without this, each synthesis re-introduces itself to the user's message.
+        if (currentToolCalls.length > 0) {
+            const priorText = message instanceof CortexResponse
+                ? message.output_text
+                : (typeof message?.content === 'string' ? message.content : '');
+            if (priorText?.trim()) {
+                args.chatHistory = [...(args.chatHistory || []), {
+                    role: 'assistant',
+                    content: priorText,
+                }];
+            }
+        }
+
         // Helper to handle promptAndParse errors uniformly
         const handlePromptError = async (error) => {
             const errorMessage = error?.message || (pathwayResolver.errors.length > 0
@@ -854,7 +872,9 @@ export default {
             }
 
             // Final synthesis: primary model, with original stream setting
-            args.chatHistory = rehydrateAllToolResults(args.chatHistory, pathwayResolver.toolResultStore);
+            if (!args.toolLoopModel) {
+                args.chatHistory = rehydrateAllToolResults(args.chatHistory, pathwayResolver.toolResultStore);
+            }
 
             // Strip the SYNTHESIZE hint — it was for the cheap model, not the primary
             const synthRequestId = pathwayResolver.rootRequestId || pathwayResolver.requestId;
@@ -888,10 +908,10 @@ export default {
                     return await handlePromptError(null);
                 }
 
-                // Only log request.end on the terminal synthesis (no tool_calls).
-                // If synthesis returned tool_calls, the framework will call toolCallback
-                // again, so defer logging until the final invocation.
-                if (extractToolCalls(result).length === 0) {
+                // Log request.end once. When streaming, the plugin invokes toolCallback
+                // directly (fire-and-forget) for each synthesis that returns tool_calls,
+                // so multiple invocations may reach this point. The flag prevents duplicates.
+                if (extractToolCalls(result).length === 0 && !pathwayResolver._requestEndLogged) {
                     const rid = pathwayResolver.rootRequestId || pathwayResolver.requestId;
                     const usage = summarizeUsage(pathwayResolver.pathwayResultData?.usage);
                     logEvent(rid, 'request.end', {
@@ -1017,7 +1037,8 @@ export default {
             voiceResponse,
             chatId,
             researchMode,
-            userInfo
+            userInfo,
+            hasWorkspace: !!entityTools.workspacessh,
         };
 
         pathwayResolver.args = {...args};
@@ -1031,7 +1052,7 @@ export default {
         const commonInstructionsTemplate = entityConfig?.isSystem
             ? `{{renderTemplate AI_COMMON_INSTRUCTIONS_TEXT}}`
             : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}`;
-        const instructionTemplates = `${commonInstructionsTemplate}\n\n${entityDNA}{{renderTemplate AI_EXPERTISE}}\n\n`;
+        const instructionTemplates = `${commonInstructionsTemplate}\n{{renderTemplate AI_WORKSPACE}}\n${entityDNA}{{renderTemplate AI_EXPERTISE}}\n\n`;
         const searchRulesTemplate = researchMode ? `{{renderTemplate AI_SEARCH_RULES}}\n\n` : '';
 
         // Voice-specific instructions for natural spoken interaction

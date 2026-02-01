@@ -1,0 +1,339 @@
+// workspaceSSH.test.js
+// Integration tests for WorkspaceSSH — provisions a real container and tests commands
+
+import test from 'ava';
+import crypto from 'node:crypto';
+import serverFactory from '../../../../index.js';
+import { callPathway } from '../../../../lib/pathwayTools.js';
+import { getEntityStore } from '../../../../lib/MongoEntityStore.js';
+import { destroyWorkspace } from '../../../../pathways/system/entity/tools/shared/workspace_client.js';
+
+const TEST_ENTITY_ID = `test-workspace-${crypto.randomUUID()}`;
+const TEST_CONTEXT_ID = `test-ctx-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+let testServer;
+let entityStore;
+
+test.before(async () => {
+    const { server, startServer } = await serverFactory();
+    if (startServer) {
+        await startServer();
+    }
+    testServer = server;
+
+    // Create a minimal test entity in MongoDB so workspace provisioning can find it
+    entityStore = getEntityStore();
+    await entityStore.upsertEntity({
+        id: TEST_ENTITY_ID,
+        name: 'WorkspaceSSH Test Entity',
+        tools: ['workspacessh'],
+    });
+});
+
+test.after.always('cleanup', async () => {
+    // Destroy the workspace container + volume
+    try {
+        const entityConfig = await entityStore.getEntity(TEST_ENTITY_ID);
+        if (entityConfig) {
+            await destroyWorkspace(TEST_ENTITY_ID, entityConfig, { destroyVolume: true });
+        }
+    } catch {
+        // Best effort cleanup
+    }
+
+    // Clean up file collection data from Redis
+    try {
+        const { getRedisClient } = await import('../../../../lib/fileUtils.js');
+        const redisClient = await getRedisClient();
+        if (redisClient) {
+            await redisClient.del(`FileStoreMap:ctx:${TEST_CONTEXT_ID}`);
+        }
+    } catch {
+        // Best effort cleanup
+    }
+
+    // Remove the test entity from MongoDB
+    try {
+        if (entityStore && entityStore.isConfigured()) {
+            const collection = await entityStore._getCollection();
+            await collection.deleteOne({ id: TEST_ENTITY_ID });
+        }
+    } catch {
+        // Best effort cleanup
+    }
+
+    if (testServer) {
+        await testServer.stop();
+    }
+});
+
+// --- Shell commands ---
+
+test.serial('shell: runs pwd', async t => {
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'pwd',
+        userMessage: 'Check working directory',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, true);
+    t.regex(parsed.stdout.trim(), /^\/workspace/);
+});
+
+test.serial('shell: runs echo and captures stdout', async t => {
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'echo "hello from workspace"',
+        userMessage: 'Echo test',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, true);
+    t.is(parsed.stdout.trim(), 'hello from workspace');
+});
+
+test.serial('shell: writes and reads a file', async t => {
+    // Write
+    const writeResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'echo "test content 123" > /workspace/test-file.txt',
+        userMessage: 'Write test file',
+    });
+    t.is(JSON.parse(writeResult).success, true);
+
+    // Read back
+    const readResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'cat /workspace/test-file.txt',
+        userMessage: 'Read test file',
+    });
+    const parsed = JSON.parse(readResult);
+    t.is(parsed.success, true);
+    t.is(parsed.stdout.trim(), 'test content 123');
+});
+
+test.serial('shell: handles pipelines', async t => {
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'echo -e "cherry\\napple\\nbanana" | sort',
+        userMessage: 'Sort test',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, true);
+    t.is(parsed.stdout.trim(), 'apple\nbanana\ncherry');
+});
+
+test.serial('shell: captures stderr for bad command', async t => {
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'ls /nonexistent-dir-xyz',
+        userMessage: 'List missing dir',
+    });
+
+    const parsed = JSON.parse(result);
+    // Command itself runs (success from workspace perspective) but ls fails
+    t.truthy(parsed.stderr || parsed.error);
+});
+
+test.serial('shell: runs multi-command with semicolons', async t => {
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'mkdir -p /workspace/subdir; echo "nested" > /workspace/subdir/file.txt; cat /workspace/subdir/file.txt',
+        userMessage: 'Multi-command test',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, true);
+    t.is(parsed.stdout.trim(), 'nested');
+});
+
+// --- scp push with relative paths ---
+
+test.serial('scp push: works with relative path', async t => {
+    // Create a file in a subdirectory
+    await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'mkdir -p /workspace/artifacts && echo "relative path test" > /workspace/artifacts/test.txt',
+        userMessage: 'Create test file',
+    });
+
+    // Push using a relative path (the bug: this used to fail with "file not found")
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        command: 'scp push artifacts/test.txt',
+        userMessage: 'Push with relative path',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, true, `Expected success but got: ${parsed.error || 'no error'}`);
+    t.truthy(parsed.url, 'Should return a URL');
+    t.is(parsed.filename, 'test.txt');
+});
+
+test.serial('scp push: works with absolute path', async t => {
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        command: 'scp push /workspace/artifacts/test.txt "test-absolute"',
+        userMessage: 'Push with absolute path',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, true, `Expected success but got: ${parsed.error || 'no error'}`);
+    t.is(parsed.filename, 'test-absolute');
+});
+
+test.serial('scp push: glob expands and pushes multiple files', async t => {
+    // Create several files
+    await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'mkdir -p /workspace/gallery && echo a > /workspace/gallery/img1.jpg && echo b > /workspace/gallery/img2.jpg && echo c > /workspace/gallery/doc.txt',
+        userMessage: 'Create gallery files',
+    });
+
+    // Push using glob — should match img1.jpg and img2.jpg but not doc.txt
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        command: 'scp push /workspace/gallery/*.jpg',
+        userMessage: 'Push with glob',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, true, `Expected success but got: ${JSON.stringify(parsed)}`);
+    t.is(parsed.pushed, 2);
+    t.is(parsed.failed, 0);
+    t.is(parsed.files.length, 2);
+
+    const names = parsed.files.map(f => f.filename).sort();
+    t.deepEqual(names, ['img1.jpg', 'img2.jpg']);
+});
+
+test.serial('scp push: glob with relative path', async t => {
+    // gallery files still exist from previous test
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        command: 'scp push gallery/*.jpg',
+        userMessage: 'Push with relative glob',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, true, `Expected success but got: ${JSON.stringify(parsed)}`);
+    t.is(parsed.pushed, 2);
+});
+
+test.serial('scp push: glob no matches returns error', async t => {
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        command: 'scp push /workspace/nonexistent/*.xyz',
+        userMessage: 'Push with no-match glob',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, false);
+    t.regex(parsed.error, /No files matched/);
+});
+
+// --- Background execution ---
+
+test.serial('bg + poll: runs background command and retrieves result', async t => {
+    // Start a background job
+    const bgResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'bg echo "background done"',
+        userMessage: 'Start background echo',
+    });
+
+    const bgParsed = JSON.parse(bgResult);
+    t.is(bgParsed.success, true);
+    t.truthy(bgParsed.processId, 'Should return a processId');
+
+    // Wait a moment for the command to complete
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Poll for the result
+    const pollResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: `poll ${bgParsed.processId}`,
+        userMessage: 'Poll background result',
+    });
+
+    const pollParsed = JSON.parse(pollResult);
+    t.is(pollParsed.success, true);
+    t.regex(pollParsed.stdout || '', /background done/);
+});
+
+// --- Reset ---
+
+test.serial('reset: clears workspace contents', async t => {
+    // Create a file first
+    await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'echo "to be deleted" > /workspace/reset-test.txt',
+        userMessage: 'Create file for reset test',
+    });
+
+    // Verify it exists
+    const before = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'ls /workspace/reset-test.txt',
+        userMessage: 'Verify file exists',
+    });
+    t.is(JSON.parse(before).success, true);
+
+    // Reset workspace
+    const resetResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'reset',
+        userMessage: 'Reset workspace',
+    });
+    t.is(JSON.parse(resetResult).success, true);
+
+    // Verify file is gone
+    const after = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'ls /workspace/reset-test.txt 2>&1; echo "exit:$?"',
+        userMessage: 'Verify file deleted after reset',
+    });
+    const afterParsed = JSON.parse(after);
+    // ls should fail (file not found) — exit code non-zero
+    t.regex(afterParsed.stdout || afterParsed.stderr || '', /No such file|exit:[12]/);
+});
+
+test.serial('reset --preserve: keeps specified files', async t => {
+    // Create two files
+    await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'echo "keep me" > /workspace/.env && echo "delete me" > /workspace/temp.txt',
+        userMessage: 'Create files for preserve test',
+    });
+
+    // Reset with --preserve
+    const resetResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'reset --preserve .env',
+        userMessage: 'Reset workspace preserving .env',
+    });
+    t.is(JSON.parse(resetResult).success, true);
+
+    // .env should still exist
+    const envResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'cat /workspace/.env',
+        userMessage: 'Check preserved file',
+    });
+    t.is(JSON.parse(envResult).success, true);
+    t.is(JSON.parse(envResult).stdout.trim(), 'keep me');
+
+    // temp.txt should be gone
+    const tempResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'test -f /workspace/temp.txt && echo "exists" || echo "gone"',
+        userMessage: 'Check deleted file',
+    });
+    t.is(JSON.parse(tempResult).stdout.trim(), 'gone');
+});

@@ -24,6 +24,25 @@ export const TOOL_MIGRATIONS = {
     'listfilecollection': 'filecollection',
     'removefilefromcollection': 'filecollection',
     'updatefilemetadata': 'filecollection',
+
+    // Consolidations: workspace tools → WorkspaceSSH
+    'workspaceshell': 'workspacessh',
+    'workspaceread': 'workspacessh',
+    'workspacewrite': 'workspacessh',
+    'workspaceedit': 'workspacessh',
+    'workspacebrowse': 'workspacessh',
+    'workspacestatus': 'workspacessh',
+    'workspaceupload': 'workspacessh',
+    'workspacedownload': 'workspacessh',
+    'workspacereset': 'workspacessh',
+    'workspacebackup': 'workspacessh',
+    'workspacerestore': 'workspacessh',
+
+    // Consolidations: file editing tools → WorkspaceSSH
+    'readtextfile': 'workspacessh',
+    'writefile': 'workspacessh',
+    'editfilebyline': 'workspacessh',
+    'editfilebysearchandreplace': 'workspacessh',
 };
 
 /**

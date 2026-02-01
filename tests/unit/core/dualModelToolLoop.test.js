@@ -5,7 +5,7 @@
 
 import test from 'ava';
 import { insertSystemMessage, extractToolCalls, mergeParallelToolResults } from '../../../pathways/system/entity/sys_entity_agent.js';
-import { rehydrateAllToolResults } from '../../../pathways/system/entity/tools/shared/tool_result_compression.js';
+import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults } from '../../../pathways/system/entity/tools/shared/tool_result_compression.js';
 
 // --- extractToolCalls ---
 
@@ -535,4 +535,144 @@ test('mergeParallelToolResults preserves thoughtSignature on tool calls', t => {
 
     const merged = mergeParallelToolResults(toolResults, preToolCallMessages);
     t.is(merged[0].tool_calls[0].thoughtSignature, 'sig-abc');
+});
+
+// --- Dehydration toggle: toolLoopModel controls whether compression runs ---
+
+// Helper that mirrors the conditional logic in processToolCallRound
+function simulateDehydration(args, messages, store, currentRound, entityTools) {
+    if (!args.toolLoopModel) {
+        for (const msg of messages) {
+            if (msg.role === 'tool' && msg.tool_call_id &&
+                msg.content && msg.content.length > COMPRESSION_THRESHOLD &&
+                !store.has(msg.tool_call_id)) {
+                store.set(msg.tool_call_id, {
+                    toolName: msg.name || 'unknown',
+                    fullContent: msg.content,
+                    charCount: msg.content.length,
+                    round: currentRound,
+                    compressed: false
+                });
+            }
+        }
+        messages = compressOlderToolResults(messages, store, currentRound, entityTools);
+    }
+    return messages;
+}
+
+// Helper that mirrors the conditional logic before synthesis
+function simulateRehydration(args, chatHistory, store) {
+    if (!args.toolLoopModel) {
+        return rehydrateAllToolResults(chatHistory, store);
+    }
+    return chatHistory;
+}
+
+test('dehydration toggle: toolLoopModel set — results stay full, store empty', t => {
+    const args = { toolLoopModel: 'oai-gpt5-mini' };
+    const store = new Map();
+    const bigContent = 'x'.repeat(5000);
+    const messages = [
+        { role: 'user', content: 'query' },
+        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
+    ];
+
+    // Round 1: store result
+    simulateDehydration(args, messages, store, 1, {});
+    // Round 2: would compress older results if dehydration were active
+    const result = simulateDehydration(args, messages, store, 2, {});
+
+    t.is(store.size, 0, 'Store should be empty — no dehydration with toolLoopModel');
+    t.is(result[1].content, bigContent, 'Tool result should be full');
+});
+
+test('dehydration toggle: no toolLoopModel — results are compressed', t => {
+    const args = { toolLoopModel: null };
+    const store = new Map();
+    const bigContent = 'x'.repeat(5000);
+    const messages = [
+        { role: 'user', content: 'query' },
+        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
+    ];
+
+    // Round 1: store result
+    simulateDehydration(args, messages, store, 1, {});
+    t.is(store.size, 1, 'Store should have entry');
+    t.is(store.get('tc1').fullContent, bigContent);
+
+    // Round 2: older results get compressed
+    const result = simulateDehydration(args, messages, store, 2, {});
+    t.not(result[1].content, bigContent, 'Tool result should be compressed');
+    t.true(store.get('tc1').compressed);
+});
+
+test('rehydration toggle: toolLoopModel set — chatHistory unchanged', t => {
+    const args = { toolLoopModel: 'oai-gpt5-mini' };
+    const store = new Map();
+    const fullContent = 'y'.repeat(5000);
+    store.set('tc1', { fullContent, compressed: true, round: 1 });
+
+    const chatHistory = [
+        { role: 'tool', tool_call_id: 'tc1', content: 'compressed summary' },
+    ];
+
+    const result = simulateRehydration(args, chatHistory, store);
+    t.is(result[0].content, 'compressed summary', 'Should NOT rehydrate with toolLoopModel');
+    t.true(store.get('tc1').compressed, 'Store entry should stay compressed');
+});
+
+test('rehydration toggle: no toolLoopModel — full content restored', t => {
+    const args = { toolLoopModel: null };
+    const store = new Map();
+    const fullContent = 'y'.repeat(5000);
+    store.set('tc1', { fullContent, compressed: true, round: 1 });
+
+    const chatHistory = [
+        { role: 'tool', tool_call_id: 'tc1', content: 'compressed summary' },
+    ];
+
+    const result = simulateRehydration(args, chatHistory, store);
+    t.is(result[0].content, fullContent, 'Should rehydrate without toolLoopModel');
+    t.false(store.get('tc1').compressed, 'Store entry should be marked uncompressed');
+});
+
+test('dehydration toggle: full cycle without toolLoopModel — compress then rehydrate', t => {
+    const args = { toolLoopModel: null };
+    const store = new Map();
+    const bigContent = JSON.stringify({ title: 'Test', content: 'z'.repeat(5000) });
+    const messages = [
+        { role: 'user', content: 'search' },
+        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
+    ];
+
+    // Round 1: register
+    simulateDehydration(args, messages, store, 1, {});
+    // Round 2: compress older
+    const compressed = simulateDehydration(args, messages, store, 2, {});
+    t.not(compressed[1].content, bigContent);
+
+    // Synthesis: rehydrate
+    const rehydrated = simulateRehydration(args, compressed, store);
+    t.is(rehydrated[1].content, bigContent);
+});
+
+test('dehydration toggle: full cycle with toolLoopModel — no compression, no rehydration', t => {
+    const args = { toolLoopModel: 'oai-gpt5-mini' };
+    const store = new Map();
+    const bigContent = JSON.stringify({ title: 'Test', content: 'z'.repeat(5000) });
+    const messages = [
+        { role: 'user', content: 'search' },
+        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
+    ];
+
+    // Round 1
+    simulateDehydration(args, messages, store, 1, {});
+    // Round 2
+    const afterRound2 = simulateDehydration(args, messages, store, 2, {});
+    t.is(afterRound2[1].content, bigContent, 'Content stays full');
+
+    // Synthesis
+    const forSynthesis = simulateRehydration(args, afterRound2, store);
+    t.is(forSynthesis[1].content, bigContent, 'Content still full — nothing to rehydrate');
+    t.is(store.size, 0, 'Store was never used');
 });

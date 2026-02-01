@@ -164,3 +164,83 @@ test.serial('Eidos: _formatEidosMetricsForCompass produces readable output', asy
     t.true(formatted.includes('42'), 'Should include turn count');
     t.true(formatted.includes('warming'), 'Should include trend');
 });
+
+// ==================== VOICE CHECK ====================
+
+test.serial('Eidos: turn synthesis returns voiceCheck field', async (t) => {
+    const result = await callPathway('sys_continuity_turn_synthesis', {
+        aiName: 'TestEntity',
+        entityContext: 'You are a direct, no-nonsense entity who keeps things brief.',
+        conversation: `USER: What is 2+2?
+
+ASSISTANT: Certainly! Great question! I'd be absolutely happy to help you with that! The answer to 2+2 is 4. I hope that helps! Let me know if you have any other questions I can assist you with!`,
+    });
+
+    const parsed = JSON.parse(result);
+    t.truthy('voiceCheck' in parsed, 'Should include voiceCheck field');
+
+    if (parsed.voiceCheck) {
+        t.true(
+            ['too_brief', 'appropriate', 'too_verbose'].includes(parsed.voiceCheck.lengthFeel),
+            `lengthFeel should be a valid enum, got: ${parsed.voiceCheck.lengthFeel}`
+        );
+        t.true(
+            parsed.voiceCheck.modelInfluence === null || typeof parsed.voiceCheck.modelInfluence === 'string',
+            'modelInfluence should be a string or null'
+        );
+    } else {
+        t.pass('voiceCheck was null (acceptable if LLM found nothing to check)');
+    }
+});
+
+test.serial('Eidos: _formatEidosMetricsForCompass includes voice check when issues found', async (t) => {
+    const formatted = service._formatEidosMetricsForCompass({
+        authenticityScores: [0.85],
+        turnCount: 5,
+        voiceCheck: {
+            lengthFeel: 'too_verbose',
+            modelInfluence: 'Compulsive bullet lists and a trailing follow-up question to keep the conversation going.',
+            toneMismatch: 'Too formal — dropped my usual slang and sounded like a customer service bot.',
+            correction: 'Keep answers shorter and drop the filler.',
+        },
+    });
+
+    t.true(formatted.includes('Voice check:'), 'Should include Voice check line');
+    t.true(formatted.includes('too_verbose'), 'Should include length feel');
+    t.true(formatted.includes('model bleed:'), 'Should include model influence');
+    t.true(formatted.includes('Compulsive bullet lists'), 'Should include model influence detail');
+    t.true(formatted.includes('tone: Too formal'), 'Should include tone mismatch');
+    t.true(formatted.includes('Keep answers shorter'), 'Should include correction');
+});
+
+test.serial('Eidos: _formatEidosMetricsForCompass omits voice check when clean', async (t) => {
+    const formatted = service._formatEidosMetricsForCompass({
+        authenticityScores: [0.95],
+        turnCount: 5,
+        voiceCheck: {
+            lengthFeel: 'appropriate',
+            modelInfluence: null,
+            toneMismatch: null,
+            correction: null,
+        },
+    });
+
+    t.false(formatted.includes('Voice check:'), 'Should NOT include Voice check line when voice is clean');
+});
+
+test.serial('Eidos: _formatEidosMetricsForCompass surfaces toneMismatch alone', async (t) => {
+    const formatted = service._formatEidosMetricsForCompass({
+        authenticityScores: [0.80],
+        turnCount: 3,
+        voiceCheck: {
+            lengthFeel: 'appropriate',
+            assistantPhrases: [],
+            toneMismatch: 'Phrasing was too stiff — missing my usual playful edge.',
+            correction: null,
+        },
+    });
+
+    t.true(formatted.includes('Voice check:'), 'Should include Voice check line when toneMismatch is present');
+    t.true(formatted.includes('tone: Phrasing was too stiff'), 'Should include the tone mismatch detail');
+    t.false(formatted.includes('length='), 'Should NOT include length when appropriate');
+});
