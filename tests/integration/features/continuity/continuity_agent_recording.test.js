@@ -415,15 +415,13 @@ test.serial('Multiple tool calls: still records exactly 2 turns', async (t) => {
                 $chatHistory: [MultiMessage]!,
                 $agentContext: [AgentContextInput],
                 $entityId: String,
-                $researchMode: Boolean,
                 $useMemory: Boolean
             ) {
                 sys_entity_agent(
-                    text: $text, 
+                    text: $text,
                     chatHistory: $chatHistory,
                     agentContext: $agentContext,
                     entityId: $entityId,
-                    researchMode: $researchMode,
                     useMemory: $useMemory,
                     stream: true
                 ) {
@@ -439,7 +437,6 @@ test.serial('Multiple tool calls: still records exactly 2 turns', async (t) => {
             chatHistory: [{ role: "user", content: ["Search for information about the latest Mars rover discoveries"] }],
             agentContext: [{ contextId, contextKey: null, default: true }],
             entityId: TEST_ENTITY_ID,
-            researchMode: true,
             useMemory: true
         }
     });

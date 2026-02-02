@@ -2,6 +2,7 @@
 // Tool pathway that allows entities to send push notifications to users
 import logger from '../../../../lib/logger.js';
 import { config } from '../../../../config.js';
+import { loadEntityConfig } from './shared/sys_entity_tools.js';
 
 export default {
     prompt: [],
@@ -43,8 +44,8 @@ export default {
     },
 
     executePathway: async ({args, runAllPrompts, resolver}) => {
-        const { title, body, url, tag, contextId } = args;
-        
+        const { title, body, url, tag, entityId } = args;
+
         // Validate required parameters
         if (!title || typeof title !== 'string' || title.trim() === '') {
             return JSON.stringify({
@@ -60,12 +61,18 @@ export default {
             });
         }
 
-        // Get the user ID from context
-        const userId = contextId;
+        // Resolve userId from entity config — push notifications target the entity's creator
+        let userId = null;
+        if (entityId) {
+            try {
+                const entityConfig = await loadEntityConfig(entityId);
+                userId = entityConfig?.createdBy || null;
+            } catch { /* entity lookup failed */ }
+        }
         if (!userId) {
             return JSON.stringify({
                 success: false,
-                error: "Unable to determine user ID. Push notification cannot be sent without a target user."
+                error: "Unable to determine user ID. Push notification requires an entity with a createdBy field."
             });
         }
 

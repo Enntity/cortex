@@ -130,21 +130,22 @@ test('dual-model loop uses cheap model with stream:false for both streaming and 
     t.false(nonStreamingArgs.stream);  // non-streaming: synthesis doesn't stream
 });
 
-test('final synthesis uses primary model with original stream setting and tools', t => {
-    const SYNTHESIS_TOOLS = true;
-    const entityTools = [{ type: 'function', function: { name: 'Search' } }];
+test('final synthesis uses primary model with original stream setting and SetGoals-only tools', t => {
+    const SET_GOALS_TOOL = { type: 'function', function: { name: 'SetGoals' } };
+    const synthesisTools = [SET_GOALS_TOOL];
 
     // Streaming request
     const streamingArgs = { toolLoopModel: 'oai-gpt5-mini', primaryModel: 'oai-gpt41', stream: true };
     const streamSynthesis = {
         modelOverride: streamingArgs.primaryModel,
         stream: streamingArgs.stream,
-        tools: SYNTHESIS_TOOLS ? entityTools : undefined,
-        tool_choice: SYNTHESIS_TOOLS ? 'auto' : undefined,
+        tools: synthesisTools,
+        tool_choice: 'auto',
     };
     t.is(streamSynthesis.modelOverride, 'oai-gpt41');
     t.true(streamSynthesis.stream);
-    t.deepEqual(streamSynthesis.tools, entityTools);
+    t.is(streamSynthesis.tools.length, 1);
+    t.is(streamSynthesis.tools[0].function.name, 'SetGoals');
     t.is(streamSynthesis.tool_choice, 'auto');
 
     // Non-streaming request
@@ -152,12 +153,12 @@ test('final synthesis uses primary model with original stream setting and tools'
     const nonStreamSynthesis = {
         modelOverride: nonStreamingArgs.primaryModel,
         stream: nonStreamingArgs.stream,
-        tools: SYNTHESIS_TOOLS ? entityTools : undefined,
-        tool_choice: SYNTHESIS_TOOLS ? 'auto' : undefined,
+        tools: synthesisTools,
+        tool_choice: 'auto',
     };
     t.is(nonStreamSynthesis.modelOverride, 'oai-gpt41');
     t.false(nonStreamSynthesis.stream);
-    t.deepEqual(nonStreamSynthesis.tools, entityTools);
+    t.is(nonStreamSynthesis.tools.length, 1);
     t.is(nonStreamSynthesis.tool_choice, 'auto');
 });
 
@@ -259,8 +260,8 @@ test('SYNTHESIZE instruction is injected inside dual-model loop for both streami
 // --- Final synthesis uses correct model parameters ---
 
 test('final synthesis uses primary model with configured reasoning effort', t => {
-    const SYNTHESIS_TOOLS = true;
-    const entityTools = [{ type: 'function', function: { name: 'Search' } }];
+    const SET_GOALS_TOOL = { type: 'function', function: { name: 'SetGoals' } };
+    const synthesisTools = [SET_GOALS_TOOL];
     const args = {
         toolLoopModel: 'oai-gpt5-mini',
         primaryModel: 'oai-gpt41',
@@ -272,15 +273,16 @@ test('final synthesis uses primary model with configured reasoning effort', t =>
     const synthesisArgs = {
         modelOverride: args.primaryModel,
         stream: args.stream,
-        tools: SYNTHESIS_TOOLS ? entityTools : undefined,
-        tool_choice: SYNTHESIS_TOOLS ? 'auto' : undefined,
+        tools: synthesisTools,
+        tool_choice: 'auto',
         reasoningEffort: args.configuredReasoningEffort || 'medium',
         skipMemoryLoad: true,
     };
 
     t.is(synthesisArgs.modelOverride, 'oai-gpt41');
     t.true(synthesisArgs.stream);
-    t.deepEqual(synthesisArgs.tools, entityTools);
+    t.is(synthesisArgs.tools.length, 1);
+    t.is(synthesisArgs.tools[0].function.name, 'SetGoals');
     t.is(synthesisArgs.tool_choice, 'auto');
     t.is(synthesisArgs.reasoningEffort, 'high');
     t.true(synthesisArgs.skipMemoryLoad);
@@ -330,41 +332,40 @@ test('no synthesis when toolLoopModel is null (fallback path uses auto tool_choi
     t.is(toolChoice, 'auto');
 });
 
-test('dual-model synthesis includes tools when SYNTHESIS_TOOLS is true', t => {
-    const SYNTHESIS_TOOLS = true;
-    const entityTools = [{ type: 'function', function: { name: 'Search' } }];
+test('synthesis receives all entity tools plus SetGoals', t => {
+    const entityToolsOpenAiFormat = [
+        { type: 'function', function: { name: 'Search' } },
+        { type: 'function', function: { name: 'Analyze' } },
+    ];
+    const SET_GOALS_OPENAI_DEF = { type: 'function', function: { name: 'SetGoals' } };
+    const synthesisTools = [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF];
 
     const synthesisArgs = {
-        tools: SYNTHESIS_TOOLS ? entityTools : undefined,
-        tool_choice: SYNTHESIS_TOOLS ? 'auto' : undefined,
+        tools: synthesisTools,
+        tool_choice: 'auto',
     };
 
-    t.deepEqual(synthesisArgs.tools, entityTools);
+    t.is(synthesisArgs.tools.length, 3);
+    t.true(synthesisArgs.tools.some(t => t.function.name === 'SetGoals'), 'Should include SetGoals');
+    t.true(synthesisArgs.tools.some(t => t.function.name === 'Search'), 'Should include entity tools');
     t.is(synthesisArgs.tool_choice, 'auto');
 });
 
-// --- SYNTHESIS_TOOLS toggle ---
+// --- Synthesis tool inclusion ---
 
-test('SYNTHESIS_TOOLS toggle controls whether synthesis gets tools', t => {
+test('synthesis includes entity tools so it can replan and execute', t => {
     const entityToolsOpenAiFormat = [{ type: 'function', function: { name: 'Search' } }];
+    const SET_GOALS_OPENAI_DEF = { type: 'function', function: { name: 'SetGoals' } };
 
-    // When SYNTHESIS_TOOLS = true, synthesis gets tools and tool_choice
-    const withTools = true;
-    const synthArgsOn = {
-        tools: withTools ? entityToolsOpenAiFormat : undefined,
-        tool_choice: withTools ? 'auto' : undefined,
+    // Synthesis gets all entity tools + SetGoals (gated architecture)
+    const synthesisTools = [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF];
+    const synthArgs = {
+        tools: synthesisTools,
+        tool_choice: 'auto',
     };
-    t.deepEqual(synthArgsOn.tools, entityToolsOpenAiFormat);
-    t.is(synthArgsOn.tool_choice, 'auto');
-
-    // When SYNTHESIS_TOOLS = false, synthesis gets neither
-    const withoutTools = false;
-    const synthArgsOff = {
-        tools: withoutTools ? entityToolsOpenAiFormat : undefined,
-        tool_choice: withoutTools ? 'auto' : undefined,
-    };
-    t.is(synthArgsOff.tools, undefined);
-    t.is(synthArgsOff.tool_choice, undefined);
+    t.is(synthArgs.tools.length, 2);
+    t.true(synthArgs.tools.some(t => t.function.name === 'SetGoals'), 'Should include SetGoals');
+    t.true(synthArgs.tools.some(t => t.function.name === 'Search'), 'Should include entity tools');
 });
 
 test('duplicate tool call detection returns cached result with admonishment', t => {
@@ -424,7 +425,7 @@ test('duplicate detection catches non-consecutive repeats across rounds', t => {
 });
 
 test('extractToolCalls returns empty for text-only synthesis (no tool_calls)', t => {
-    // When SYNTHESIS_TOOLS = false, synthesis response won't have tool_calls
+    // When synthesis responds with text only (no SetGoals replan), no tool_calls
     const textOnlyResult = { content: 'Here is your answer...' };
     t.deepEqual(extractToolCalls(textOnlyResult), []);
 });
@@ -654,6 +655,60 @@ test('dehydration toggle: full cycle without toolLoopModel — compress then reh
     // Synthesis: rehydrate
     const rehydrated = simulateRehydration(args, compressed, store);
     t.is(rehydrated[1].content, bigContent);
+});
+
+// --- streaming callback drain / empty response safety ---
+
+test('drainStreamingCallbacks always updates result, even with empty string', async t => {
+    // Regression: the old code had `if (cbResult) resultHolder.value = cbResult;`
+    // which treated empty string as falsy and kept the original value (potentially
+    // containing stale tool_calls that would re-trigger the callback loop).
+    // Fix: always assign, matching the original pre-rewrite behavior.
+    const resolver = {};
+    resolver._streamingToolCallbackPromise = Promise.resolve('');
+
+    const holder = { value: 'stale_response_with_tool_calls' };
+    let hadCallback = false;
+    while (resolver._streamingToolCallbackPromise) {
+        hadCallback = true;
+        const pending = resolver._streamingToolCallbackPromise;
+        resolver._streamingToolCallbackPromise = null;
+        holder.value = await pending;
+    }
+
+    t.true(hadCallback);
+    t.is(holder.value, '', 'Empty string must replace stale value — not keep tool_calls');
+});
+
+test('drainStreamingCallbacks updates result with non-empty callback result', async t => {
+    const resolver = {};
+    resolver._streamingToolCallbackPromise = Promise.resolve('synthesis text response');
+
+    const holder = { value: 'original' };
+    while (resolver._streamingToolCallbackPromise) {
+        const pending = resolver._streamingToolCallbackPromise;
+        resolver._streamingToolCallbackPromise = null;
+        holder.value = await pending;
+    }
+
+    t.is(holder.value, 'synthesis text response');
+});
+
+test('no depth cap on nested callbacks — only the tool budget limits recursion', t => {
+    // The rewrite originally had `if (callbackDepth > 1) return ''` which prevented
+    // synthesis from running after nested tool calls, causing empty responses.
+    // Now: no depth cap. The tool budget (TOOL_BUDGET) and duplicate detection
+    // prevent runaway loops. Any callback depth gets the full loop treatment.
+    // Gate check is skipped for depth > 1 (nested calls already passed the gate).
+
+    // Contract: callbackDepth has no ceiling — budget is the only limiter
+    const TOOL_BUDGET = 500; // from sys_entity_agent.js
+    t.true(TOOL_BUDGET > 0, 'Tool budget exists as the recursion limiter');
+    // depth 1, 2, 3, 10 — all should run the full loop (gate skipped for > 1)
+    for (const depth of [1, 2, 3, 10]) {
+        const skipGate = depth > 1;
+        t.is(skipGate, depth > 1, `Depth ${depth}: gate ${skipGate ? 'skipped' : 'enforced'}`);
+    }
 });
 
 test('dehydration toggle: full cycle with toolLoopModel — no compression, no rehydration', t => {

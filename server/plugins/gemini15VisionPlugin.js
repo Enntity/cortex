@@ -121,7 +121,9 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
                         // OpenAI: { role: 'tool', tool_call_id: '...', content: '...' }
                         // Gemini: { role: 'function', parts: [{ functionResponse: { name: '...', response: { content: '...' } } }] }
                         const toolCallId = message.tool_call_id || message.toolCallId;
-                        const toolName = toolCallId ? toolCallId.split('_')[0] : 'unknown_tool';
+                        // Use explicit name field first (always correct), fall back to parsing tool_call_id
+                        // Claude-format IDs (toolu_...) don't contain the tool name, so split('_')[0] would give 'toolu'
+                        const toolName = message.name || (toolCallId ? toolCallId.split('_')[0] : 'unknown_tool');
                         
                         // Convert content array to string if needed (Gemini expects string content)
                         let toolContent = content;
@@ -163,7 +165,7 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
                     content.forEach(part => {
                         addPartToMessages(convertPartToGemini(part));
                     });
-                } 
+                }
                 else {
                     addPartToMessages(convertPartToGemini(content));
                 }
@@ -344,7 +346,7 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
     // Override in subclasses to capture model-specific fields (e.g., thoughtSignature for Gemini 3+)
     buildToolCallFromFunctionCall(part) {
         return {
-            id: part.functionCall.name + '_' + Date.now(),
+            id: part.functionCall.name + '_' + Date.now() + '_' + (this._toolCallIdCounter = (this._toolCallIdCounter || 0) + 1),
             type: "function",
             function: {
                 name: part.functionCall.name,

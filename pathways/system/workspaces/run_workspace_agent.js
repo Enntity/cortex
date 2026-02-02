@@ -7,7 +7,6 @@ export default {
     inputParameters: {
         model: "oai-gpt41",
         chatHistory: [{role: '', content: []}],
-        researchMode: false,
         agentContext: [
             { contextId: "", contextKey: "", default: true }
         ]

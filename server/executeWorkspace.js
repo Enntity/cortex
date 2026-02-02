@@ -132,10 +132,6 @@ const executePathwayWithFallback = async (pathway, pathwayArgs, contextValue, in
                 }
             }
             
-            // Ensure researchMode defaults to false if not provided
-            if (cortexArgs.researchMode === undefined) {
-                cortexArgs.researchMode = false;
-            }
         }
         
         // If we have text parameter, we need to add it to the chatHistory

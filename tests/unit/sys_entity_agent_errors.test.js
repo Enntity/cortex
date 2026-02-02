@@ -457,6 +457,52 @@ test.serial('toolCallback charges toolCost from tool definition (cheap tool cost
   t.is(resolver.toolCallRound, 1);
 });
 
+test.serial('toolCallback enforces minimum cost of 1 even if toolCost is 0', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  // Create a tool with toolCost: 0 (should still charge 1)
+  const zeroToolPathways = {
+    ...config.get('pathways'),
+    test_tool_zero: {
+      rootResolver: async () => ({
+        result: JSON.stringify({ success: true }),
+      }),
+    },
+  };
+  config.load({ pathways: zeroToolPathways });
+
+  const tools = {
+    ...originals.testEntity.customTools,
+    zerocosttool: buildToolDefinition('ZeroCostTool', 'test_tool_zero', { toolCost: 0 }),
+  };
+
+  const modifiedEntity = {
+    ...originals.testEntity,
+    tools: [...originals.testEntity.tools, 'zerocosttool'],
+    customTools: tools,
+  };
+
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(modifiedEntity);
+
+  const resolver = buildResolver({
+    promptAndParse: async () => 'done',
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'use zero cost tool' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+  };
+
+  const message = { tool_calls: [buildToolCall('ZeroCostTool')] };
+  await sysEntityAgent.toolCallback(args, message, resolver);
+
+  // Even though toolCost is 0, the floor of 1 should be enforced
+  t.is(resolver.toolBudgetUsed, 1, 'Tools with toolCost: 0 must still cost at least 1');
+  t.is(resolver.toolCallRound, 1);
+});
+
 test.serial('toolCallback charges DEFAULT_TOOL_COST (10) for tools without toolCost', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
@@ -1071,4 +1117,127 @@ test.serial('executePathway updates response from streaming callback result', as
   // The response from the callback should flow through to the return value
   // (unless memory recording or request.end changes it)
   t.truthy(result, 'Should return a result');
+});
+
+// --- Empty response safety net (regression: streaming hang) ---
+
+test.serial('executePathway generates error response when streaming callback returns empty string', async (t) => {
+  // This is the exact bug: synthesis returned only tool_calls (ShowOverlay) during
+  // streaming. The callback processed the tool (which failed), returned empty string.
+  // Without the safety net, the client got 0 content chars and hung for 5+ minutes.
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'what is the largest country',
+    chatHistory: [{ role: 'user', content: 'what is the largest country' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: true,
+  };
+
+  const runAllPrompts = async () => {
+    // Simulate: streaming model returned only tool_calls, callback resolved with empty
+    resolver._streamingToolCallbackPromise = Promise.resolve('');
+    return { on: () => {} };
+  };
+
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  // Must NEVER be empty — should have generated an error response
+  t.truthy(result, 'Must return a response, never empty');
+  const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
+  t.true(text.length > 0, 'Response text must have content');
+  // Should be an error response since the model produced nothing
+  t.true(text.includes('ERROR_RESPONSE') || text.includes('error') || text.includes('try again'),
+    'Should be an error/retry response when model produced no content');
+});
+
+test.serial('executePathway closes stream via publishRequestProgress on empty response', async (t) => {
+  // Even if the model returns garbage, we MUST close the stream. NEVER leave it hanging.
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const publishedEvents = [];
+  // Monkey-patch publishRequestProgress to capture calls
+  const { publishRequestProgress } = await import('../../lib/redisSubscription.js');
+  const originalPublish = publishRequestProgress;
+
+  const resolver = buildResolver();
+  // Track publishes via the resolver's requestId
+  resolver._testPublishCapture = publishedEvents;
+
+  const args = {
+    text: 'trigger empty response',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: true,
+  };
+
+  const runAllPrompts = async () => {
+    // Empty streaming callback
+    resolver._streamingToolCallbackPromise = Promise.resolve('');
+    return { on: () => {} };
+  };
+
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  // The response must not be empty
+  t.truthy(result, 'Must produce a response');
+  const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
+  t.true(text.length > 0, 'Response must have text content');
+});
+
+test.serial('executePathway closes stream on error path too', async (t) => {
+  // Even hard errors must close the stream
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'trigger error',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: true,
+  };
+
+  const runAllPrompts = async () => {
+    throw new Error('Model exploded catastrophically');
+  };
+
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  // Must still return something
+  t.truthy(result, 'Must return error response, not null');
+  const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
+  t.true(text.length > 0, 'Error response must have content');
+});
+
+test.serial('executePathway returns non-empty response on non-streaming empty callback', async (t) => {
+  // Non-streaming empty responses should also be caught
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'trigger empty non-streaming',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: false,
+  };
+
+  const runAllPrompts = async () => {
+    resolver._streamingToolCallbackPromise = Promise.resolve('');
+    return '';  // Model returned empty
+  };
+
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  t.truthy(result, 'Must produce a response even for non-streaming');
+  const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
+  t.true(text.length > 0, 'Non-streaming empty response must be caught too');
 });

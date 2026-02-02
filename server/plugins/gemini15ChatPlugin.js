@@ -75,7 +75,9 @@ class Gemini15ChatPlugin extends ModelPlugin {
                     // OpenAI: { role: 'tool', tool_call_id: '...', content: '...' }
                     // Gemini: { role: 'function', parts: [{ functionResponse: { name: '...', response: { content: '...' } } }] }
                     const toolCallId = message.tool_call_id || message.toolCallId;
-                    const toolName = toolCallId ? toolCallId.split('_')[0] : 'unknown_tool';
+                    // Use explicit name field first (always correct), fall back to parsing tool_call_id
+                    // Claude-format IDs (toolu_...) don't contain the tool name, so split('_')[0] would give 'toolu'
+                    const toolName = message.name || (toolCallId ? toolCallId.split('_')[0] : 'unknown_tool');
                     
                     // Convert content array to string if needed (Gemini expects string content)
                     let toolContent = content;

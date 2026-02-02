@@ -32,7 +32,7 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
     // Override to capture thoughtSignature from Gemini 3 functionCall responses
     buildToolCallFromFunctionCall(part) {
         const toolCall = {
-            id: part.functionCall.name + '_' + Date.now(),
+            id: part.functionCall.name + '_' + Date.now() + '_' + (this._toolCallIdCounter = (this._toolCallIdCounter || 0) + 1),
             type: "function",
             function: {
                 name: part.functionCall.name,
@@ -132,7 +132,41 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
                 }
             }
 
-            baseParameters.contents = newContents;
+            // Gemini 3 requires per-turn parity: a model turn with N functionCall parts
+            // must be followed by ONE user turn with exactly N functionResponse parts.
+            // The loop above emits each functionResponse as a separate user turn — merge them.
+            const mergedContents = [];
+            for (const c of newContents) {
+                const prev = mergedContents[mergedContents.length - 1];
+                if (prev && prev.role === 'user' && c.role === 'user' &&
+                    prev.parts?.every(p => p.functionResponse) &&
+                    c.parts?.every(p => p.functionResponse)) {
+                    prev.parts.push(...c.parts);
+                } else {
+                    mergedContents.push(c);
+                }
+            }
+
+            // Collapse consecutive model/assistant turns that arise when the parent
+            // emits a text-only message and we insert a functionCall message for the
+            // same assistant turn. Keep the functionCall message (it already carries
+            // the text content) and drop the text-only predecessor.
+            const finalContents = [];
+            for (const c of mergedContents) {
+                const prev = finalContents[finalContents.length - 1];
+                const prevIsModelLike = prev && (prev.role === 'model' || prev.role === 'assistant');
+                const curIsModelLike = (c.role === 'model' || c.role === 'assistant');
+                if (prevIsModelLike && curIsModelLike &&
+                    prev.parts?.every(p => p.text !== undefined && !p.functionCall) &&
+                    c.parts?.some(p => p.functionCall)) {
+                    // Replace text-only predecessor with the functionCall message
+                    finalContents[finalContents.length - 1] = c;
+                } else {
+                    finalContents.push(c);
+                }
+            }
+
+            baseParameters.contents = finalContents;
         }
         
         // Add Gemini 3 thinking support
