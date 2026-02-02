@@ -77,48 +77,39 @@ export default {
             // The taskContext is still recorded in the end signal for PulseLog history.
             await continuityService.hotMemory.setPulseTaskContext(entityId, null);
 
-            // Store reflection as an entity-level IDENTITY memory if provided
-            if (reflection && reflection.trim()) {
-                try {
-                    const { storeContinuityMemory } = await import('../memory/shared/sys_continuity_memory_helpers.js');
+            // Store reflection and episode memories
+            try {
+                const { storeContinuityMemory } = await import('../memory/shared/sys_continuity_memory_helpers.js');
+
+                // Store reflection as an entity-level IDENTITY memory if provided
+                if (reflection && reflection.trim()) {
                     await storeContinuityMemory({
                         entityId,
-                        userId: null, // Entity-level memory (no user)
+                        userId: null,
                         content: reflection.trim(),
                         memoryType: 'IDENTITY',
                         importance: 5,
                         tags: ['pulse-reflection', 'auto-synthesis'],
                         skipDedup: false
                     });
-                } catch (memoryError) {
-                    // Non-fatal - log and continue
-                    logger.warn(`Failed to store pulse reflection as memory: ${memoryError.message}`);
                 }
-            }
 
-            // Always store an EPISODE summary of this pulse wake
-            try {
-                const { storeContinuityMemory } = await import('../memory/shared/sys_continuity_memory_helpers.js');
+                // Always store an EPISODE summary of this pulse wake
                 const episodeParts = [];
                 if (reflection?.trim()) episodeParts.push(reflection.trim());
                 if (taskContext?.trim()) episodeParts.push(`Next: ${taskContext.trim()}`);
 
-                const episodeContent = episodeParts.length > 0
-                    ? episodeParts.join(' — ')
-                    : 'Completed pulse wake cycle.';
-
                 await storeContinuityMemory({
                     entityId,
                     userId: null,
-                    content: episodeContent,
+                    content: episodeParts.length > 0 ? episodeParts.join(' — ') : 'Completed pulse wake cycle.',
                     memoryType: 'EPISODE',
                     importance: 4,
                     tags: ['pulse-episode', 'auto-endpulse'],
                     skipDedup: false
                 });
-            } catch (episodeError) {
-                // Non-fatal - log and continue
-                logger.warn(`Failed to store pulse episode memory: ${episodeError.message}`);
+            } catch (memoryError) {
+                logger.warn(`Failed to store pulse memories: ${memoryError.message}`);
             }
 
             // Trigger pulse rest handling (compass synthesis, deep synthesis, stream cleanup)

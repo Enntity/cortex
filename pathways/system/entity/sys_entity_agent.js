@@ -394,13 +394,13 @@ async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, 
         errorMessages.push({ role: "tool", tool_call_id: toolCall?.id || toolCallId, name: toolCall?.function?.name || toolFunction, content: `Error: ${error.message}` });
         return {
             success: false, error: error.message, toolCall,
-            toolArgs: toolCall?.function?.arguments ? (typeof toolCall.function.arguments === 'string' ? JSON.parse(toolCall.function.arguments) : toolCall.function.arguments) : {},
+            toolArgs: toolCall?.function?.arguments ? (typeof toolCall.function.arguments === 'string' ? (() => { try { return JSON.parse(toolCall.function.arguments); } catch { return {}; } })() : toolCall.function.arguments) : {},
             toolFunction, messages: errorMessages
         };
     }
 }
 
-async function processToolCallRound(toolCalls, args, resolver, entityTools, entityToolsOpenAiFormat) {
+async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     const preToolCallMessages = cloneMessages(args.chatHistory || []);
     let finalMessages = cloneMessages(preToolCallMessages);
     const rid = getRequestId(resolver);
@@ -666,7 +666,7 @@ function preservePriorText(message, args) {
 }
 
 async function runFallbackPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
-    await processToolCallRound(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat);
+    await processToolCallRound(currentToolCalls, args, resolver, entityTools);
     await say(getRequestId(resolver), `\n`, 1000, false, false);
 
     try {
@@ -729,7 +729,7 @@ async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat
             const calls = extractToolCalls(result);
             if (calls.length === 0) break; // SYNTHESIZE
 
-            const { budgetExhausted } = await processToolCallRound(calls, args, resolver, entityTools, entityToolsOpenAiFormat);
+            const { budgetExhausted } = await processToolCallRound(calls, args, resolver, entityTools);
             if (budgetExhausted) break;
         } catch (e) {
             return await handlePromptError(e);
@@ -789,7 +789,7 @@ async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiForma
             return { result: null, done: false, toolCalls: synthToolCalls };
         } else {
             logEvent(getRequestId(resolver), 'plan.continuation', { tools: summarizeReturnedCalls(synthToolCalls) });
-            await processToolCallRound(synthToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat);
+            await processToolCallRound(synthToolCalls, args, resolver, entityTools);
             return { result: synthesisResult, done: true };
         }
     } catch (e) {
@@ -797,7 +797,7 @@ async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiForma
     }
 }
 
-async function runDualModelPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError, message) {
+async function runDualModelPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError) {
     if (typeof resolver.replanCount !== 'number') resolver.replanCount = 0;
 
     // No depth cap: the tool budget already prevents runaway loops, and duplicate
@@ -815,7 +815,7 @@ async function runDualModelPath(currentToolCalls, args, resolver, entityTools, e
     let synthesisResult;
     while (true) {
         if (currentToolCalls.length > 0) {
-            const { budgetExhausted } = await processToolCallRound(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat);
+            const { budgetExhausted } = await processToolCallRound(currentToolCalls, args, resolver, entityTools);
             if (budgetExhausted) currentToolCalls = [];
         }
 
@@ -1023,7 +1023,6 @@ export default {
         model: 'oai-gpt41',
         useMemory: true,
         invocationType: '',
-        pulseContext: '',
     },
     timeout: 600,
 
@@ -1048,7 +1047,7 @@ export default {
         const handlePromptError = makeErrorHandler(args, resolver);
 
         if (args.toolLoopModel) {
-            return await runDualModelPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError, message);
+            return await runDualModelPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError);
         }
 
         // Fallback: single-model path

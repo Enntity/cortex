@@ -53,7 +53,7 @@ async function handleShell(command, args, resolver) {
     const { entityId } = args;
     const timeoutMs = 130000; // 125s effective + 5s buffer
     const result = await workspaceRequest(entityId, '/shell', { command }, { timeoutMs });
-    resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
     return JSON.stringify(result);
 }
 
@@ -63,7 +63,7 @@ async function handleBg(rawBgCommand, args, resolver) {
         command: rawBgCommand,
         background: true,
     }, { timeoutMs: 15000 });
-    resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
     return JSON.stringify(result);
 }
 
@@ -73,7 +73,7 @@ async function handlePoll(processId, args, resolver) {
         method: 'GET',
         timeoutMs: 10000,
     });
-    resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
     return JSON.stringify(result);
 }
 
@@ -128,7 +128,7 @@ async function handleScpPush(tokens, args, resolver) {
     const { entityId, contextId, contextKey, chatId } = args;
     const workspacePath = tokens[2];
     if (!workspacePath) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: 'Usage: scp push <workspacePath|glob> [displayName]' });
     }
 
@@ -141,7 +141,7 @@ async function handleScpPush(tokens, args, resolver) {
 
         const files = (expandResult.stdout || '').split('\n').map(l => l.trim()).filter(Boolean);
         if (files.length === 0) {
-            resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+    
             return JSON.stringify({ success: false, error: `No files matched: ${workspacePath}` });
         }
 
@@ -151,7 +151,7 @@ async function handleScpPush(tokens, args, resolver) {
             results.push(await pushOneFile(filePath, name, entityId, contextId, contextKey, chatId, resolver));
         }
 
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         const succeeded = results.filter(r => r.success);
         const failed = results.filter(r => !r.success);
         return JSON.stringify({
@@ -167,7 +167,7 @@ async function handleScpPush(tokens, args, resolver) {
     const displayName = tokens[3] || workspacePath.split('/').pop();
     const result = await pushOneFile(absPath, displayName, entityId, contextId, contextKey, chatId, resolver);
 
-    resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
     return JSON.stringify(result);
 }
 
@@ -176,13 +176,13 @@ async function handleScpPull(tokens, args, resolver) {
     const { entityId, contextId, contextKey } = args;
     const fileRef = tokens[2];
     if (!fileRef) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: 'Usage: scp pull <fileRef> [destPath]' });
     }
 
     const agentContext = args.agentContext;
     if (!agentContext || !Array.isArray(agentContext) || agentContext.length === 0) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({
             success: false,
             error: 'agentContext is required for scp pull. Use FileCollection to find available files.',
@@ -193,7 +193,7 @@ async function handleScpPull(tokens, args, resolver) {
     const collection = await loadFileCollection(agentContext);
     const foundFile = findFileInCollection(fileRef, collection);
     if (!foundFile) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({
             success: false,
             error: `File not found: "${fileRef}". Use FileCollection to find available files.`,
@@ -202,7 +202,7 @@ async function handleScpPull(tokens, args, resolver) {
 
     const cloudUrl = foundFile.url;
     if (!cloudUrl) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: `No URL available for file "${foundFile.displayFilename || fileRef}"` });
     }
 
@@ -217,7 +217,7 @@ async function handleScpPull(tokens, args, resolver) {
     });
 
     if (!response.data) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: 'Failed to download file from cloud storage' });
     }
 
@@ -231,11 +231,11 @@ async function handleScpPull(tokens, args, resolver) {
     }, { timeoutMs: 60000 });
 
     if (!writeResult.success) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: writeResult.error || 'Failed to write file to workspace' });
     }
 
-    resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
     return JSON.stringify({
         success: true,
         file: foundFile.displayFilename || fileRef,
@@ -252,7 +252,7 @@ async function handleScpBackup(tokens, args, resolver) {
     // 1. Create tarball inside workspace container
     const backupResult = await workspaceRequest(entityId, '/backup', {}, { timeoutMs: 120000 });
     if (!backupResult.success || backupResult.error) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: backupResult.error || 'Failed to create backup archive' });
     }
 
@@ -263,7 +263,7 @@ async function handleScpBackup(tokens, args, resolver) {
     }, { timeoutMs: 120000 });
 
     if (!readResult.success) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: readResult.error || 'Failed to read backup archive' });
     }
 
@@ -273,7 +273,7 @@ async function handleScpBackup(tokens, args, resolver) {
     const uploadResult = await uploadFileToCloud(buffer, 'application/gzip', filename, resolver, contextId);
 
     if (!uploadResult || !uploadResult.url) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: 'Failed to upload backup to cloud storage' });
     }
 
@@ -299,7 +299,7 @@ async function handleScpBackup(tokens, args, resolver) {
         command: `rm -f "${backupResult.path}"`,
     }, { timeoutMs: 10000 }).catch(() => {});
 
-    resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
     return JSON.stringify({
         success: true,
         filename,
@@ -316,13 +316,13 @@ async function handleScpRestore(tokens, args, resolver) {
     const { entityId } = args;
     const fileRef = tokens[2];
     if (!fileRef) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: 'Usage: scp restore <backupRef>' });
     }
 
     const agentContext = args.agentContext;
     if (!agentContext || !Array.isArray(agentContext) || agentContext.length === 0) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({
             success: false,
             error: "agentContext is required. Use FileCollection to find available backups (tagged 'workspace-backup').",
@@ -333,7 +333,7 @@ async function handleScpRestore(tokens, args, resolver) {
     const collection = await loadFileCollection(agentContext);
     const foundFile = findFileInCollection(fileRef, collection);
     if (!foundFile) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({
             success: false,
             error: `Backup not found: "${fileRef}". Use FileCollection to find available backups (tagged 'workspace-backup').`,
@@ -342,7 +342,7 @@ async function handleScpRestore(tokens, args, resolver) {
 
     const cloudUrl = foundFile.url;
     if (!cloudUrl) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: `No URL available for backup "${foundFile.displayFilename || fileRef}"` });
     }
 
@@ -354,7 +354,7 @@ async function handleScpRestore(tokens, args, resolver) {
     });
 
     if (!response.data) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: 'Failed to download backup from cloud storage' });
     }
 
@@ -369,7 +369,7 @@ async function handleScpRestore(tokens, args, resolver) {
     }, { timeoutMs: 120000 });
 
     if (!writeResult.success) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: writeResult.error || 'Failed to write backup to workspace' });
     }
 
@@ -384,11 +384,11 @@ async function handleScpRestore(tokens, args, resolver) {
     }, { timeoutMs: 10000 }).catch(() => {});
 
     if (!restoreResult.success) {
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify({ success: false, error: restoreResult.error || 'Failed to extract backup' });
     }
 
-    resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
     return JSON.stringify({
         success: true,
         message: 'Workspace restored from backup',
@@ -425,12 +425,12 @@ async function handleReset(tokens, args, resolver) {
     if (destroy) {
         const entityConfig = await loadEntityConfig(entityId);
         if (!entityConfig) {
-            resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+    
             return JSON.stringify({ success: false, error: 'Entity not found' });
         }
 
         const result = await destroyWorkspace(entityId, entityConfig, { destroyVolume });
-        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
         return JSON.stringify(result);
     }
 
@@ -441,7 +441,7 @@ async function handleReset(tokens, args, resolver) {
     }
 
     const result = await workspaceRequest(entityId, '/reset', body, { timeoutMs: 60000 });
-    resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+
     return JSON.stringify(result);
 }
 
@@ -524,10 +524,10 @@ Everything else runs as bash. Both relative and absolute paths work.`,
 
     executePathway: async ({ args, runAllPrompts, resolver }) => {
         const { command } = args;
+        resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
 
         try {
             if (!command || typeof command !== 'string') {
-                resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
                 return JSON.stringify({ success: false, error: 'command is required' });
             }
 
@@ -550,7 +550,7 @@ Everything else runs as bash. Both relative and absolute paths work.`,
             return route.handler(route.tokens, args, resolver);
         } catch (e) {
             logger.error(`WorkspaceSSH error: ${e.message}`);
-            resolver.tool = JSON.stringify({ toolUsed: 'WorkspaceSSH' });
+    
             return JSON.stringify({ success: false, error: e.message });
         }
     },
