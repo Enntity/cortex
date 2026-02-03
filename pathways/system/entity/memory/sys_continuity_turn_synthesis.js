@@ -19,6 +19,48 @@
 import { Prompt } from '../../../../server/prompt.js';
 import logger from '../../../../lib/logger.js';
 
+function coerceToText(result) {
+    if (typeof result === 'string') return result;
+    if (result?.output_text && typeof result.output_text === 'string') return result.output_text;
+    if (typeof result?.getTextFromOutput === 'function') {
+        const text = result.getTextFromOutput();
+        if (text) return text;
+    }
+    if (typeof result?.text === 'string') return result.text;
+    if (typeof result?.content === 'string') return result.content;
+    if (result?.output !== undefined) return JSON.stringify(result.output);
+    return result ? JSON.stringify(result) : '';
+}
+
+function extractJsonText(raw) {
+    let text = (raw || '').trim();
+    if (!text) return text;
+    text = text.replace(/^\uFEFF/, '');
+
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced) {
+        text = fenced[1].trim();
+    }
+
+    if (!text.startsWith('{') && !text.startsWith('[')) {
+        const objStart = text.indexOf('{');
+        const arrStart = text.indexOf('[');
+        let start = -1;
+        if (objStart >= 0 && arrStart >= 0) start = Math.min(objStart, arrStart);
+        else start = Math.max(objStart, arrStart);
+        if (start >= 0) {
+            const endObj = text.lastIndexOf('}');
+            const endArr = text.lastIndexOf(']');
+            const end = Math.max(endObj, endArr);
+            if (end > start) {
+                text = text.slice(start, end + 1).trim();
+            }
+        }
+    }
+
+    return text;
+}
+
 export default {
     prompt: [],
     model: 'oai-gpt5-mini',
@@ -144,19 +186,19 @@ Extract and return a JSON object with these categories (ALL in first person):
                 stream: false
             });
             
-            const responseText = typeof result === 'string' ? result : (result?.output_text || result?.text || '');
-            
-            // Validate it's JSON
             try {
-                JSON.parse(responseText);
-                return responseText;
-            } catch {
-                // Try to extract JSON from markdown code blocks
-                const match = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
-                if (match) {
-                    JSON.parse(match[1]); // Validate
-                    return match[1].trim();
+                const rawText = coerceToText(result);
+                const jsonText = extractJsonText(rawText);
+                const parsed = JSON.parse(jsonText);
+                if (typeof parsed === 'string') {
+                    try {
+                        return JSON.stringify(JSON.parse(parsed));
+                    } catch {
+                        return JSON.stringify(parsed);
+                    }
                 }
+                return JSON.stringify(parsed);
+            } catch {
                 throw new Error('Response is not valid JSON');
             }
         } catch (error) {
@@ -174,4 +216,3 @@ Extract and return a JSON object with these categories (ALL in first person):
         }
     }
 };
-

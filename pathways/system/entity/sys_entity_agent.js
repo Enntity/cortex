@@ -670,6 +670,11 @@ async function runFallbackPath(currentToolCalls, args, resolver, entityTools, en
     await say(getRequestId(resolver), `\n`, 1000, false, false);
 
     try {
+        // Restore full tool outputs before the final model call.
+        if (resolver.toolResultStore && resolver.toolResultStore.size > 0) {
+            args.chatHistory = rehydrateAllToolResults(args.chatHistory, resolver.toolResultStore);
+        }
+
         let fallbackResult = await callModelLogged(resolver, {
             ...args, modelOverride: args.primaryModel, stream: args.stream, tools: entityToolsOpenAiFormat,
             tool_choice: "auto", reasoningEffort: args.configuredReasoningEffort || 'low', skipMemoryLoad: true,
@@ -1192,13 +1197,16 @@ export default {
             // Final guarantee: close the stream. If streaming produced text normally,
             // the plugin already sent [DONE]. But if it didn't (e.g., model returned
             // only tool_calls, or callbacks swallowed the content), force-close now.
-            if (args.stream) {
+            // Skip for stream objects — asyncResolve.handleStream owns their lifecycle
+            // (including error handling and completion). Sending progress:1 here would
+            // race ahead of handleStream and mask stream errors.
+            if (args.stream && !(response && typeof response.on === 'function')) {
                 publishRequestProgress({
                     requestId: rid,
                     progress: 1,
                     data: JSON.stringify(response),
                     info: JSON.stringify(resolver.pathwayResultData || {}),
-                    error: ''
+                    error: resolver.errors?.length > 0 ? resolver.errors.join(', ') : ''
                 });
             }
 
@@ -1216,7 +1224,7 @@ export default {
                     progress: 1,
                     data: JSON.stringify(errorResponse),
                     info: JSON.stringify(resolver.pathwayResultData || {}),
-                    error: ''
+                    error: e.message || ''
                 });
             }
 
