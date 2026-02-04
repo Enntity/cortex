@@ -21,7 +21,7 @@ import {
     TrackCompleteEvent,
     VoiceState,
 } from './types.js';
-import { createVoiceProvider, getAvailableProviders } from './providers/index.js';
+import { createVoiceProvider, getAvailableProviders, resolveVoiceProvider, VOICE_PROVIDER_INSTRUCTIONS } from './providers/index.js';
 import { CortexBridge } from './cortex/CortexBridge.js';
 import { StreamingCortexBridge } from './cortex/StreamingCortexBridge.js';
 
@@ -43,6 +43,9 @@ export class SocketServer {
     private io: SocketIOServer;
     private sessions: Map<string, SessionData> = new Map();
     private config: ServerConfig;
+    // Tracks active+pending sessions by userId:entityId → socketId for dedup.
+    // Updated synchronously BEFORE any async work to prevent concurrent session races.
+    private activeSessions: Map<string, string> = new Map();
 
     constructor(httpServer: HTTPServer, config: ServerConfig) {
         this.config = config;
@@ -208,6 +211,22 @@ export class SocketServer {
         config.contextId = socket.data.contextId;
         config.contextKey = socket.data.contextKey;
 
+        // De-duplicate: if this user already has a session for this entity, close the old one.
+        // Uses activeSessions map (set synchronously) to catch concurrent handleSessionStart calls
+        // from React StrictMode double-mounts and tab refreshes.
+        const dedupKey = `${config.userId}:${config.entityId}`;
+        const existingSocketId = this.activeSessions.get(dedupKey);
+        if (existingSocketId && existingSocketId !== sessionId) {
+            console.log(`[SocketServer] Closing duplicate session ${existingSocketId} for ${dedupKey}`);
+            this.handleSessionEnd(existingSocketId);
+            const existingSocket = this.io.sockets.sockets.get(existingSocketId);
+            if (existingSocket) {
+                existingSocket.disconnect(true);
+            }
+        }
+        // Register this session synchronously BEFORE any async work
+        this.activeSessions.set(dedupKey, sessionId);
+
         // Validate required fields
         if (!config.entityId || typeof config.entityId !== 'string') {
             socket.emit('error', { message: 'Invalid entityId' });
@@ -222,8 +241,20 @@ export class SocketServer {
             return;
         }
 
-        // Use default provider if not specified
-        const providerType = config.provider || this.config.defaultProvider;
+        // Resolve provider from voice preferences array (falls back to flat provider or server default)
+        let resolved;
+        if (config.voicePreferences && config.voicePreferences.length > 0) {
+            resolved = resolveVoiceProvider(config.voicePreferences, this.config);
+        } else {
+            // Legacy: flat provider/voiceId from client
+            resolved = {
+                type: config.provider || this.config.defaultProvider,
+                voiceId: config.voiceId,
+                voiceSettings: config.voiceSettings,
+            };
+        }
+
+        const providerType = resolved.type;
 
         // Validate provider availability
         const availableProviders = getAvailableProviders(this.config);
@@ -235,11 +266,22 @@ export class SocketServer {
             return;
         }
 
+        // Apply resolved voice to config
+        if (resolved.voiceId) {
+            config.voiceId = resolved.voiceId;
+        }
+        if (resolved.voiceSettings) {
+            config.voiceSettings = resolved.voiceSettings;
+        }
+
+        // Inject provider-specific voice instructions for the LLM
+        config.voiceProviderInstructions = VOICE_PROVIDER_INSTRUCTIONS[providerType] || '';
+
         try {
             // Create Cortex bridge for this session
             // Use streaming bridge for TTS providers (ElevenLabs, OpenAI TTS)
             // Use regular bridge for OpenAI Realtime (which has native streaming)
-            const useStreaming = providerType === 'elevenlabs' || providerType === 'openai-tts';
+            const useStreaming = providerType === 'elevenlabs' || providerType === 'openai-tts' || providerType === 'deepgram' || providerType === 'inworld';
             const cortexBridge = useStreaming
                 ? new StreamingCortexBridge(this.config.cortexApiUrl)
                 : new CortexBridge(this.config.cortexApiUrl);
@@ -247,21 +289,46 @@ export class SocketServer {
             // Set session context for proper sys_entity_agent calls
             cortexBridge.setSessionContext(config);
 
-            // Get voice sample for entity if available (only CortexBridge has this method)
+            // Get voice sample URL for non-realtime providers that need it for TTS voice cloning
+            // OpenAI Realtime fetches its own voice sample text during connect()
             let voiceSample: string | null = null;
-            if (!useStreaming) {
+            if (!useStreaming && providerType !== 'openai-realtime') {
                 voiceSample = await (cortexBridge as CortexBridge).getVoiceSample(config.entityId);
             }
 
-            // Create voice provider
-            const provider = createVoiceProvider(providerType, cortexBridge, this.config);
+            // Create voice provider (with fallback through preferences on failure)
+            let provider;
+            try {
+                provider = createVoiceProvider(providerType, cortexBridge, this.config);
+            } catch (primaryError) {
+                // If we have preferences, try the next available one
+                if (config.voicePreferences && config.voicePreferences.length > 1) {
+                    const remaining = config.voicePreferences.filter(p => p.provider !== providerType);
+                    const fallback = resolveVoiceProvider(remaining, this.config);
+                    if (fallback.type !== providerType) {
+                        console.warn(`[SocketServer] Primary provider ${providerType} failed, falling back to ${fallback.type}`);
+                        provider = createVoiceProvider(fallback.type, cortexBridge, this.config);
+                        if (fallback.voiceId) config.voiceId = fallback.voiceId;
+                        if (fallback.voiceSettings) config.voiceSettings = fallback.voiceSettings;
+                        // Update voice instructions for the fallback provider
+                        config.voiceProviderInstructions = VOICE_PROVIDER_INSTRUCTIONS[fallback.type] || '';
+                        cortexBridge.setSessionContext(config);
+                    } else {
+                        throw primaryError;
+                    }
+                } else {
+                    throw primaryError;
+                }
+            }
+
+            const actualProviderType = provider.type;
 
             // Create session state
             const sessionState: SessionState = {
                 id: sessionId,
                 entityId: config.entityId,
                 chatId: config.chatId,
-                provider: providerType,
+                provider: actualProviderType,
                 state: 'idle',
                 isConnected: false,
                 isMuted: false,
@@ -286,6 +353,7 @@ export class SocketServer {
             // Connect provider
             await provider.connect({
                 ...config,
+                provider: actualProviderType,
                 voiceSample: voiceSample || undefined,
             });
 
@@ -295,16 +363,18 @@ export class SocketServer {
             // Emit success
             socket.emit('session:started', {
                 sessionId,
-                provider: providerType,
+                provider: actualProviderType,
                 entityId: config.entityId,
             });
 
-            console.log(`[SocketServer] Session started: ${sessionId}, provider: ${providerType}, entity: ${config.entityId}`);
+            console.log(`[SocketServer] Session started: ${sessionId}, provider: ${actualProviderType}, entity: ${config.entityId}`);
 
             // Start idle monitoring
             this.resetIdleTimeout(sessionData, socket);
         } catch (error) {
             console.error(`[SocketServer] Failed to start session:`, error);
+            // Clean up the activeSession entry since this session failed to start
+            this.removeActiveSession(sessionId);
             socket.emit('session:error', {
                 message: (error as Error).message,
             });
@@ -405,8 +475,9 @@ export class SocketServer {
                 console.error(`[SocketServer] Error disconnecting provider:`, err);
             });
 
-            // Remove session
+            // Remove session and dedup tracking
             this.sessions.delete(sessionId);
+            this.removeActiveSession(sessionId);
 
             socket.emit('session:ended', {
                 sessionId,
@@ -414,6 +485,9 @@ export class SocketServer {
             });
 
             console.log(`[SocketServer] Session ended: ${sessionId}`);
+        } else {
+            // Session may not have been stored yet (failed during setup), but dedup key was set
+            this.removeActiveSession(sessionId);
         }
     }
 
@@ -436,7 +510,19 @@ export class SocketServer {
             });
 
             this.sessions.delete(socketId);
+            this.removeActiveSession(socketId);
             console.log(`[SocketServer] Session ended: ${socketId}`);
+        } else {
+            this.removeActiveSession(socketId);
+        }
+    }
+
+    private removeActiveSession(socketId: string): void {
+        for (const [key, id] of this.activeSessions) {
+            if (id === socketId) {
+                this.activeSessions.delete(key);
+                break;
+            }
         }
     }
 
@@ -553,6 +639,14 @@ export class SocketServer {
         // Tell the cortex bridge about client audio state so it can skip fillers
         if (sessionData.cortexBridge && 'setClientAudioPlaying' in sessionData.cortexBridge) {
             (sessionData.cortexBridge as any).setClientAudioPlaying(isPlaying);
+        }
+
+        // Tell the realtime provider when client finishes playing audio (echo gate release)
+        if (!isPlaying) {
+            const provider = sessionData.provider as any;
+            if (typeof provider.onAudioPlaybackComplete === 'function') {
+                provider.onAudioPlaybackComplete();
+            }
         }
     }
 

@@ -69,6 +69,14 @@ export abstract class StreamingSTT extends EventEmitter {
     get connected(): boolean {
         return this.isConnected;
     }
+
+    /**
+     * Whether the last failure was a fatal/non-retriable error (e.g. auth failure).
+     * Subclasses set this to prevent pointless reconnection loops.
+     */
+    get fatal(): boolean {
+        return false;
+    }
 }
 
 export type STTProvider = 'elevenlabs' | 'deepgram' | 'whisper';

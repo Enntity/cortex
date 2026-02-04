@@ -8,7 +8,7 @@
 // - Entity properties (all optional, only provided ones are updated):
 //   - name, description, identity, tools, useMemory, preferredModel, modelOverride, reasoningEffort
 //   - avatarText (emoji), avatarDescription (for image gen), avatarImageUrl (avatar image URL)
-//   - voiceProvider, voiceId, voiceName, voiceStability, voiceSimilarity, voiceStyle, voiceSpeakerBoost
+//   - voice: JSON string of voice preference array [{provider, voiceId, name?, settings?}, ...]
 //
 // Response format:
 // {
@@ -35,14 +35,8 @@ const ALLOWED_PROPERTIES = new Set([
     'avatarText',        // avatar.text (emoji)
     'avatarDescription', // avatar.description (for image generation)
     'avatarImageUrl',    // avatar.image.url
-    // Voice fields (these update nested voice object)
-    'voiceProvider',     // voice.provider (e.g., 'elevenlabs')
-    'voiceId',           // voice.voiceId (provider-specific voice ID)
-    'voiceName',         // voice.voiceName (display name)
-    'voiceStability',    // voice.settings.stability (0.0 - 1.0)
-    'voiceSimilarity',   // voice.settings.similarity (0.0 - 1.0)
-    'voiceStyle',        // voice.settings.style (0.0 - 1.0)
-    'voiceSpeakerBoost', // voice.settings.speakerBoost (boolean)
+    // Voice preference array (JSON string)
+    'voice',             // [{provider, voiceId, name?, settings?}, ...]
     // Pulse fields (these update nested pulse object)
     'pulseEnabled',              // pulse.enabled (boolean)
     'pulseWakeIntervalMinutes',  // pulse.wakeIntervalMinutes (number, 5-1440)
@@ -68,9 +62,7 @@ const MAX_LENGTHS = {
     avatarText: 10,           // Emoji - should be short
     avatarDescription: 1000,  // Description for image generation
     avatarImageUrl: 2000,     // URL
-    voiceProvider: 50,        // e.g., 'elevenlabs'
-    voiceId: 100,             // Provider-specific voice ID
-    voiceName: 100            // Display name
+    voice: 10000              // JSON string of voice preference array
 };
 
 export default {
@@ -91,14 +83,8 @@ export default {
         avatarText: undefined,        // avatar.text (emoji)
         avatarDescription: undefined, // avatar.description (for image generation)
         avatarImageUrl: undefined,    // avatar.image.url
-        // Voice fields - update nested voice object
-        voiceProvider: undefined,     // voice.provider (e.g., 'elevenlabs')
-        voiceId: undefined,           // voice.voiceId (provider-specific voice ID)
-        voiceName: undefined,         // voice.voiceName (display name)
-        voiceStability: { type: 'number', default: undefined },    // voice.settings.stability (0.0 - 1.0)
-        voiceSimilarity: { type: 'number', default: undefined },   // voice.settings.similarity (0.0 - 1.0)
-        voiceStyle: { type: 'number', default: undefined },        // voice.settings.style (0.0 - 1.0)
-        voiceSpeakerBoost: { type: 'boolean', default: undefined }, // voice.settings.speakerBoost
+        // Voice preference array (JSON string)
+        voice: undefined,             // [{provider, voiceId, name?, settings?}, ...]
         // Pulse fields - update nested pulse object (life loop)
         pulseEnabled: { type: 'boolean', default: undefined },
         pulseWakeIntervalMinutes: { type: 'number', default: undefined },
@@ -246,77 +232,46 @@ export default {
                     updateData.avatar = updateData.avatar || {};
                     updateData.avatar.image = updateData.avatar.image || {};
                     updateData.avatar.image.url = value;
-                } else if (key === 'voiceProvider') {
-                    // Update voice.provider
-                    if (typeof value === 'string' && value.length > MAX_LENGTHS.voiceProvider) {
+                } else if (key === 'voice') {
+                    // Voice preference array — arrives as JSON string
+                    let voiceArray = value;
+                    if (typeof value === 'string') {
+                        try {
+                            voiceArray = JSON.parse(value);
+                        } catch {
+                            return JSON.stringify({
+                                success: false,
+                                error: 'voice must be a valid JSON array'
+                            });
+                        }
+                    }
+                    if (!Array.isArray(voiceArray)) {
                         return JSON.stringify({
                             success: false,
-                            error: `voiceProvider exceeds maximum length of ${MAX_LENGTHS.voiceProvider} characters`
+                            error: 'voice must be an array of voice preferences'
                         });
                     }
-                    updateData.voice = updateData.voice || {};
-                    updateData.voice.provider = value;
-                } else if (key === 'voiceId') {
-                    // Update voice.voiceId
-                    if (typeof value === 'string' && value.length > MAX_LENGTHS.voiceId) {
+                    if (voiceArray.length > 10) {
                         return JSON.stringify({
                             success: false,
-                            error: `voiceId exceeds maximum length of ${MAX_LENGTHS.voiceId} characters`
+                            error: 'voice array cannot exceed 10 entries'
                         });
                     }
-                    updateData.voice = updateData.voice || {};
-                    updateData.voice.voiceId = value;
-                } else if (key === 'voiceName') {
-                    // Update voice.voiceName
-                    if (typeof value === 'string' && value.length > MAX_LENGTHS.voiceName) {
-                        return JSON.stringify({
-                            success: false,
-                            error: `voiceName exceeds maximum length of ${MAX_LENGTHS.voiceName} characters`
-                        });
+                    for (const entry of voiceArray) {
+                        if (!entry.provider || typeof entry.provider !== 'string') {
+                            return JSON.stringify({
+                                success: false,
+                                error: 'Each voice entry must have a provider string'
+                            });
+                        }
+                        if (!entry.voiceId || typeof entry.voiceId !== 'string') {
+                            return JSON.stringify({
+                                success: false,
+                                error: 'Each voice entry must have a voiceId string'
+                            });
+                        }
                     }
-                    updateData.voice = updateData.voice || {};
-                    updateData.voice.voiceName = value;
-                } else if (key === 'voiceStability') {
-                    // Update voice.settings.stability (0.0 - 1.0)
-                    const numValue = typeof value === 'number' ? value : parseFloat(value);
-                    if (isNaN(numValue) || numValue < 0 || numValue > 1) {
-                        return JSON.stringify({
-                            success: false,
-                            error: 'voiceStability must be a number between 0.0 and 1.0'
-                        });
-                    }
-                    updateData.voice = updateData.voice || {};
-                    updateData.voice.settings = updateData.voice.settings || {};
-                    updateData.voice.settings.stability = numValue;
-                } else if (key === 'voiceSimilarity') {
-                    // Update voice.settings.similarity (0.0 - 1.0)
-                    const numValue = typeof value === 'number' ? value : parseFloat(value);
-                    if (isNaN(numValue) || numValue < 0 || numValue > 1) {
-                        return JSON.stringify({
-                            success: false,
-                            error: 'voiceSimilarity must be a number between 0.0 and 1.0'
-                        });
-                    }
-                    updateData.voice = updateData.voice || {};
-                    updateData.voice.settings = updateData.voice.settings || {};
-                    updateData.voice.settings.similarity = numValue;
-                } else if (key === 'voiceStyle') {
-                    // Update voice.settings.style (0.0 - 1.0)
-                    const numValue = typeof value === 'number' ? value : parseFloat(value);
-                    if (isNaN(numValue) || numValue < 0 || numValue > 1) {
-                        return JSON.stringify({
-                            success: false,
-                            error: 'voiceStyle must be a number between 0.0 and 1.0'
-                        });
-                    }
-                    updateData.voice = updateData.voice || {};
-                    updateData.voice.settings = updateData.voice.settings || {};
-                    updateData.voice.settings.style = numValue;
-                } else if (key === 'voiceSpeakerBoost') {
-                    // Update voice.settings.speakerBoost (boolean)
-                    updateData.voice = updateData.voice || {};
-                    updateData.voice.settings = updateData.voice.settings || {};
-                    updateData.voice.settings.speakerBoost = value === true || value === 'true';
+                    updateData.voice = voiceArray;
                 } else if (key === 'pulseEnabled') {
                     updateData.pulse = updateData.pulse || {};
                     updateData.pulse.enabled = value === true || value === 'true';

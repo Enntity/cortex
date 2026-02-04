@@ -2,7 +2,7 @@
  * Core types for the Cortex Voice Server
  */
 
-export type VoiceProviderType = 'openai-realtime' | 'openai-tts' | 'elevenlabs';
+export type VoiceProviderType = 'openai-realtime' | 'openai-tts' | 'elevenlabs' | 'deepgram' | 'inworld';
 
 export interface VoiceSettings {
     stability?: number;      // 0.0 - 1.0
@@ -10,6 +10,48 @@ export interface VoiceSettings {
     style?: number;          // 0.0 - 1.0
     speakerBoost?: boolean;
 }
+
+// ── Entity voice preference (one entry in the priority array) ────────
+
+export interface VoicePreference {
+    provider: VoiceProviderType;
+    voiceId: string;
+    name?: string;
+    settings?: Record<string, number | boolean>;  // provider-specific (stability, etc.)
+}
+
+// ── Unified voice listing types ──────────────────────────────────────
+
+export interface UnifiedVoice {
+    id: string;                     // "pNInz6obpgDQGcFmaJgB" or "aura-2-thalia-en" or "alloy"
+    provider: VoiceProviderType;
+    name: string;
+    labels: Record<string, string>; // gender, accent, age, category, language
+}
+
+export interface VoiceSettingField {
+    key: string;                    // "stability"
+    type: 'range' | 'boolean';
+    label: string;
+    default: number | boolean;
+    min?: number;
+    max?: number;
+    step?: number;
+    lowLabel?: string;
+    highLabel?: string;
+}
+
+export interface ProviderVoices {
+    voices: UnifiedVoice[];
+    settings: VoiceSettingField[];  // Empty for providers with no knobs (Deepgram, OpenAI)
+    defaultVoiceId: string;
+}
+
+export interface VoicesResponse {
+    providers: Partial<Record<VoiceProviderType, ProviderVoices>>;
+}
+
+// ── Session configuration ────────────────────────────────────────────
 
 export interface VoiceConfig {
     provider: VoiceProviderType;
@@ -24,6 +66,8 @@ export interface VoiceConfig {
     voiceSample?: string;
     voiceId?: string;
     voiceSettings?: VoiceSettings;  // TTS voice settings (stability, similarity, style, speakerBoost)
+    voicePreferences?: VoicePreference[];  // Ordered priority list from entity config
+    voiceProviderInstructions?: string;    // Provider-specific LLM delivery instructions
     model?: string;
 }
 
@@ -88,6 +132,13 @@ export interface CortexAgentResponse {
     tool?: string;
     errors?: string[];
     warnings?: string[];
+}
+
+export interface EntitySessionContext {
+    entityName: string;
+    identity: string;
+    continuityContext: string;
+    useMemory: boolean;
 }
 
 export interface TrackCompleteEvent {
@@ -199,6 +250,16 @@ export interface ICortexBridge {
     getVoiceSample?(entityId: string): Promise<string | null>;
 
     /**
+     * Get entity session context (identity + continuity memory) for realtime grounding
+     */
+    getSessionContext?(): Promise<EntitySessionContext | null>;
+
+    /**
+     * Get voice sample text examples for an entity (text, not audio URL)
+     */
+    getVoiceSampleText?(entityId: string): Promise<string | null>;
+
+    /**
      * Report tool execution status
      */
     onToolStatus?(callback: (event: ToolStatusEvent) => void): void;
@@ -219,6 +280,7 @@ export interface ServerConfig {
     openaiApiKey?: string;
     elevenlabsApiKey?: string;
     deepgramApiKey?: string;
+    inworldApiKey?: string;
     sttProvider?: 'elevenlabs' | 'deepgram' | 'whisper';
     cortexApiUrl: string;
     maxAudioMessages: number;

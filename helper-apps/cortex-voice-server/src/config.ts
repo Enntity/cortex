@@ -49,7 +49,7 @@ function getCorsOrigins(): string | string[] {
 
 function getDefaultProvider(): VoiceProviderType {
     const provider = process.env.DEFAULT_VOICE_PROVIDER as VoiceProviderType;
-    const validProviders: VoiceProviderType[] = ['openai-realtime', 'openai-tts', 'elevenlabs'];
+    const validProviders: VoiceProviderType[] = ['openai-realtime', 'openai-tts', 'elevenlabs', 'deepgram', 'inworld'];
 
     if (provider && validProviders.includes(provider)) {
         return provider;
@@ -73,6 +73,7 @@ export function loadConfig(): ServerConfig {
         openaiApiKey: process.env.OPENAI_API_KEY,
         elevenlabsApiKey: process.env.ELEVENLABS_API_KEY,
         deepgramApiKey: process.env.DEEPGRAM_API_KEY,
+        inworldApiKey: process.env.INWORLD_API_KEY,
         sttProvider: getSTTProvider(),
         cortexApiUrl: getEnvString('CORTEX_API_URL', 'http://localhost:4000/graphql'),
         maxAudioMessages: getEnvNumber('MAX_AUDIO_MESSAGES', 8),
@@ -93,6 +94,14 @@ export function validateConfig(config: ServerConfig): void {
 
     if (config.defaultProvider === 'elevenlabs' && !config.elevenlabsApiKey) {
         errors.push('ELEVENLABS_API_KEY is required when using elevenlabs provider');
+    }
+
+    if (config.defaultProvider === 'deepgram' && !config.deepgramApiKey) {
+        errors.push('DEEPGRAM_API_KEY is required when using deepgram provider');
+    }
+
+    if (config.defaultProvider === 'inworld' && !config.inworldApiKey) {
+        errors.push('INWORLD_API_KEY is required when using inworld provider');
     }
 
     if (errors.length > 0) {

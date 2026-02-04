@@ -9,6 +9,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { loadConfig, validateConfig } from './config.js';
 import { SocketServer } from './SocketServer.js';
 import { getAvailableProviders } from './providers/index.js';
+import { VoiceRegistry } from './services/VoiceRegistry.js';
 
 async function main(): Promise<void> {
     console.log('┌─────────────────────────────────────────────┐');
@@ -25,6 +26,9 @@ async function main(): Promise<void> {
         console.error((error as Error).message);
         process.exit(1);
     }
+
+    // Voice registry for unified voice listing
+    const voiceRegistry = new VoiceRegistry(config);
 
     // Socket server reference (set after creation)
     let socketServer: SocketServer;
@@ -86,6 +90,47 @@ async function main(): Promise<void> {
                 count: socketServer?.getSessionCount() || 0,
                 sessions: socketServer?.getSessions() || [],
             }));
+            return;
+        }
+
+        // Voice preview endpoint (TTS on demand)
+        if (url.startsWith('/voices/preview')) {
+            const params = new URL(url, 'http://localhost').searchParams;
+            const provider = params.get('provider') as import('./types.js').VoiceProviderType;
+            const voiceId = params.get('voiceId');
+            const text = params.get('text');
+
+            if (!provider || !voiceId || !text) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'provider, voiceId, and text are required' }));
+                return;
+            }
+
+            voiceRegistry.generatePreview(provider, voiceId, text).then(({ audio, contentType }) => {
+                res.writeHead(200, {
+                    'Content-Type': contentType,
+                    'Content-Length': audio.length,
+                    'Cache-Control': 'public, max-age=86400',
+                });
+                res.end(audio);
+            }).catch(err => {
+                console.error('[VoiceRegistry] Preview error:', err.message);
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: 'Failed to generate preview' }));
+            });
+            return;
+        }
+
+        // Unified voice listing endpoint
+        if (url === '/voices') {
+            voiceRegistry.getVoices().then(voices => {
+                res.writeHead(200);
+                res.end(JSON.stringify(voices));
+            }).catch(err => {
+                console.error('[VoiceRegistry] Error fetching voices:', err);
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: 'Failed to fetch voices' }));
+            });
             return;
         }
 

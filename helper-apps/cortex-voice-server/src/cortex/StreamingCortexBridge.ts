@@ -27,7 +27,8 @@ query SysEntityAgent(
     $agentContext: [AgentContextInput],
     $model: String,
     $stream: Boolean,
-    $userInfo: String
+    $userInfo: String,
+    $voiceProviderInstructions: String
 ) {
     sys_entity_agent(
         text: $text,
@@ -39,7 +40,8 @@ query SysEntityAgent(
         model: $model,
         voiceResponse: true,
         stream: $stream,
-        userInfo: $userInfo
+        userInfo: $userInfo,
+        voiceProviderInstructions: $voiceProviderInstructions
     ) {
         result
         tool
@@ -87,6 +89,7 @@ interface SessionContext {
     agentContext?: AgentContext[];
     model?: string;
     userInfo?: string;
+    voiceProviderInstructions?: string;
 }
 
 interface ToolMessage {
@@ -206,6 +209,7 @@ export class StreamingCortexBridge extends EventEmitter {
             agentContext: agentContext.length > 0 ? agentContext : undefined,
             model: config.model,
             userInfo: config.userInfo,
+            voiceProviderInstructions: config.voiceProviderInstructions,
         };
         console.log('[StreamingCortexBridge] Session context set:', {
             entityId: this.sessionContext.entityId,
@@ -377,6 +381,10 @@ export class StreamingCortexBridge extends EventEmitter {
 
         if (ctx.userInfo) {
             variables.userInfo = ctx.userInfo;
+        }
+
+        if (ctx.voiceProviderInstructions) {
+            variables.voiceProviderInstructions = ctx.voiceProviderInstructions;
         }
 
         console.log('[StreamingCortexBridge] Starting streaming query:', {

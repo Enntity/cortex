@@ -1021,6 +1021,7 @@ export default {
         title: ``,
         messages: [],
         voiceResponse: false,
+        voiceProviderInstructions: '',
         codeRequestId: ``,
         skipCallbackMessage: false,
         entityId: ``,

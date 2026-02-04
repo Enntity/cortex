@@ -71,7 +71,7 @@ Return only valid JSON, no markdown or explanation.`},
         // Load entity config to get name and personality instructions
         const entityConfig = await loadEntityConfig(args.entityId);
         const aiName = entityConfig?.name || args.aiName || 'Assistant';
-        const entityInstructions = entityConfig?.instructions || '';
+        const entityInstructions = entityConfig?.identity || entityConfig?.instructions || '';
 
         const result = await runAllPrompts({
             ...args,

@@ -12,6 +12,7 @@ import {
     ToolStatusEvent,
     MediaEvent,
     VoiceConfig,
+    EntitySessionContext,
 } from '../types.js';
 
 const SYS_ENTITY_AGENT_QUERY = `
@@ -30,6 +31,22 @@ query VoiceSample($entityId: String!) {
     sys_generator_voice_sample(entityId: $entityId) {
         url
         voiceId
+    }
+}
+`;
+
+const VOICE_SAMPLE_TEXT_QUERY = `
+query VoiceSampleText($entityId: String!) {
+    sys_generator_voice_sample(entityId: $entityId) {
+        result
+    }
+}
+`;
+
+const SESSION_CONTEXT_QUERY = `
+query SysEntitySessionContext($entityId: String, $agentContext: [AgentContextInput]) {
+    sys_entity_session_context(entityId: $entityId, agentContext: $agentContext) {
+        result
     }
 }
 `;
@@ -71,6 +88,22 @@ interface VoiceSampleResponse {
         sys_generator_voice_sample?: {
             url?: string;
             voiceId?: string;
+        };
+    };
+}
+
+interface VoiceSampleTextResponse {
+    data?: {
+        sys_generator_voice_sample?: {
+            result?: string;
+        };
+    };
+}
+
+interface SessionContextResponse {
+    data?: {
+        sys_entity_session_context?: {
+            result?: string;
         };
     };
 }
@@ -152,7 +185,7 @@ export class CortexBridge implements ICortexBridge {
 
         try {
             const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 30000);
+            const timeout = setTimeout(() => controller.abort(), 90000);
 
             const response = await fetch(this.apiUrl, {
                 method: 'POST',
@@ -227,6 +260,79 @@ export class CortexBridge implements ICortexBridge {
             return data.data?.sys_generator_voice_sample?.url || null;
         } catch (error) {
             console.warn('[CortexBridge] Failed to get voice sample:', error);
+            return null;
+        }
+    }
+
+    async getSessionContext(): Promise<EntitySessionContext | null> {
+        if (!this.sessionContext) {
+            console.warn('[CortexBridge] No session context set, cannot fetch entity context');
+            return null;
+        }
+
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+
+            const response = await fetch(this.apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: SESSION_CONTEXT_QUERY,
+                    variables: {
+                        entityId: this.sessionContext.entityId,
+                        agentContext: this.sessionContext.agentContext || [],
+                    },
+                }),
+                signal: controller.signal,
+            });
+
+            clearTimeout(timeout);
+
+            if (!response.ok) {
+                console.warn(`[CortexBridge] Session context fetch failed: ${response.status}`);
+                return null;
+            }
+
+            const data = await response.json() as SessionContextResponse;
+            const resultStr = data.data?.sys_entity_session_context?.result;
+            if (!resultStr) return null;
+
+            return JSON.parse(resultStr) as EntitySessionContext;
+        } catch (error) {
+            console.warn('[CortexBridge] Failed to get session context:', error);
+            return null;
+        }
+    }
+
+    async getVoiceSampleText(entityId: string): Promise<string | null> {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 30000);
+
+            const response = await fetch(this.apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: VOICE_SAMPLE_TEXT_QUERY,
+                    variables: { entityId },
+                }),
+                signal: controller.signal,
+            });
+
+            clearTimeout(timeout);
+
+            if (!response.ok) return null;
+
+            const data = await response.json() as VoiceSampleTextResponse;
+            const result = data.data?.sys_generator_voice_sample?.result;
+            if (!result) return null;
+
+            // Extract content between EXAMPLE_DIALOGUE tags if present
+            const match = result.match(/<EXAMPLE_DIALOGUE>([\s\S]*?)<\/EXAMPLE_DIALOGUE>/);
+            return match ? match[1].trim() : result;
+        } catch (error) {
+            console.warn('[CortexBridge] Failed to get voice sample text:', error);
             return null;
         }
     }

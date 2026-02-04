@@ -19,11 +19,16 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
     private region: string;
     private pendingFinalize: ((value: string) => void) | null = null;
     private isConnecting: boolean = false;
+    private _fatalError: boolean = false;
 
     constructor(config: ElevenLabsSTTConfig) {
         super(config);
         this.model = config.model || 'scribe_v2_realtime';
         this.region = config.region || 'default';
+    }
+
+    override get fatal(): boolean {
+        return this._fatalError;
     }
 
     private getEndpoint(): string {
@@ -156,6 +161,9 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
             case 'auth_error':
             case 'quota_exceeded':
                 console.error('[ElevenLabsSTT] Error message:', message);
+                if (msgType === 'auth_error' || msgType === 'quota_exceeded') {
+                    this._fatalError = true;
+                }
                 this.emit('error', new Error(message.message || message.error || 'Unknown error'));
                 break;
 
