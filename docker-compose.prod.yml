@@ -82,6 +82,7 @@ services:
     networks:
       - web
       - internal
+      - workspace
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.cortex.rule=Host(`${DOMAIN}`)"
@@ -150,6 +151,8 @@ networks:
     name: cortex_web
   internal:
     name: cortex_internal
+  workspace:
+    name: cortex_workspace
 
 volumes:
   traefik-certificates:

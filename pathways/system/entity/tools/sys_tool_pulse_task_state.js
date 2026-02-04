@@ -89,6 +89,14 @@ export default {
                         });
                     }
 
+                    const stateJson = JSON.stringify(state);
+                    if (stateJson.length > 50000) {
+                        return JSON.stringify({
+                            success: false,
+                            error: `state object too large (${stateJson.length} chars, max 50000)`
+                        });
+                    }
+
                     // Add metadata
                     const stateWithMeta = {
                         ...state,

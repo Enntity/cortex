@@ -5,7 +5,7 @@
  * and coordinates with voice providers.
  */
 
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HTTPServer } from 'http';
 import {
@@ -85,7 +85,9 @@ export class SocketServer {
                     .update(payloadB64)
                     .digest('hex');
                 
-                if (signature !== expectedSig) {
+                const sigBuf = Buffer.from(signature, 'hex');
+                const expectedBuf = Buffer.from(expectedSig, 'hex');
+                if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) {
                     return next(new Error('Invalid token'));
                 }
                 

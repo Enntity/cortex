@@ -259,7 +259,7 @@ var config = convict({
     },
     workspaceNetwork: {
         format: String,
-        default: 'cortex_internal',
+        default: 'cortex_workspace',
         env: 'WORKSPACE_NETWORK'
     },
     workspaceCpus: {
@@ -271,6 +271,11 @@ var config = convict({
         format: String,
         default: '512m',
         env: 'WORKSPACE_MEMORY'
+    },
+    workspaceDiskSize: {
+        format: String,
+        default: '10g',
+        env: 'WORKSPACE_DISK_SIZE'
     }
 });
 

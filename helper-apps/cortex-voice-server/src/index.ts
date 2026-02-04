@@ -93,8 +93,21 @@ async function main(): Promise<void> {
             return;
         }
 
+        // Auth check for voice endpoints — require shared AUTH_SECRET
+        const requireAuth = (req: IncomingMessage, res: ServerResponse): boolean => {
+            const authHeader = req.headers['x-auth-secret'] || req.headers['authorization']?.replace('Bearer ', '');
+            if (!config.authSecret || authHeader !== config.authSecret) {
+                res.writeHead(401);
+                res.end(JSON.stringify({ error: 'Unauthorized' }));
+                return false;
+            }
+            return true;
+        };
+
         // Voice preview endpoint (TTS on demand)
         if (url.startsWith('/voices/preview')) {
+            if (!requireAuth(req, res)) return;
+
             const params = new URL(url, 'http://localhost').searchParams;
             const provider = params.get('provider') as import('./types.js').VoiceProviderType;
             const voiceId = params.get('voiceId');
@@ -103,6 +116,12 @@ async function main(): Promise<void> {
             if (!provider || !voiceId || !text) {
                 res.writeHead(400);
                 res.end(JSON.stringify({ error: 'provider, voiceId, and text are required' }));
+                return;
+            }
+
+            if (text.length > 500) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'text must be 500 characters or fewer' }));
                 return;
             }
 
@@ -123,6 +142,8 @@ async function main(): Promise<void> {
 
         // Unified voice listing endpoint
         if (url === '/voices') {
+            if (!requireAuth(req, res)) return;
+
             voiceRegistry.getVoices().then(voices => {
                 res.writeHead(200);
                 res.end(JSON.stringify(voices));

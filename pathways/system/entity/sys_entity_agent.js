@@ -35,14 +35,9 @@ const VOICE_FALLBACKS = {
     'GoogleSearch': 'Let me look that up.',
     'GoogleNews': 'Checking the news.',
     'SearchX': 'Searching for that now.',
-    'GenerateImage': 'Creating that image for you.',
-    'EditImage': 'Working on that image.',
-    'AnalyzeFile': 'Taking a look at that.',
-    'AnalyzeImage': 'Looking at this image.',
-    'CallModel': 'Let me think about that.',
-    'DelegateCreative': 'Working on that for you.',
-    'Planner': 'Planning that out.',
-    'WebBrowser': 'Checking that page.',
+    'CreateMedia': 'Creating that for you.',
+    'ShowOverlay': 'Showing that now.',
+    'WorkspaceSSH': 'Working on that.',
     'default': 'One moment.'
 };
 
@@ -344,8 +339,12 @@ async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, 
             try { await sendToolStart(rid, toolCallId, toolDef?.icon || '🛠️', toolUserMessage, toolName, toolArgs); } catch { /* non-fatal */ }
         }
 
+        // Strip infrastructure keys from model-provided toolArgs to prevent override of entityId, contextId, etc.
+        const { entityId: _eId, contextId: _cId, entityTools: _eT, entityToolsOpenAiFormat: _eTF,
+            entityInstructions: _eI, agentContext: _aC, invocationType: _iT, primaryModel: _pM,
+            configuredReasoningEffort: _cRE, ...safeToolArgs } = toolArgs;
         const toolResult = await withTimeout(
-            callTool(toolFunction, { ...args, ...toolArgs, toolFunction, chatHistory: toolMessages, stream: false, useMemory: false }, entityTools, resolver),
+            callTool(toolFunction, { ...args, ...safeToolArgs, toolFunction, chatHistory: toolMessages, stream: false, useMemory: false }, entityTools, resolver),
             toolTimeout,
             `Tool ${toolName} timed out after ${toolTimeout / 1000}s`
         );
@@ -695,6 +694,7 @@ async function enforceGate(currentToolCalls, args, resolver, entityToolsOpenAiFo
     while (currentToolCalls.length > 0 && !passesGate(currentToolCalls)) {
         if (gateRetries >= MAX_GATE_RETRIES) {
             logEvent(getRequestId(resolver), 'plan.skipped', { reason: 'gate_retries_exhausted' });
+            currentToolCalls = [];
             break;
         }
         gateRetries++;

@@ -156,16 +156,32 @@ export default {
                 });
             }
             
+            // Block pulse wakes from modifying their own pulse config (prevents autonomous escalation)
+            const isPulseWake = properties.invocationType === 'pulse';
+            const PULSE_PROPERTIES = new Set([
+                'pulseEnabled', 'pulseWakeIntervalMinutes', 'pulseMaxChainDepth',
+                'pulseModel', 'pulseDailyBudgetWakes', 'pulseDailyBudgetTokens',
+                'pulseActiveHoursStart', 'pulseActiveHoursEnd', 'pulseActiveHoursTimezone',
+            ]);
+
             // Collect properties to update (only non-undefined allowed properties)
             const updatedProperties = [];
             const updateData = { ...currentEntity };
-            
+
             for (const [key, value] of Object.entries(properties)) {
                 // Skip undefined values (not provided)
                 if (value === undefined) continue;
-                
+
                 // Only allow known properties
                 if (!ALLOWED_PROPERTIES.has(key)) continue;
+
+                // Prevent pulse wakes from escalating their own config
+                if (isPulseWake && PULSE_PROPERTIES.has(key)) {
+                    return JSON.stringify({
+                        success: false,
+                        error: `Cannot modify ${key} during a pulse wake`
+                    });
+                }
                 
                 // Validate and transform values
                 if (key === 'tools') {
@@ -316,10 +332,10 @@ export default {
                     updateData.pulse.dailyBudgetWakes = numValue;
                 } else if (key === 'pulseDailyBudgetTokens') {
                     const numValue = typeof value === 'number' ? value : parseInt(value, 10);
-                    if (isNaN(numValue) || numValue < 10000) {
+                    if (isNaN(numValue) || numValue < 10000 || numValue > 10000000) {
                         return JSON.stringify({
                             success: false,
-                            error: 'pulseDailyBudgetTokens must be at least 10000'
+                            error: 'pulseDailyBudgetTokens must be between 10000 and 10000000'
                         });
                     }
                     updateData.pulse = updateData.pulse || {};

@@ -21,6 +21,7 @@ import { isProviderAvailable } from '../providers/index.js';
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const PREVIEW_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_PREVIEW_CACHE_SIZE = 200;
 
 // ── Static voice definitions ─────────────────────────────────────────
 
@@ -265,8 +266,13 @@ export class VoiceRegistry {
                 throw new Error(`Unsupported provider: ${provider}`);
         }
 
-        // Cache the generated audio
+        // Cache the generated audio (LRU eviction when over limit)
         this.previewCache.set(cacheKey, { audio, contentType, timestamp: Date.now() });
+        if (this.previewCache.size > MAX_PREVIEW_CACHE_SIZE) {
+            // Evict oldest entry
+            const oldest = this.previewCache.keys().next().value;
+            if (oldest) this.previewCache.delete(oldest);
+        }
 
         return { audio, contentType };
     }

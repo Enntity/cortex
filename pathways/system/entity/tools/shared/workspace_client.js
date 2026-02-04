@@ -148,6 +148,7 @@ async function _doProvision(entityId, entityConfig) {
     const network = config.get('workspaceNetwork');
     const cpus = config.get('workspaceCpus');
     const memory = config.get('workspaceMemory');
+    const diskSize = config.get('workspaceDiskSize');
     const volumeName = `workspace-${shortId}-data`;
 
     logger.info(`Provisioning workspace for entity ${entityId} (${containerName})${isInDocker ? '' : ' [local dev mode]'}`);
@@ -193,6 +194,7 @@ async function _doProvision(entityId, entityConfig) {
             HostConfig: {
                 NanoCpus: nanoCpus,
                 Memory: memoryBytes,
+                StorageOpt: { size: diskSize },
                 RestartPolicy: { Name: 'unless-stopped' },
                 Binds: [`${volumeName}:/workspace`],
                 ...(hostPort ? { PortBindings: { '3100/tcp': [{ HostPort: String(hostPort) }] } } : {}),
