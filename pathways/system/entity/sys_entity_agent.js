@@ -52,7 +52,7 @@ import { config } from '../../../config.js';
 import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
 import { Prompt } from '../../../server/prompt.js';
 import { getToolsForEntity, loadEntityConfig } from './tools/shared/sys_entity_tools.js';
-import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults } from './tools/shared/tool_result_compression.js';
+import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults, dehydrateToolHistory } from './tools/shared/tool_result_compression.js';
 import CortexResponse from '../../../lib/cortexResponse.js';
 import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
 
@@ -536,6 +536,48 @@ function findSafeSplitPoint(messages, keepRecentCount = 6) {
     return splitIndex;
 }
 
+export function sliceByTurns(messages, maxTurns = 10) {
+    if (!messages || messages.length === 0) return messages;
+
+    // Find the index of the user message that starts the oldest kept turn.
+    // Each user message begins a new turn. Walk backwards counting them.
+    let turnCount = 0;
+    let cutIndex = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') {
+            turnCount++;
+            if (turnCount <= maxTurns) {
+                cutIndex = i; // tentatively start here
+            } else {
+                break;
+            }
+        }
+    }
+
+    let sliced = messages.slice(cutIndex);
+
+    // Build a tool_call_id → index map for the kept window
+    const toolCallIndexMap = new Map();
+    for (let i = 0; i < sliced.length; i++) {
+        if (sliced[i].tool_calls) {
+            for (const tc of sliced[i].tool_calls) {
+                // Handle stringified tool_calls from GraphQL [String] schema
+                const parsed = typeof tc === 'string' ? JSON.parse(tc) : tc;
+                if (parsed.id) toolCallIndexMap.set(parsed.id, i);
+            }
+        }
+    }
+
+    // Filter orphaned tool responses — tool messages whose tool_call_id
+    // doesn't match any assistant message's tool_calls in the kept window
+    sliced = sliced.filter(msg => {
+        if (msg.role !== 'tool' || !msg.tool_call_id) return true;
+        return toolCallIndexMap.has(msg.tool_call_id);
+    });
+
+    return sliced;
+}
+
 function formatMessagesForCompression(messages) {
     let text = '';
     for (const msg of messages) {
@@ -672,6 +714,13 @@ async function runFallbackPath(currentToolCalls, args, resolver, entityTools, en
         // Restore full tool outputs before the final model call.
         if (resolver.toolResultStore && resolver.toolResultStore.size > 0) {
             args.chatHistory = rehydrateAllToolResults(args.chatHistory, resolver.toolResultStore);
+        }
+
+        // Dehydrate tool history onto pathwayResultData before fallback streams the final info block
+        const startIdx = resolver._preToolHistoryLength || 0;
+        const toolHistory = dehydrateToolHistory(args.chatHistory, entityTools, startIdx);
+        if (toolHistory.length > 0) {
+            resolver.pathwayResultData = { ...(resolver.pathwayResultData || {}), toolHistory };
         }
 
         let fallbackResult = await callModelLogged(resolver, {
@@ -838,6 +887,13 @@ async function runDualModelPath(currentToolCalls, args, resolver, entityTools, e
 
         prepareForSynthesis(args, resolver);
 
+        // Dehydrate tool history onto pathwayResultData before synthesis streams the final info block
+        const startIdx = resolver._preToolHistoryLength || 0;
+        const toolHistory = dehydrateToolHistory(args.chatHistory, entityTools, startIdx);
+        if (toolHistory.length > 0) {
+            resolver.pathwayResultData = { ...(resolver.pathwayResultData || {}), toolHistory };
+        }
+
         const synthResult = await callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError);
         if (synthResult.done) { synthesisResult = synthResult.result; break; }
         currentToolCalls = synthResult.toolCalls;
@@ -906,10 +962,12 @@ If you don't call EndPulse and keep using tools, the system will give you
 another cycle when you run out of tool calls — you can work for as long as
 you need.
 
-Keep a scratchpad file in your workspace (e.g. /workspace/scratchpad.md)
-with notes on what you're working on, key findings, and next steps.
-Your conversation context may be compacted during long tasks — the
-scratchpad ensures you can always pick up where you left off by reading it.
+Use /workspace/scratchpad.md for notes during this wake — what you're working
+on, intermediate findings, next steps. The scratchpad is cleared when you call
+EndPulse, so it's for within-wake context only. For anything you want to
+persist across wakes, save it to a named file (e.g. /workspace/journal.md,
+/workspace/project_notes.md). Your conversation context may be compacted
+during long tasks — the scratchpad helps you track state within a single wake.
 
 Your memories from pulse wakes are part of you. Users can see what you
 learned or built during autonomous time. Use StoreContinuityMemory to save
@@ -1104,7 +1162,7 @@ export default {
 
         const reasoningEffort = entityConfig?.reasoningEffort || 'low';
 
-        args.chatHistory = (args.messages && args.messages.length > 0 ? args.messages : args.chatHistory).slice(-20);
+        args.chatHistory = sliceByTurns(args.messages && args.messages.length > 0 ? args.messages : args.chatHistory);
 
         const { chatHistory: strippedHistory, availableFiles } = await syncAndStripFilesFromChatHistory(args.chatHistory, args.agentContext, chatId, entityId);
         args.chatHistory = strippedHistory;
@@ -1154,6 +1212,7 @@ export default {
             });
 
             const toolCallback = resolver.pathway.toolCallback;
+            resolver._preToolHistoryLength = args.chatHistory.length;
             while (response && (
                 (response instanceof CortexResponse && response.hasToolCalls()) ||
                 (typeof response === 'object' && response.tool_calls)

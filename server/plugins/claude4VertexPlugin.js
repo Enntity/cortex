@@ -374,10 +374,21 @@ class Claude4VertexPlugin extends Claude3VertexPlugin {
     let modifiedMessages = messagesCopy
       .filter(message => message.role !== "system")
       .map(message => {
-        if (message.tool_calls) {
+        // Parse stringified tool_calls back to objects (from GraphQL [String] schema)
+        let toolCalls = message.tool_calls;
+        if (toolCalls && Array.isArray(toolCalls)) {
+          toolCalls = toolCalls.map(tc => {
+            if (typeof tc === 'string') {
+              try { return JSON.parse(tc); } catch { return tc; }
+            }
+            return tc;
+          });
+        }
+
+        if (toolCalls) {
           return {
             role: message.role,
-            content: message.tool_calls.map(toolCall => ({
+            content: toolCalls.map(toolCall => ({
               type: "tool_use",
               id: toolCall.id,
               name: toolCall.function.name,
@@ -387,12 +398,17 @@ class Claude4VertexPlugin extends Claude3VertexPlugin {
         }
         
         if (message.role === "tool") {
+          // Handle content that may be an array from GraphQL [String] schema
+          let toolContent = message.content;
+          if (Array.isArray(toolContent)) {
+            toolContent = toolContent.join('\n');
+          }
           return {
             role: "user",
             content: [{
               type: "tool_result",
               tool_use_id: message.tool_call_id,
-              content: message.content
+              content: toolContent
             }]
           };
         }
@@ -423,7 +439,7 @@ class Claude4VertexPlugin extends Claude3VertexPlugin {
       }
       return acc;
     }, []);
-  
+
     // Ensure an odd number of messages
     const finalMessages = combinedMessages.length % 2 === 0
       ? combinedMessages.slice(1)

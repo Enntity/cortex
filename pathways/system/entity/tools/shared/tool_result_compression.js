@@ -42,6 +42,81 @@ export function compressOlderToolResults(messages, store, currentRound, entityTo
     });
 }
 
+const MAX_DEHYDRATED_PAIRS = 10;
+const SET_GOALS_NAME = 'setgoals';
+
+export function dehydrateToolHistory(chatHistory, entityTools, startIndex) {
+    const result = [];
+
+    for (let i = startIndex; i < chatHistory.length; i++) {
+        const msg = chatHistory[i];
+        if (msg.role !== 'assistant' || !msg.tool_calls || msg.tool_calls.length === 0) continue;
+
+        // Filter out SetGoals tool_calls
+        const realCalls = msg.tool_calls.filter(
+            tc => tc.function?.name?.toLowerCase() !== SET_GOALS_NAME
+        );
+        if (realCalls.length === 0) continue;
+
+        // Build dehydrated assistant message with only real tool_calls
+        result.push({
+            role: 'assistant',
+            content: msg.content || '',
+            tool_calls: realCalls.map(tc => ({
+                id: tc.id,
+                type: 'function',
+                function: { name: tc.function.name, arguments: tc.function.arguments },
+            })),
+        });
+
+        // Find matching tool responses
+        const callIds = new Set(realCalls.map(tc => tc.id));
+        for (let j = i + 1; j < chatHistory.length; j++) {
+            const resp = chatHistory[j];
+            if (resp.role !== 'tool' || !callIds.has(resp.tool_call_id)) continue;
+
+            const summarize = entityTools[resp.name?.toLowerCase()]?.summarize || defaultSummarize;
+            const content = (typeof resp.content === 'string' && resp.content.length > COMPRESSION_THRESHOLD)
+                ? summarize(resp.content, resp.name)
+                : resp.content;
+
+            result.push({
+                role: 'tool',
+                tool_call_id: resp.tool_call_id,
+                name: resp.name,
+                content,
+            });
+            callIds.delete(resp.tool_call_id);
+            if (callIds.size === 0) break;
+        }
+    }
+
+    // Keep only the last N pairs (each pair = 1 assistant + its tool responses)
+    // Walk backwards counting assistant messages
+    if (result.length > 0) {
+        let assistantCount = 0;
+        let cutIndex = result.length;
+        for (let i = result.length - 1; i >= 0; i--) {
+            if (result[i].role === 'assistant') {
+                assistantCount++;
+                if (assistantCount > MAX_DEHYDRATED_PAIRS) {
+                    cutIndex = i;
+                    // Find the start of the next kept group
+                    for (let k = i + 1; k < result.length; k++) {
+                        if (result[k].role === 'assistant') { cutIndex = k; break; }
+                    }
+                    break;
+                }
+            }
+        }
+        if (cutIndex > 0 && cutIndex < result.length) {
+            return result.slice(cutIndex);
+        }
+    }
+
+    return result;
+}
+
 export function rehydrateAllToolResults(messages, store) {
     if (!store || store.size === 0) return messages;
     // Mark all entries as uncompressed so final synthesis sees full content
