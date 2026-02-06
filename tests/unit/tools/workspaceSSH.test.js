@@ -2,7 +2,7 @@
 // Tests for WorkspaceSSH tokenizer, command routing, and tool migrations
 
 import test from 'ava';
-import { tokenize, toAbsWorkspacePath } from '../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js';
+import { tokenize, toAbsWorkspacePath, globToRegex } from '../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js';
 import { migrateToolList, needsMigration, TOOL_MIGRATIONS } from '../../../pathways/system/entity/tools/shared/tool_migrations.js';
 
 // ─── Tokenizer tests ───
@@ -60,6 +60,56 @@ test('toAbsWorkspacePath: relative path gets /workspace/ prefix', t => {
     t.is(toAbsWorkspacePath('file.txt'), '/workspace/file.txt');
     t.is(toAbsWorkspacePath('subdir/file.txt'), '/workspace/subdir/file.txt');
     t.is(toAbsWorkspacePath('curiosity_cabinet/artifacts/photo.jpg'), '/workspace/curiosity_cabinet/artifacts/photo.jpg');
+});
+
+// ─── globToRegex tests ───
+
+test('globToRegex: *.jpg matches .jpg files', t => {
+    const re = globToRegex('*.jpg');
+    t.true(re.test('photo.jpg'));
+    t.true(re.test('my-file.jpg'));
+    t.false(re.test('photo.png'));
+    t.false(re.test('photo.jpg.bak'));
+});
+
+test('globToRegex: * matches everything', t => {
+    const re = globToRegex('*');
+    t.true(re.test('anything'));
+    t.true(re.test('file.txt'));
+    t.true(re.test(''));
+});
+
+test('globToRegex: ? matches single character', t => {
+    const re = globToRegex('file?.txt');
+    t.true(re.test('file1.txt'));
+    t.true(re.test('fileA.txt'));
+    t.false(re.test('file12.txt'));
+    t.false(re.test('file.txt'));
+});
+
+test('globToRegex: case-insensitive', t => {
+    const re = globToRegex('*.JPG');
+    t.true(re.test('photo.jpg'));
+    t.true(re.test('photo.JPG'));
+    t.true(re.test('photo.Jpg'));
+});
+
+test('globToRegex: escapes regex special chars', t => {
+    const re = globToRegex('file(1).txt');
+    t.true(re.test('file(1).txt'));
+    t.false(re.test('file1.txt'));
+});
+
+test('globToRegex: character class [abc]', t => {
+    const re = globToRegex('file[12].txt');
+    t.true(re.test('file1.txt'));
+    t.true(re.test('file2.txt'));
+    t.false(re.test('file3.txt'));
+});
+
+test('globToRegex: does not match across path separators', t => {
+    const re = globToRegex('*.jpg');
+    t.false(re.test('dir/photo.jpg'));
 });
 
 // ─── Command routing tests (via dynamic import to access routeCommand indirectly) ───

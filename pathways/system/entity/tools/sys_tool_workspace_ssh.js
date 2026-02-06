@@ -126,6 +126,40 @@ async function pushOneFile(absPath, displayName, entityId, contextId, contextKey
 
 const GLOB_CHARS = /[*?[\]]/;
 
+/** Convert a filename glob pattern to a RegExp. Case-insensitive, anchored. */
+export function globToRegex(pattern) {
+    let re = '';
+    for (let i = 0; i < pattern.length; i++) {
+        const ch = pattern[i];
+        if (ch === '*') {
+            re += '[^/]*';
+        } else if (ch === '?') {
+            re += '.';
+        } else if (ch === '[') {
+            // Pass through character class until closing ]
+            const start = i;
+            i++;
+            if (i < pattern.length && pattern[i] === '!') { re += '[^'; i++; }
+            else { re += '['; }
+            while (i < pattern.length && pattern[i] !== ']') {
+                re += pattern[i];
+                i++;
+            }
+            if (i < pattern.length) re += ']';
+            // If unclosed, treat literally
+            if (i >= pattern.length) {
+                re = re.substring(0, re.length - (i - start));
+                re += '\\[' + pattern.substring(start + 1);
+            }
+        } else if ('.+^${}()|\\'.includes(ch)) {
+            re += '\\' + ch;
+        } else {
+            re += ch;
+        }
+    }
+    return new RegExp('^' + re + '$', 'i');
+}
+
 async function handleFilesPush(tokens, args, resolver) {
     // files push <workspacePath|glob> [displayName]
     const { entityId, contextId, contextKey, chatId } = args;
@@ -174,13 +208,56 @@ async function handleFilesPush(tokens, args, resolver) {
     return JSON.stringify(result);
 }
 
+/** Pull a single file from cloud storage to workspace. (used by files pull) */
+async function pullOneFile(fileEntry, destPath, entityId) {
+    const cloudUrl = fileEntry.url;
+    const filename = fileEntry.displayFilename || 'unknown';
+
+    if (!cloudUrl) {
+        return { success: false, filename, error: `No URL available for file "${filename}"` };
+    }
+
+    try {
+        const response = await axios.get(cloudUrl, {
+            responseType: 'arraybuffer',
+            timeout: 60000,
+            validateStatus: (status) => status >= 200 && status < 400,
+        });
+
+        if (!response.data) {
+            return { success: false, filename, error: 'Failed to download file from cloud storage' };
+        }
+
+        const b64Content = Buffer.from(response.data).toString('base64');
+        const writeResult = await workspaceRequest(entityId, '/write', {
+            path: destPath,
+            content: b64Content,
+            encoding: 'base64',
+            createDirs: true,
+        }, { timeoutMs: 60000 });
+
+        if (!writeResult.success) {
+            return { success: false, filename, workspacePath: destPath, error: writeResult.error || 'Failed to write file to workspace' };
+        }
+
+        return {
+            success: true,
+            filename,
+            workspacePath: destPath,
+            bytesWritten: writeResult.bytesWritten || response.data.length,
+        };
+    } catch (e) {
+        return { success: false, filename, workspacePath: destPath, error: e.message };
+    }
+}
+
 async function handleFilesPull(tokens, args, resolver) {
     // files pull <fileRef> [destPath]
     const { entityId, contextId, contextKey } = args;
     const fileRef = tokens[2];
     if (!fileRef) {
 
-        return JSON.stringify({ success: false, error: 'Usage: files pull <fileRef> [destPath]' });
+        return JSON.stringify({ success: false, error: 'Usage: files pull <fileRef|glob> [destPath]' });
     }
 
     const agentContext = args.agentContext;
@@ -192,21 +269,44 @@ async function handleFilesPull(tokens, args, resolver) {
         });
     }
 
-    // Find file in collection (gets URL + displayFilename in one lookup)
     const collection = await loadFileCollection(agentContext);
+
+    // Glob path: match pattern against collection filenames
+    if (GLOB_CHARS.test(fileRef)) {
+        const re = globToRegex(fileRef);
+        const matches = collection.filter(f => f.displayFilename && re.test(f.displayFilename));
+
+        if (matches.length === 0) {
+            return JSON.stringify({ success: false, error: `No files matched pattern: "${fileRef}"` });
+        }
+
+        // Resolve destination directory (always treated as directory for glob pulls)
+        const destDir = tokens[3] ? toAbsWorkspacePath(tokens[3]) : '/workspace/';
+        const destBase = destDir.endsWith('/') ? destDir : destDir + '/';
+
+        const results = [];
+        for (const file of matches) {
+            const dest = destBase + file.displayFilename;
+            results.push(await pullOneFile(file, dest, entityId));
+        }
+
+        const succeeded = results.filter(r => r.success);
+        const failed = results.filter(r => !r.success);
+        return JSON.stringify({
+            success: failed.length === 0,
+            pulled: succeeded.length,
+            failed: failed.length,
+            files: results,
+        });
+    }
+
+    // Single-file path
     const foundFile = findFileInCollection(fileRef, collection);
     if (!foundFile) {
-
         return JSON.stringify({
             success: false,
             error: `File not found: "${fileRef}". Use FileCollection to find available files.`,
         });
-    }
-
-    const cloudUrl = foundFile.url;
-    if (!cloudUrl) {
-
-        return JSON.stringify({ success: false, error: `No URL available for file "${foundFile.displayFilename || fileRef}"` });
     }
 
     // Default dest: /workspace/<displayFilename>; normalize relative paths
@@ -216,10 +316,8 @@ async function handleFilesPull(tokens, args, resolver) {
     if (tokens[3]) {
         const filename = foundFile.displayFilename || fileRef;
         if (tokens[3].endsWith('/')) {
-            // Trailing slash: always treat as directory, append filename
             destPath = destPath.endsWith('/') ? destPath + filename : destPath + '/' + filename;
         } else {
-            // No trailing slash: probe if dest is an existing directory
             const probeResult = await workspaceRequest(entityId, '/shell', {
                 command: `test -d "${destPath}" && echo DIR`,
             }, { timeoutMs: 10000 });
@@ -229,38 +327,16 @@ async function handleFilesPull(tokens, args, resolver) {
         }
     }
 
-    // Download file content
-    const response = await axios.get(cloudUrl, {
-        responseType: 'arraybuffer',
-        timeout: 60000,
-        validateStatus: (status) => status >= 200 && status < 400,
-    });
-
-    if (!response.data) {
-
-        return JSON.stringify({ success: false, error: 'Failed to download file from cloud storage' });
+    const result = await pullOneFile(foundFile, destPath, entityId);
+    if (!result.success) {
+        return JSON.stringify({ success: false, error: result.error });
     }
-
-    // Base64-encode and write to workspace
-    const b64Content = Buffer.from(response.data).toString('base64');
-    const writeResult = await workspaceRequest(entityId, '/write', {
-        path: destPath,
-        content: b64Content,
-        encoding: 'base64',
-        createDirs: true,
-    }, { timeoutMs: 60000 });
-
-    if (!writeResult.success) {
-
-        return JSON.stringify({ success: false, error: writeResult.error || 'Failed to write file to workspace' });
-    }
-
 
     return JSON.stringify({
         success: true,
         file: foundFile.displayFilename || fileRef,
-        workspacePath: destPath,
-        bytesWritten: writeResult.bytesWritten || response.data.length,
+        workspacePath: result.workspacePath,
+        bytesWritten: result.bytesWritten,
     });
 }
 
@@ -515,7 +591,7 @@ export default {
             name: 'WorkspaceSSH',
             description: `Execute commands in your workspace — a persistent Linux container (cwd: /workspace). Built-in commands:
 • files push <path|glob> [name] — upload file(s) to your file collection. Supports globs: files push *.jpg
-• files pull <fileRef> [dest] — download from file collection to workspace
+• files pull <fileRef|glob> [dest] — download from file collection to workspace. Supports globs: files pull *.jpg /dest/
 • files backup [notes] / files restore <ref> — snapshot or restore entire workspace
 • bg <cmd> — run in background, returns processId. poll <id> — check result
 • reset [--preserve .env] — wipe workspace contents

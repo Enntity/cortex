@@ -287,6 +287,79 @@ test.serial('files pull: resolves directory destination (EISDIR fix)', async t =
     t.is(verifyParsed.stdout.trim(), 'eisdir test content');
 });
 
+// --- files pull with glob ---
+
+test.serial('files pull glob: pulls matching files from collection', async t => {
+    // Create and push 3 files: 2 .jpg, 1 .txt
+    await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'mkdir -p /workspace/glob-src && echo "img1" > /workspace/glob-src/photo1.jpg && echo "img2" > /workspace/glob-src/photo2.jpg && echo "notes" > /workspace/glob-src/notes.txt',
+        userMessage: 'Create files for glob pull test',
+    });
+
+    // Push all three files to the collection
+    const push1 = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        command: 'files push /workspace/glob-src/photo1.jpg',
+        userMessage: 'Push photo1',
+    });
+    t.is(JSON.parse(push1).success, true, 'push photo1 should succeed');
+
+    const push2 = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        command: 'files push /workspace/glob-src/photo2.jpg',
+        userMessage: 'Push photo2',
+    });
+    t.is(JSON.parse(push2).success, true, 'push photo2 should succeed');
+
+    const push3 = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        command: 'files push /workspace/glob-src/notes.txt',
+        userMessage: 'Push notes',
+    });
+    t.is(JSON.parse(push3).success, true, 'push notes.txt should succeed');
+
+    // Glob pull *.jpg to a new directory
+    const pullResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        agentContext: [{ contextId: TEST_CONTEXT_ID }],
+        command: 'files pull *.jpg /workspace/pulled/',
+        userMessage: 'Glob pull jpgs',
+    });
+
+    const parsed = JSON.parse(pullResult);
+    t.is(parsed.success, true, `Glob pull should succeed but got: ${parsed.error || JSON.stringify(parsed)}`);
+    t.is(parsed.pulled, 2, 'Should pull exactly 2 jpg files');
+    t.is(parsed.failed, 0, 'No failures expected');
+
+    // Verify files actually exist
+    const verify = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'ls /workspace/pulled/*.jpg | wc -l',
+        userMessage: 'Count pulled files',
+    });
+    const verifyParsed = JSON.parse(verify);
+    t.is(verifyParsed.stdout.trim(), '2', 'Should have 2 jpg files in pulled dir');
+});
+
+test.serial('files pull glob: no matches returns error', async t => {
+    const result = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        agentContext: [{ contextId: TEST_CONTEXT_ID }],
+        command: 'files pull *.xyz',
+        userMessage: 'Glob pull no matches',
+    });
+
+    const parsed = JSON.parse(result);
+    t.is(parsed.success, false);
+    t.regex(parsed.error, /No files matched pattern/);
+});
+
 // --- Background execution ---
 
 test.serial('bg + poll: runs background command and retrieves result', async t => {
