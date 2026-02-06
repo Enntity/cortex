@@ -4,6 +4,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import logger from '../../../../../lib/logger.js';
 import { config } from '../../../../../config.js';
 import { loadEntityConfig } from './sys_entity_tools.js';
@@ -406,4 +408,81 @@ function findFreePort() {
         });
         srv.on('error', reject);
     });
+}
+
+/**
+ * Stream-download a file from an entity's workspace container to a local path.
+ * Uses the GET /download streaming endpoint instead of base64-in-JSON.
+ *
+ * @param {string} entityId - Entity UUID
+ * @param {string} remotePath - Path inside the container
+ * @param {string} localPath - Destination path on Cortex host
+ * @returns {Promise<{success: boolean, bytesWritten?: number, error?: string}>}
+ */
+export async function workspaceDownloadToFile(entityId, remotePath, localPath) {
+    const entityConfig = await loadEntityConfig(entityId);
+    if (!entityConfig?.workspace?.url) {
+        return { success: false, error: 'Workspace not configured' };
+    }
+
+    const { url, secret } = entityConfig.workspace;
+    const endpoint = `${url}/download?path=${encodeURIComponent(remotePath)}`;
+
+    const response = await fetch(endpoint, {
+        headers: { 'x-workspace-secret': secret },
+        signal: AbortSignal.timeout(300000), // 5-minute timeout
+    });
+
+    if (!response.ok) {
+        let errMsg;
+        try { errMsg = (await response.json()).error; } catch { errMsg = response.statusText; }
+        return { success: false, error: errMsg || `Download failed: ${response.status}` };
+    }
+
+    const nodeStream = Readable.fromWeb(response.body);
+    const ws = fs.createWriteStream(localPath);
+    await pipeline(nodeStream, ws);
+
+    const stat = fs.statSync(localPath);
+    return { success: true, bytesWritten: stat.size };
+}
+
+/**
+ * Stream-upload a local file to an entity's workspace container.
+ * Uses the POST /upload streaming endpoint instead of base64-in-JSON.
+ *
+ * @param {string} entityId - Entity UUID
+ * @param {string} localPath - Source path on Cortex host
+ * @param {string} remotePath - Destination path inside the container
+ * @returns {Promise<{success: boolean, bytesWritten?: number, error?: string}>}
+ */
+export async function workspaceUploadFile(entityId, localPath, remotePath) {
+    const entityConfig = await loadEntityConfig(entityId);
+    if (!entityConfig?.workspace?.url) {
+        return { success: false, error: 'Workspace not configured' };
+    }
+
+    const { url, secret } = entityConfig.workspace;
+    const endpoint = `${url}/upload?path=${encodeURIComponent(remotePath)}`;
+
+    const fileStream = fs.createReadStream(localPath);
+    const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+            'x-workspace-secret': secret,
+            'Content-Type': 'application/octet-stream',
+        },
+        body: Readable.toWeb(fileStream),
+        duplex: 'half',
+        signal: AbortSignal.timeout(300000), // 5-minute timeout
+    });
+
+    if (!response.ok) {
+        let errMsg;
+        try { errMsg = (await response.json()).error; } catch { errMsg = response.statusText; }
+        return { success: false, error: errMsg || `Upload failed: ${response.status}` };
+    }
+
+    const result = await response.json();
+    return { success: true, bytesWritten: result.bytesWritten };
 }

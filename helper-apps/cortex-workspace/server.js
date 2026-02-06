@@ -1,4 +1,7 @@
 import express from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { requireAuth } from './lib/auth.js';
 import { execSync, execBackground, getResult } from './lib/shell.js';
 import { readFile, writeFile, editFile, browseDir } from './lib/files.js';
@@ -114,6 +117,49 @@ app.post('/restore', wrap(async (req, res) => {
 // Reset workspace
 app.post('/reset', wrap(async (req, res) => {
     res.json(await resetWorkspace(req.body.preservePaths));
+}));
+
+// Stream-download a file from the container
+app.get('/download', wrap(async (req, res) => {
+    const filePath = req.query.path;
+    if (!filePath || typeof filePath !== 'string') {
+        return res.status(400).json({ error: 'path query parameter is required' });
+    }
+
+    let stat;
+    try {
+        stat = await fs.promises.stat(filePath);
+    } catch (err) {
+        if (err.code === 'ENOENT') return res.status(404).json({ error: `File not found: ${filePath}` });
+        if (err.code === 'EACCES') return res.status(403).json({ error: `Permission denied: ${filePath}` });
+        throw err;
+    }
+
+    if (!stat.isFile()) {
+        return res.status(400).json({ error: `Not a file: ${filePath}` });
+    }
+
+    res.setHeader('Content-Length', stat.size);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    const stream = fs.createReadStream(filePath);
+    await pipeline(stream, res);
+}));
+
+// Stream-upload a file into the container
+app.post('/upload', wrap(async (req, res) => {
+    const filePath = req.query.path;
+    if (!filePath || typeof filePath !== 'string') {
+        return res.status(400).json({ error: 'path query parameter is required' });
+    }
+
+    // Ensure parent directory exists
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+
+    const ws = fs.createWriteStream(filePath);
+    await pipeline(req, ws);
+
+    const stat = await fs.promises.stat(filePath);
+    res.json({ path: filePath, bytesWritten: stat.size });
 }));
 
 // Global error handler — async rejections now route here via wrap()

@@ -10,12 +10,12 @@ import { migrateToolList, needsMigration, TOOL_MIGRATIONS } from '../../../pathw
 test('tokenize: simple words', t => {
     t.deepEqual(tokenize('pwd'), ['pwd']);
     t.deepEqual(tokenize('ls -la'), ['ls', '-la']);
-    t.deepEqual(tokenize('scp push /workspace/file.txt'), ['scp', 'push', '/workspace/file.txt']);
+    t.deepEqual(tokenize('files push /workspace/file.txt'), ['files', 'push', '/workspace/file.txt']);
 });
 
 test('tokenize: double-quoted strings', t => {
     t.deepEqual(tokenize('echo "hello world"'), ['echo', 'hello world']);
-    t.deepEqual(tokenize('scp push "/workspace/my file.txt" "my report"'), ['scp', 'push', '/workspace/my file.txt', 'my report']);
+    t.deepEqual(tokenize('files push "/workspace/my file.txt" "my report"'), ['files', 'push', '/workspace/my file.txt', 'my report']);
 });
 
 test('tokenize: single-quoted strings', t => {
@@ -32,11 +32,11 @@ test('tokenize: empty string', t => {
 });
 
 test('tokenize: extra whitespace', t => {
-    t.deepEqual(tokenize('  scp   push   /path  '), ['scp', 'push', '/path']);
+    t.deepEqual(tokenize('  files   push   /path  '), ['files', 'push', '/path']);
 });
 
 test('tokenize: tabs', t => {
-    t.deepEqual(tokenize("scp\tpush\t/path"), ['scp', 'push', '/path']);
+    t.deepEqual(tokenize("files\tpush\t/path"), ['files', 'push', '/path']);
 });
 
 test('tokenize: adjacent quotes produce single token', t => {
@@ -85,46 +85,46 @@ test('routing: plain shell commands pass through', async t => {
     t.is(JSON.parse(resolver.tool).toolUsed, 'WorkspaceSSH');
 });
 
-test('routing: scp push requires workspacePath', async t => {
+test('routing: files push requires workspacePath', async t => {
     const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
     const tool = mod.default;
 
     const resolver = { tool: null };
-    const args = { command: 'scp push', entityId: 'test-entity-123' };
+    const args = { command: 'files push', entityId: 'test-entity-123' };
 
     const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
     const parsed = JSON.parse(result);
 
     t.is(parsed.success, false);
-    t.regex(parsed.error, /Usage.*scp push/i);
+    t.regex(parsed.error, /Usage.*files push/i);
 });
 
-test('routing: scp pull requires fileRef', async t => {
+test('routing: files pull requires fileRef', async t => {
     const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
     const tool = mod.default;
 
     const resolver = { tool: null };
-    const args = { command: 'scp pull', entityId: 'test-entity-123' };
+    const args = { command: 'files pull', entityId: 'test-entity-123' };
 
     const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
     const parsed = JSON.parse(result);
 
     t.is(parsed.success, false);
-    t.regex(parsed.error, /Usage.*scp pull/i);
+    t.regex(parsed.error, /Usage.*files pull/i);
 });
 
-test('routing: scp restore requires fileRef', async t => {
+test('routing: files restore requires fileRef', async t => {
     const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
     const tool = mod.default;
 
     const resolver = { tool: null };
-    const args = { command: 'scp restore', entityId: 'test-entity-123' };
+    const args = { command: 'files restore', entityId: 'test-entity-123' };
 
     const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
     const parsed = JSON.parse(result);
 
     t.is(parsed.success, false);
-    t.regex(parsed.error, /Usage.*scp restore/i);
+    t.regex(parsed.error, /Usage.*files restore/i);
 });
 
 test('routing: scp user@host:/path falls through to shell', async t => {
@@ -139,9 +139,24 @@ test('routing: scp user@host:/path falls through to shell', async t => {
 
     // Should have attempted shell execution (fails because no workspace)
     t.is(parsed.success, false);
-    // The error should be from workspaceRequest, not from scp handler
+    // The error should be from workspaceRequest, not from files handler
     t.truthy(parsed.error);
     t.notRegex(parsed.error, /Usage/);
+});
+
+test('routing: scp push still works as backward-compatible alias', async t => {
+    const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
+    const tool = mod.default;
+
+    const resolver = { tool: null };
+    const args = { command: 'scp push', entityId: 'test-entity-123' };
+
+    const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
+    const parsed = JSON.parse(result);
+
+    // Should route to handleFilesPush and return the usage error (not a shell error)
+    t.is(parsed.success, false);
+    t.regex(parsed.error, /Usage.*files push/i);
 });
 
 test('routing: empty command returns error', async t => {
@@ -172,12 +187,12 @@ test('routing: null command returns error', async t => {
     t.regex(parsed.error, /command is required/);
 });
 
-test('routing: scp pull needs agentContext', async t => {
+test('routing: files pull needs agentContext', async t => {
     const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
     const tool = mod.default;
 
     const resolver = { tool: null };
-    const args = { command: 'scp pull report.pdf', entityId: 'test-entity-123' };
+    const args = { command: 'files pull report.pdf', entityId: 'test-entity-123' };
 
     const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
     const parsed = JSON.parse(result);
@@ -186,12 +201,12 @@ test('routing: scp pull needs agentContext', async t => {
     t.regex(parsed.error, /agentContext.*required/i);
 });
 
-test('routing: scp restore needs agentContext', async t => {
+test('routing: files restore needs agentContext', async t => {
     const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
     const tool = mod.default;
 
     const resolver = { tool: null };
-    const args = { command: 'scp restore backup-123', entityId: 'test-entity-123' };
+    const args = { command: 'files restore backup-123', entityId: 'test-entity-123' };
 
     const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
     const parsed = JSON.parse(result);

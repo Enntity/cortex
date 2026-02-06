@@ -148,9 +148,9 @@ test.serial('shell: runs multi-command with semicolons', async t => {
     t.is(parsed.stdout.trim(), 'nested');
 });
 
-// --- scp push with relative paths ---
+// --- files push with relative paths ---
 
-test.serial('scp push: works with relative path', async t => {
+test.serial('files push: works with relative path', async t => {
     // Create a file in a subdirectory
     await callPathway('sys_tool_workspace_ssh', {
         entityId: TEST_ENTITY_ID,
@@ -158,11 +158,11 @@ test.serial('scp push: works with relative path', async t => {
         userMessage: 'Create test file',
     });
 
-    // Push using a relative path (the bug: this used to fail with "file not found")
+    // Push using a relative path
     const result = await callPathway('sys_tool_workspace_ssh', {
         entityId: TEST_ENTITY_ID,
         contextId: TEST_CONTEXT_ID,
-        command: 'scp push artifacts/test.txt',
+        command: 'files push artifacts/test.txt',
         userMessage: 'Push with relative path',
     });
 
@@ -172,11 +172,11 @@ test.serial('scp push: works with relative path', async t => {
     t.is(parsed.filename, 'test.txt');
 });
 
-test.serial('scp push: works with absolute path', async t => {
+test.serial('files push: works with absolute path', async t => {
     const result = await callPathway('sys_tool_workspace_ssh', {
         entityId: TEST_ENTITY_ID,
         contextId: TEST_CONTEXT_ID,
-        command: 'scp push /workspace/artifacts/test.txt "test-absolute"',
+        command: 'files push /workspace/artifacts/test.txt "test-absolute"',
         userMessage: 'Push with absolute path',
     });
 
@@ -185,7 +185,7 @@ test.serial('scp push: works with absolute path', async t => {
     t.is(parsed.filename, 'test-absolute');
 });
 
-test.serial('scp push: glob expands and pushes multiple files', async t => {
+test.serial('files push: glob expands and pushes multiple files', async t => {
     // Create several files
     await callPathway('sys_tool_workspace_ssh', {
         entityId: TEST_ENTITY_ID,
@@ -197,7 +197,7 @@ test.serial('scp push: glob expands and pushes multiple files', async t => {
     const result = await callPathway('sys_tool_workspace_ssh', {
         entityId: TEST_ENTITY_ID,
         contextId: TEST_CONTEXT_ID,
-        command: 'scp push /workspace/gallery/*.jpg',
+        command: 'files push /workspace/gallery/*.jpg',
         userMessage: 'Push with glob',
     });
 
@@ -211,12 +211,12 @@ test.serial('scp push: glob expands and pushes multiple files', async t => {
     t.deepEqual(names, ['img1.jpg', 'img2.jpg']);
 });
 
-test.serial('scp push: glob with relative path', async t => {
+test.serial('files push: glob with relative path', async t => {
     // gallery files still exist from previous test
     const result = await callPathway('sys_tool_workspace_ssh', {
         entityId: TEST_ENTITY_ID,
         contextId: TEST_CONTEXT_ID,
-        command: 'scp push gallery/*.jpg',
+        command: 'files push gallery/*.jpg',
         userMessage: 'Push with relative glob',
     });
 
@@ -225,17 +225,66 @@ test.serial('scp push: glob with relative path', async t => {
     t.is(parsed.pushed, 2);
 });
 
-test.serial('scp push: glob no matches returns error', async t => {
+test.serial('files push: glob no matches returns error', async t => {
     const result = await callPathway('sys_tool_workspace_ssh', {
         entityId: TEST_ENTITY_ID,
         contextId: TEST_CONTEXT_ID,
-        command: 'scp push /workspace/nonexistent/*.xyz',
+        command: 'files push /workspace/nonexistent/*.xyz',
         userMessage: 'Push with no-match glob',
     });
 
     const parsed = JSON.parse(result);
     t.is(parsed.success, false);
     t.regex(parsed.error, /No files matched/);
+});
+
+// --- files pull to directory ---
+
+test.serial('files pull: resolves directory destination (EISDIR fix)', async t => {
+    // Create a file and push it so it's in the collection
+    await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'echo "eisdir test content" > /workspace/eisdir-test.txt',
+        userMessage: 'Create file for EISDIR test',
+    });
+
+    const pushResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        command: 'files push /workspace/eisdir-test.txt',
+        userMessage: 'Push file for EISDIR test',
+    });
+    const pushParsed = JSON.parse(pushResult);
+    t.is(pushParsed.success, true, 'Push should succeed');
+
+    // Create a target directory
+    await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'mkdir -p /workspace/dest-dir',
+        userMessage: 'Create target directory',
+    });
+
+    // Pull to a directory path — should append filename instead of EISDIR
+    const pullResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        contextId: TEST_CONTEXT_ID,
+        agentContext: [{ contextId: TEST_CONTEXT_ID }],
+        command: 'files pull eisdir-test.txt /workspace/dest-dir',
+        userMessage: 'Pull to directory',
+    });
+    const pullParsed = JSON.parse(pullResult);
+    t.is(pullParsed.success, true, `Pull should succeed but got: ${pullParsed.error || 'no error'}`);
+    t.is(pullParsed.workspacePath, '/workspace/dest-dir/eisdir-test.txt');
+
+    // Verify the file actually landed there
+    const verifyResult = await callPathway('sys_tool_workspace_ssh', {
+        entityId: TEST_ENTITY_ID,
+        command: 'cat /workspace/dest-dir/eisdir-test.txt',
+        userMessage: 'Verify pulled file',
+    });
+    const verifyParsed = JSON.parse(verifyResult);
+    t.is(verifyParsed.success, true);
+    t.is(verifyParsed.stdout.trim(), 'eisdir test content');
 });
 
 // --- Background execution ---

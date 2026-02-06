@@ -1,8 +1,11 @@
 // sys_tool_workspace_ssh.js
 // Consolidated workspace tool — one shell interface replaces 14 individual tools.
-// Built-in pseudo-commands: scp push/pull/backup/restore, bg, poll, reset.
+// Built-in pseudo-commands: files push/pull/backup/restore, bg, poll, reset.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import logger from '../../../../lib/logger.js';
-import { workspaceRequest, destroyWorkspace } from './shared/workspace_client.js';
+import { workspaceRequest, destroyWorkspace, workspaceDownloadToFile, workspaceUploadFile } from './shared/workspace_client.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
 import { uploadFileToCloud, addFileToCollection, findFileInCollection, loadFileCollection, getMimeTypeFromFilename } from '../../../../lib/fileUtils.js';
 import { axios } from '../../../../lib/requestExecutor.js';
@@ -77,7 +80,7 @@ async function handlePoll(processId, args, resolver) {
     return JSON.stringify(result);
 }
 
-/** Push a single file from workspace to cloud storage + file collection. */
+/** Push a single file from workspace to cloud storage + file collection. (used by files push) */
 async function pushOneFile(absPath, displayName, entityId, contextId, contextKey, chatId, resolver) {
     const readResult = await workspaceRequest(entityId, '/read', {
         path: absPath,
@@ -123,13 +126,13 @@ async function pushOneFile(absPath, displayName, entityId, contextId, contextKey
 
 const GLOB_CHARS = /[*?[\]]/;
 
-async function handleScpPush(tokens, args, resolver) {
-    // scp push <workspacePath|glob> [displayName]
+async function handleFilesPush(tokens, args, resolver) {
+    // files push <workspacePath|glob> [displayName]
     const { entityId, contextId, contextKey, chatId } = args;
     const workspacePath = tokens[2];
     if (!workspacePath) {
 
-        return JSON.stringify({ success: false, error: 'Usage: scp push <workspacePath|glob> [displayName]' });
+        return JSON.stringify({ success: false, error: 'Usage: files push <workspacePath|glob> [displayName]' });
     }
 
     // If path contains glob characters, expand via shell and push each match
@@ -171,13 +174,13 @@ async function handleScpPush(tokens, args, resolver) {
     return JSON.stringify(result);
 }
 
-async function handleScpPull(tokens, args, resolver) {
-    // scp pull <fileRef> [destPath]
+async function handleFilesPull(tokens, args, resolver) {
+    // files pull <fileRef> [destPath]
     const { entityId, contextId, contextKey } = args;
     const fileRef = tokens[2];
     if (!fileRef) {
 
-        return JSON.stringify({ success: false, error: 'Usage: scp pull <fileRef> [destPath]' });
+        return JSON.stringify({ success: false, error: 'Usage: files pull <fileRef> [destPath]' });
     }
 
     const agentContext = args.agentContext;
@@ -185,7 +188,7 @@ async function handleScpPull(tokens, args, resolver) {
 
         return JSON.stringify({
             success: false,
-            error: 'agentContext is required for scp pull. Use FileCollection to find available files.',
+            error: 'agentContext is required for files pull. Use FileCollection to find available files.',
         });
     }
 
@@ -207,7 +210,24 @@ async function handleScpPull(tokens, args, resolver) {
     }
 
     // Default dest: /workspace/<displayFilename>; normalize relative paths
-    const destPath = tokens[3] ? toAbsWorkspacePath(tokens[3]) : `/workspace/${foundFile.displayFilename || fileRef}`;
+    let destPath = tokens[3] ? toAbsWorkspacePath(tokens[3]) : `/workspace/${foundFile.displayFilename || fileRef}`;
+
+    // Handle directory destinations (mirrors Unix cp behavior)
+    if (tokens[3]) {
+        const filename = foundFile.displayFilename || fileRef;
+        if (tokens[3].endsWith('/')) {
+            // Trailing slash: always treat as directory, append filename
+            destPath = destPath.endsWith('/') ? destPath + filename : destPath + '/' + filename;
+        } else {
+            // No trailing slash: probe if dest is an existing directory
+            const probeResult = await workspaceRequest(entityId, '/shell', {
+                command: `test -d "${destPath}" && echo DIR`,
+            }, { timeoutMs: 10000 });
+            if (probeResult.success && (probeResult.stdout || '').trim() === 'DIR') {
+                destPath = destPath + '/' + filename;
+            }
+        }
+    }
 
     // Download file content
     const response = await axios.get(cloudUrl, {
@@ -244,85 +264,81 @@ async function handleScpPull(tokens, args, resolver) {
     });
 }
 
-async function handleScpBackup(tokens, args, resolver) {
-    // scp backup [notes...]
+async function handleFilesBackup(tokens, args, resolver) {
+    // files backup [notes...]
     const { entityId, contextId, contextKey, chatId } = args;
     const notes = tokens.slice(2).join(' ') || null;
 
     // 1. Create tarball inside workspace container
     const backupResult = await workspaceRequest(entityId, '/backup', {}, { timeoutMs: 120000 });
     if (!backupResult.success || backupResult.error) {
-
         return JSON.stringify({ success: false, error: backupResult.error || 'Failed to create backup archive' });
     }
 
-    // 2. Read the tarball as base64
-    const readResult = await workspaceRequest(entityId, '/read', {
-        path: backupResult.path,
-        encoding: 'base64',
-    }, { timeoutMs: 120000 });
+    // 2. Stream tarball from container to Cortex temp file
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-backup-'));
+    const tempFile = path.join(tempDir, `backup-${backupResult.timestamp}.tar.gz`);
 
-    if (!readResult.success) {
+    try {
+        const dlResult = await workspaceDownloadToFile(entityId, backupResult.path, tempFile);
+        if (!dlResult.success) {
+            return JSON.stringify({ success: false, error: dlResult.error || 'Failed to download backup archive' });
+        }
 
-        return JSON.stringify({ success: false, error: readResult.error || 'Failed to read backup archive' });
+        // 3. Upload to cloud storage
+        const buffer = fs.readFileSync(tempFile);
+        const filename = `workspace-backup-${backupResult.timestamp}.tar.gz`;
+        const uploadResult = await uploadFileToCloud(buffer, 'application/gzip', filename, resolver, contextId);
+
+        if (!uploadResult || !uploadResult.url) {
+            return JSON.stringify({ success: false, error: 'Failed to upload backup to cloud storage' });
+        }
+
+        // 4. Add to file collection
+        const fileEntry = await addFileToCollection(
+            contextId,
+            contextKey || '',
+            uploadResult.url,
+            uploadResult.gcs || null,
+            filename,
+            ['workspace-backup'],
+            notes || `Workspace backup created at ${backupResult.timestamp}`,
+            uploadResult.hash || null,
+            null,
+            resolver,
+            true,
+            chatId || null,
+            entityId || null
+        );
+
+        return JSON.stringify({
+            success: true,
+            filename,
+            fileId: fileEntry?.id || null,
+            url: uploadResult.url,
+            hash: uploadResult.hash || null,
+            sizeMB: backupResult.sizeMB,
+            timestamp: backupResult.timestamp,
+        });
+    } finally {
+        // Clean up: remove tarball from container + Cortex temp dir
+        await workspaceRequest(entityId, '/shell', {
+            command: `rm -f "${backupResult.path}"`,
+        }, { timeoutMs: 10000 }).catch(() => {});
+        fs.rmSync(tempDir, { recursive: true, force: true });
     }
-
-    // 3. Upload to cloud storage
-    const buffer = Buffer.from(readResult.content, 'base64');
-    const filename = `workspace-backup-${backupResult.timestamp}.tar.gz`;
-    const uploadResult = await uploadFileToCloud(buffer, 'application/gzip', filename, resolver, contextId);
-
-    if (!uploadResult || !uploadResult.url) {
-
-        return JSON.stringify({ success: false, error: 'Failed to upload backup to cloud storage' });
-    }
-
-    // 4. Add to file collection
-    const fileEntry = await addFileToCollection(
-        contextId,
-        contextKey || '',
-        uploadResult.url,
-        uploadResult.gcs || null,
-        filename,
-        ['workspace-backup'],
-        notes || `Workspace backup created at ${backupResult.timestamp}`,
-        uploadResult.hash || null,
-        null,
-        resolver,
-        true,
-        chatId || null,
-        entityId || null
-    );
-
-    // 5. Clean up temp file in container
-    await workspaceRequest(entityId, '/shell', {
-        command: `rm -f "${backupResult.path}"`,
-    }, { timeoutMs: 10000 }).catch(() => {});
-
-
-    return JSON.stringify({
-        success: true,
-        filename,
-        fileId: fileEntry?.id || null,
-        url: uploadResult.url,
-        hash: uploadResult.hash || null,
-        sizeMB: backupResult.sizeMB,
-        timestamp: backupResult.timestamp,
-    });
 }
 
-async function handleScpRestore(tokens, args, resolver) {
-    // scp restore <fileRef>
+async function handleFilesRestore(tokens, args, resolver) {
+    // files restore <fileRef>
     const { entityId } = args;
     const fileRef = tokens[2];
     if (!fileRef) {
-
-        return JSON.stringify({ success: false, error: 'Usage: scp restore <backupRef>' });
+        return JSON.stringify({ success: false, error: 'Usage: files restore <backupRef>' });
     }
 
     const agentContext = args.agentContext;
     if (!agentContext || !Array.isArray(agentContext) || agentContext.length === 0) {
-
         return JSON.stringify({
             success: false,
             error: "agentContext is required. Use FileCollection to find available backups (tagged 'workspace-backup').",
@@ -333,7 +349,6 @@ async function handleScpRestore(tokens, args, resolver) {
     const collection = await loadFileCollection(agentContext);
     const foundFile = findFileInCollection(fileRef, collection);
     if (!foundFile) {
-
         return JSON.stringify({
             success: false,
             error: `Backup not found: "${fileRef}". Use FileCollection to find available backups (tagged 'workspace-backup').`,
@@ -342,58 +357,58 @@ async function handleScpRestore(tokens, args, resolver) {
 
     const cloudUrl = foundFile.url;
     if (!cloudUrl) {
-
         return JSON.stringify({ success: false, error: `No URL available for backup "${foundFile.displayFilename || fileRef}"` });
     }
 
-    // Download backup from cloud storage
-    const response = await axios.get(cloudUrl, {
-        responseType: 'arraybuffer',
-        timeout: 120000,
-        validateStatus: (status) => status >= 200 && status < 400,
-    });
-
-    if (!response.data) {
-
-        return JSON.stringify({ success: false, error: 'Failed to download backup from cloud storage' });
-    }
-
-    // Write tarball to workspace container
-    const b64Content = Buffer.from(response.data).toString('base64');
+    // Stream download from cloud → Cortex temp file → stream upload to container
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-restore-'));
+    const tempFile = path.join(tempDir, 'restore.tar.gz');
     const archivePath = '/tmp/workspace-restore.tar.gz';
 
-    const writeResult = await workspaceRequest(entityId, '/write', {
-        path: archivePath,
-        content: b64Content,
-        encoding: 'base64',
-    }, { timeoutMs: 120000 });
+    try {
+        // 1. Stream cloud backup to Cortex temp file
+        const response = await axios.get(cloudUrl, {
+            responseType: 'stream',
+            timeout: 300000,
+            validateStatus: (status) => status >= 200 && status < 400,
+        });
 
-    if (!writeResult.success) {
+        await new Promise((resolve, reject) => {
+            const ws = fs.createWriteStream(tempFile);
+            response.data.pipe(ws);
+            ws.on('finish', resolve);
+            ws.on('error', reject);
+            response.data.on('error', reject);
+        });
 
-        return JSON.stringify({ success: false, error: writeResult.error || 'Failed to write backup to workspace' });
+        // 2. Stream temp file to container
+        const ulResult = await workspaceUploadFile(entityId, tempFile, archivePath);
+        if (!ulResult.success) {
+            return JSON.stringify({ success: false, error: ulResult.error || 'Failed to upload backup to workspace' });
+        }
+
+        // 3. Extract archive in container
+        const restoreResult = await workspaceRequest(entityId, '/restore', {
+            archivePath,
+        }, { timeoutMs: 120000 });
+
+        if (!restoreResult.success) {
+            return JSON.stringify({ success: false, error: restoreResult.error || 'Failed to extract backup' });
+        }
+
+        const stat = fs.statSync(tempFile);
+        return JSON.stringify({
+            success: true,
+            message: 'Workspace restored from backup',
+            bytesRestored: stat.size,
+        });
+    } finally {
+        // Clean up: remove tarball from container + Cortex temp dir
+        await workspaceRequest(entityId, '/shell', {
+            command: `rm -f "${archivePath}"`,
+        }, { timeoutMs: 10000 }).catch(() => {});
+        fs.rmSync(tempDir, { recursive: true, force: true });
     }
-
-    // Extract archive
-    const restoreResult = await workspaceRequest(entityId, '/restore', {
-        archivePath,
-    }, { timeoutMs: 120000 });
-
-    // Clean up temp file
-    await workspaceRequest(entityId, '/shell', {
-        command: `rm -f "${archivePath}"`,
-    }, { timeoutMs: 10000 }).catch(() => {});
-
-    if (!restoreResult.success) {
-
-        return JSON.stringify({ success: false, error: restoreResult.error || 'Failed to extract backup' });
-    }
-
-
-    return JSON.stringify({
-        success: true,
-        message: 'Workspace restored from backup',
-        bytesRestored: response.data.length,
-    });
 }
 
 async function handleReset(tokens, args, resolver) {
@@ -457,14 +472,14 @@ function routeCommand(command) {
 
     const first = tokens[0].toLowerCase();
 
-    if (first === 'scp' && tokens.length >= 2) {
+    if ((first === 'files' || first === 'scp') && tokens.length >= 2) {
         const sub = tokens[1].toLowerCase();
         switch (sub) {
-            case 'push':    return { handler: handleScpPush, tokens };
-            case 'pull':    return { handler: handleScpPull, tokens };
-            case 'backup':  return { handler: handleScpBackup, tokens };
-            case 'restore': return { handler: handleScpRestore, tokens };
-            // Any other scp subcommand (e.g. scp user@host:/path) falls through to shell
+            case 'push':    return { handler: handleFilesPush, tokens };
+            case 'pull':    return { handler: handleFilesPull, tokens };
+            case 'backup':  return { handler: handleFilesBackup, tokens };
+            case 'restore': return { handler: handleFilesRestore, tokens };
+            // Any other subcommand (e.g. scp user@host:/path) falls through to shell
         }
     }
 
@@ -499,9 +514,9 @@ export default {
         function: {
             name: 'WorkspaceSSH',
             description: `Execute commands in your workspace — a persistent Linux container (cwd: /workspace). Built-in commands:
-• scp push <path|glob> [name] — upload file(s) to your file collection. Supports globs: scp push *.jpg
-• scp pull <fileRef> [dest] — download from file collection to workspace
-• scp backup [notes] / scp restore <ref> — snapshot or restore entire workspace
+• files push <path|glob> [name] — upload file(s) to your file collection. Supports globs: files push *.jpg
+• files pull <fileRef> [dest] — download from file collection to workspace
+• files backup [notes] / files restore <ref> — snapshot or restore entire workspace
 • bg <cmd> — run in background, returns processId. poll <id> — check result
 • reset [--preserve .env] — wipe workspace contents
 Everything else runs as bash. Both relative and absolute paths work.`,
@@ -510,7 +525,7 @@ Everything else runs as bash. Both relative and absolute paths work.`,
                 properties: {
                     command: {
                         type: 'string',
-                        description: 'Shell command or built-in (e.g. "ls -la", "scp push output/*.pdf")',
+                        description: 'Shell command or built-in (e.g. "ls -la", "files push output/*.pdf")',
                     },
                     userMessage: {
                         type: 'string',
@@ -546,7 +561,7 @@ Everything else runs as bash. Both relative and absolute paths work.`,
                 return route.handler(route.processId, args, resolver);
             }
 
-            // scp and reset handlers receive tokens
+            // files and reset handlers receive tokens
             return route.handler(route.tokens, args, resolver);
         } catch (e) {
             logger.error(`WorkspaceSSH error: ${e.message}`);
