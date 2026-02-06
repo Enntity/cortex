@@ -556,14 +556,21 @@ export function sliceByTurns(messages, maxTurns = 10) {
 
     let sliced = messages.slice(cutIndex);
 
+    // Normalize stringified tool_calls from GraphQL [String] schema into objects
+    // so all downstream consumers (compression, token estimation, plan stripping)
+    // can safely access .function.name without crashing.
+    for (const msg of sliced) {
+        if (msg.tool_calls) {
+            msg.tool_calls = msg.tool_calls.map(tc => typeof tc === 'string' ? JSON.parse(tc) : tc);
+        }
+    }
+
     // Build a tool_call_id → index map for the kept window
     const toolCallIndexMap = new Map();
     for (let i = 0; i < sliced.length; i++) {
         if (sliced[i].tool_calls) {
             for (const tc of sliced[i].tool_calls) {
-                // Handle stringified tool_calls from GraphQL [String] schema
-                const parsed = typeof tc === 'string' ? JSON.parse(tc) : tc;
-                if (parsed.id) toolCallIndexMap.set(parsed.id, i);
+                if (tc.id) toolCallIndexMap.set(tc.id, i);
             }
         }
     }

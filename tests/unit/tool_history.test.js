@@ -264,4 +264,10 @@ test('sliceByTurns: handles stringified tool_calls from GraphQL', (t) => {
     // Both turns should be kept, tool pair should be intact even with stringified tool_calls
     t.is(result.length, 6);
     t.true(result.some(m => m.role === 'tool' && m.tool_call_id === 'tc-1'));
+
+    // Stringified tool_calls must be normalized to objects (prevents downstream .function.name crashes)
+    const assistantWithToolCalls = result.find(m => m.tool_calls);
+    t.truthy(assistantWithToolCalls);
+    t.is(typeof assistantWithToolCalls.tool_calls[0], 'object');
+    t.is(assistantWithToolCalls.tool_calls[0].function.name, 'Search');
 });
