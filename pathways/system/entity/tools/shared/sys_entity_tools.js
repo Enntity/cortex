@@ -203,8 +203,9 @@ export const getAvailableEntities = async (options = {}) => {
                 baseModel: entity.baseModel || null,
                 reasoningEffort: entity.reasoningEffort || 'medium',
                 voice: entity.voice || null,
-                pulse: entity.pulse || null
-                // Note: assocUserIds and createdBy intentionally not exposed for privacy
+                pulse: entity.pulse || null,
+                secretKeys: entity.secrets ? Object.keys(entity.secrets) : [],
+                // Note: assocUserIds, createdBy, and secret values intentionally not exposed
             };
         });
     } catch (error) {

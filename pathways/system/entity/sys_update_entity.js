@@ -20,6 +20,9 @@
 
 import { getEntityStore } from '../../../lib/MongoEntityStore.js';
 import logger from '../../../lib/logger.js';
+import { config } from '../../../config.js';
+import { encrypt, decrypt } from '../../../lib/crypto.js';
+import { syncSecretsToWorkspace } from './tools/shared/workspace_client.js';
 
 // Properties that can be updated via this pathway
 const ALLOWED_PROPERTIES = new Set([
@@ -37,6 +40,8 @@ const ALLOWED_PROPERTIES = new Set([
     'avatarImageUrl',    // avatar.image.url
     // Voice preference array (JSON string)
     'voice',             // [{provider, voiceId, name?, settings?}, ...]
+    // Encrypted secrets (JSON string: {KEY: value, ...})
+    'secrets',           // Encrypted at rest, injected into workspace as env vars
     // Pulse fields (these update nested pulse object)
     'pulseEnabled',              // pulse.enabled (boolean)
     'pulseWakeIntervalMinutes',  // pulse.wakeIntervalMinutes (number, 5-1440)
@@ -85,6 +90,8 @@ export default {
         avatarImageUrl: undefined,    // avatar.image.url
         // Voice preference array (JSON string)
         voice: undefined,             // [{provider, voiceId, name?, settings?}, ...]
+        // Encrypted secrets (JSON string: {KEY: value, ...})
+        secrets: undefined,
         // Pulse fields - update nested pulse object (life loop)
         pulseEnabled: { type: 'boolean', default: undefined },
         pulseWakeIntervalMinutes: { type: 'number', default: undefined },
@@ -288,6 +295,49 @@ export default {
                         }
                     }
                     updateData.voice = voiceArray;
+                } else if (key === 'secrets') {
+                    let secretsObj = value;
+                    if (typeof value === 'string') {
+                        try { secretsObj = JSON.parse(value); } catch {
+                            return JSON.stringify({ success: false, error: 'secrets must be a valid JSON object' });
+                        }
+                    }
+                    if (typeof secretsObj !== 'object' || Array.isArray(secretsObj)) {
+                        return JSON.stringify({ success: false, error: 'secrets must be a {key: value} object' });
+                    }
+                    for (const [k, v] of Object.entries(secretsObj)) {
+                        if (!/^[A-Z_][A-Z0-9_]*$/i.test(k)) {
+                            return JSON.stringify({ success: false, error: `Invalid secret name: "${k}". Use UPPER_SNAKE_CASE.` });
+                        }
+                        if (typeof v !== 'string' && v !== null) {
+                            return JSON.stringify({ success: false, error: `Secret value for "${k}" must be a string or null (to delete)` });
+                        }
+                    }
+                    // Merge with existing secrets: null values delete keys, others encrypt and set
+                    // Values may arrive pre-encrypted from Concierge (GCM format: iv:tag:data)
+                    const GCM_PATTERN = /^[0-9a-f]{24}:[0-9a-f]{32}:[0-9a-f]+$/;
+                    const systemKey = config.get('redisEncryptionKey');
+                    const existing = currentEntity.secrets || {};
+                    const merged = { ...existing };
+                    for (const [k, v] of Object.entries(secretsObj)) {
+                        if (v === null) {
+                            delete merged[k];
+                        } else if (GCM_PATTERN.test(v)) {
+                            merged[k] = v; // Already encrypted by Concierge
+                        } else {
+                            merged[k] = encrypt(v, systemKey);
+                        }
+                    }
+                    updateData.secrets = merged;
+
+                    // Push to workspace if it's running (best-effort, non-blocking)
+                    if (currentEntity.workspace?.url && currentEntity.workspace?.status === 'running') {
+                        const plainSecrets = {};
+                        for (const [k, encVal] of Object.entries(merged)) {
+                            plainSecrets[k] = decrypt(encVal, systemKey);
+                        }
+                        syncSecretsToWorkspace(entityId, plainSecrets).catch(() => {});
+                    }
                 } else if (key === 'pulseEnabled') {
                     updateData.pulse = updateData.pulse || {};
                     updateData.pulse.enabled = value === true || value === 'true';

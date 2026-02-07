@@ -8,6 +8,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import logger from '../../../../../lib/logger.js';
 import { config } from '../../../../../config.js';
+import { decrypt } from '../../../../../lib/crypto.js';
 import { loadEntityConfig } from './sys_entity_tools.js';
 import { getEntityStore } from '../../../../../lib/MongoEntityStore.js';
 
@@ -184,14 +185,30 @@ async function _doProvision(entityId, entityConfig) {
             hostPort = await findFreePort();
         }
 
+        // Build environment variables
+        const Env = [
+            `WORKSPACE_SECRET=${secret}`,
+            `PORT=3100`,
+        ];
+
+        // Inject entity secrets as env vars
+        const plainSecrets = {};
+        if (entityConfig.secrets) {
+            const systemKey = config.get('redisEncryptionKey');
+            for (const [key, encVal] of Object.entries(entityConfig.secrets)) {
+                const val = decrypt(encVal, systemKey);
+                if (val) {
+                    Env.push(`${key}=${val}`);
+                    plainSecrets[key] = val;
+                }
+            }
+        }
+
         // Create container
         const createBody = {
             Image: image,
             Hostname: containerName,
-            Env: [
-                `WORKSPACE_SECRET=${secret}`,
-                `PORT=3100`,
-            ],
+            Env,
             ExposedPorts: { '3100/tcp': {} },
             HostConfig: {
                 NanoCpus: nanoCpus,
@@ -241,6 +258,13 @@ async function _doProvision(entityId, entityConfig) {
             ...entityConfig,
             workspace: workspaceConfig,
         });
+
+        // Sync secrets to .env file in workspace (best-effort)
+        if (Object.keys(plainSecrets).length > 0) {
+            syncSecretsToWorkspace(entityId, plainSecrets).catch(err =>
+                logger.warn(`Failed to sync secrets .env for ${entityId}: ${err.message}`)
+            );
+        }
 
         logger.info(`Workspace provisioned for entity ${entityId}: ${containerUrl}`);
         return { success: true };
@@ -408,6 +432,42 @@ function findFreePort() {
         });
         srv.on('error', reject);
     });
+}
+
+/**
+ * Write entity secrets as a .env file to the workspace container.
+ * Used both at provision time and when secrets are updated via API.
+ *
+ * @param {string} entityId - Entity UUID
+ * @param {Object} secrets - { KEY: "plaintext_value", ... }
+ * @returns {Promise<Object>} { success: boolean, error?: string }
+ */
+export async function syncSecretsToWorkspace(entityId, secrets) {
+    if (!secrets || Object.keys(secrets).length === 0) return { success: true };
+    // Write .env with export prefix so sourcing it exports to the environment
+    const envContent = Object.entries(secrets)
+        .map(([k, v]) => `export ${k}=${v}`)
+        .join('\n') + '\n';
+    const b64 = Buffer.from(envContent).toString('base64');
+    await workspaceRequest(entityId, '/write', {
+        path: '/workspace/.env',
+        content: b64,
+        encoding: 'base64',
+        createDirs: false,
+    }, { timeoutMs: 10000 });
+
+    // Ensure .bashrc sources .env so secrets are available in every shell
+    const sourceLine = '[ -f /workspace/.env ] && . /workspace/.env';
+    await workspaceRequest(entityId, '/shell', {
+        command: `grep -qF '${sourceLine}' ~/.bashrc 2>/dev/null || echo '${sourceLine}' >> ~/.bashrc`,
+    }, { timeoutMs: 10000 });
+
+    // Source it now for any currently running shells
+    await workspaceRequest(entityId, '/shell', {
+        command: '. /workspace/.env',
+    }, { timeoutMs: 10000 });
+
+    return { success: true };
 }
 
 /**
