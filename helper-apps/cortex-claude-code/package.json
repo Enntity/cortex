@@ -1,0 +1,7 @@
+{
+  "name": "cortex-claude-code",
+  "version": "1.0.0",
+  "description": "Helper app that bridges Cortex code help requests to Claude Code CLI",
+  "type": "module",
+  "main": "index.js"
+}
