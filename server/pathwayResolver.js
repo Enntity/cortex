@@ -5,8 +5,6 @@ import { encode } from '../lib/encodeCache.js';
 import { getFirstNToken, getLastNToken, getSemanticChunks } from './chunker.js';
 import { PathwayResponseParser } from './pathwayResponseParser.js';
 import { Prompt } from './prompt.js';
-import { getv, setv } from '../lib/keyValueStorageClient.js';
-import { getvWithDoubleDecryption, setvWithDoubleEncryption } from '../lib/keyValueStorageClient.js';
 import { requestState } from './requestState.js';
 import { addCitationsToResolver } from '../lib/pathwayTools.js';
 import logger from '../lib/logger.js';
@@ -528,10 +526,10 @@ class PathwayResolver {
         const loadMemory = async () => {
             const rid = this.rootRequestId || this.requestId;
             const memStart = Date.now();
+            this.savedContext = {};
             try {
                 // === CONTINUITY MEMORY INTEGRATION ===
                 // Load narrative context from the Continuity Architecture if enabled
-                // When enabled, this replaces the legacy memory system
                 if (useContinuityMemory) {
                     try {
                         const continuityService = getContinuityMemoryService();
@@ -578,14 +576,8 @@ class PathwayResolver {
                             }
                             currentQuery = typeof currentQuery === 'string' ? currentQuery : '';
 
-                            // Run savedContext load and session init in parallel
                             const initStart = Date.now();
-                            const [savedContextResult] = await Promise.all([
-                                getvWithDoubleDecryption ? getvWithDoubleDecryption(this.savedContextId, this.savedContextId) : Promise.resolve(null),
-                                continuityService.initSession(entityId, userId),
-                            ]);
-                            this.savedContext = savedContextResult || {};
-                            this.initialState = { savedContext: this.savedContext };
+                            await continuityService.initSession(entityId, userId);
                             const initMs = Date.now() - initStart;
 
                             // Stale-while-revalidate: check Redis cache first
@@ -676,42 +668,16 @@ class PathwayResolver {
                                     contextChars: continuityContext?.length || 0,
                                 });
                             }
-                        } else {
-                            // Continuity enabled but service unavailable — load savedContext only
-                            this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.savedContextId)) || {};
-                            this.initialState = { savedContext: this.savedContext };
                         }
                     } catch (error) {
                         logger.warn(`Continuity memory load failed (non-fatal): ${error.message}`);
                         this.continuityContext = '';
-                        if (!this.savedContext) {
-                            this.savedContext = {};
-                            this.initialState = { savedContext: {} };
-                        }
                     }
-                } else {
-                    // Non-continuity path: load savedContext only
-                    this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.savedContextId)) || {};
-                    this.initialState = { savedContext: this.savedContext };
                 }
             } catch (error) {
                 this.logError(`Error in loadMemory: ${error.message}`);
                 this.savedContext = {};
                 this.continuityContext = '';
-                this.initialState = { savedContext: {} };
-            }
-        };
-
-        const saveChangedMemory = async () => {
-            // Always save savedContext (legacy feature, not governed by useMemory)
-            this.savedContextId = this.savedContextId || uuidv4();
-            
-            const currentState = {
-                savedContext: this.savedContext,
-            };
-
-            if (currentState.savedContext !== this.initialState.savedContext) {
-                setvWithDoubleEncryption && await setvWithDoubleEncryption(this.savedContextId, this.savedContext, this.savedContextId);
             }
         };
 
@@ -763,11 +729,8 @@ class PathwayResolver {
             logger.warn(`Bad pathway result - retrying pathway. Attempt ${retries + 1} of ${MAX_RETRIES}`);
         }
 
-        if (data !== null) {
-            await saveChangedMemory();
-            // Note: Continuity memory recording is handled by the agent (sys_entity_agent.js)
-            // after the full agentic workflow completes.
-        }
+        // Note: Continuity memory recording is handled by the agent (sys_entity_agent.js)
+        // after the full agentic workflow completes.
 
         addCitationsToResolver(this, data);
 
@@ -975,9 +938,8 @@ class PathwayResolver {
         }
         let result = '';
 
-        result = await this.modelExecutor.execute(text, { 
-            ...parameters, 
-            ...this.savedContext,
+        result = await this.modelExecutor.execute(text, {
+            ...parameters,
             // Continuity Memory context (narrative layer)
             continuityContext: this.continuityContext || ''
         }, prompt, this);
@@ -995,10 +957,6 @@ class PathwayResolver {
             }
         }
 
-        // save the result to the context if requested and no errors
-        if (prompt.saveResultTo && this.errors.length === 0) {
-            this.savedContext[prompt.saveResultTo] = result;
-        }
         return result;
     }
 }
