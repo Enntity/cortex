@@ -213,6 +213,17 @@ async function convertContentItemClaude4(item, maxImageSize, plugin) {
                 return null;
               }
 
+              // Use URL-based image source when supported (e.g. direct Anthropic API)
+              if (plugin.supportsUrlImages && !imageUrl.startsWith("data:")) {
+                return {
+                  type: "image",
+                  source: {
+                    type: "url",
+                    url: imageUrl,
+                  },
+                };
+              }
+
               const urlData = imageUrl.startsWith("data:") ? imageUrl : await fetchImageAsDataURL(imageUrl);
               if (!urlData) { return null; }
               

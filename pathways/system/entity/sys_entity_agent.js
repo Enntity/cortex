@@ -69,7 +69,7 @@ function cloneMessages(msgs) {
 function extractResponseText(response) {
     if (response instanceof CortexResponse) return response.output_text || response.content || '';
     if (typeof response === 'string') return response;
-    if (response) return response.output_text || response.content || JSON.stringify(response);
+    if (response) return response.output_text || response.content || '';
     return '';
 }
 
@@ -374,7 +374,7 @@ async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, 
             toolArgs: summarizeReturnedCalls([toolCall])?.[0]?.args,
         });
 
-        return { success: !hasError, result: toolResult, error: errorMessage, toolCall, toolArgs, toolFunction, messages: toolMessages };
+        return { success: !hasError, result: toolResult, error: errorMessage, toolCall, toolArgs, toolFunction, messages: toolMessages, toolImages: toolResult?.toolImages || [] };
     } catch (error) {
         logEvent(rid, 'tool.exec', {
             tool: toolCall?.function?.name || 'unknown', round: (resolver.toolCallRound || 0) + 1,
@@ -429,6 +429,20 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     const allToolResults = [...setGoalsResults, ...toolResults];
 
     finalMessages.push(...mergeParallelToolResults(allToolResults, preToolCallMessages));
+
+    // Inject tool images into chat history so subsequent model calls can see them
+    const allToolImages = allToolResults.flatMap(r => r.toolImages || []);
+    if (allToolImages.length > 0) {
+        finalMessages.push({
+            role: "user",
+            content: allToolImages.map(img => ({
+                type: "image_url",
+                url: img.url,
+                gcs: img.gcs,
+                image_url: { url: img.url },
+            }))
+        });
+    }
 
     // Budget & round accounting
     const budgetCost = allToolResults.reduce((sum, r) => {
@@ -1271,7 +1285,7 @@ export default {
                 publishRequestProgress({
                     requestId: rid,
                     progress: 1,
-                    data: JSON.stringify(response),
+                    data: JSON.stringify(extractResponseText(response)),
                     info: JSON.stringify(resolver.pathwayResultData || {}),
                     error: resolver.errors?.length > 0 ? resolver.errors.join(', ') : ''
                 });

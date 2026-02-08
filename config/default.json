@@ -604,6 +604,28 @@
             "maxImageSize": 31457280,
             "supportsStreaming": true
         },
+        "claude-46-opus": {
+            "type": "CLAUDE-ANTHROPIC",
+            "emulateOpenAIChatModel": "claude-4.6-opus",
+            "endpoints": [
+                {
+                    "name": "Anthropic Claude Opus 4.6",
+                    "url": "https://api.anthropic.com/v1/messages",
+                    "headers": {
+                        "x-api-key": "{{CLAUDE_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "claude-opus-4-6"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 200000,
+            "maxReturnTokens": 32000,
+            "maxImageSize": 31457280,
+            "supportsStreaming": true
+        },
         "local-llama30b": {
             "type": "LOCAL-CPP-MODEL",
             "executablePath": "../llm/llama.cpp/main",

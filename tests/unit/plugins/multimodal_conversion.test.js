@@ -1,6 +1,7 @@
 import test from 'ava';
 import OpenAIVisionPlugin from '../../../server/plugins/openAiVisionPlugin.js';
 import Claude3VertexPlugin from '../../../server/plugins/claude3VertexPlugin.js';
+import ClaudeAnthropicPlugin from '../../../server/plugins/claudeAnthropicPlugin.js';
 import Gemini15VisionPlugin from '../../../server/plugins/gemini15VisionPlugin.js';
 import GeminiVisionPlugin from '../../../server/plugins/geminiVisionPlugin.js';
 
@@ -595,4 +596,61 @@ test('Large image handling', async (t) => {
     // (The exact behavior - rejection vs. compression - should match the model's specifications)
     t.is(claudeMessages[0].content[0].text, 'Check this large image:');
     t.is(geminiMessages[0].parts[0].text, 'Check this large image:');
+});
+
+// Test Anthropic plugin uses URL-based image source (not base64) for HTTP URLs
+test('Anthropic plugin produces URL-based image source for HTTP URLs', async (t) => {
+    const anthropicPlugin = new ClaudeAnthropicPlugin(mockPathway, mockModel);
+
+    const imageUrl = 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg';
+    const messages = [
+        { role: 'user', content: [
+            { type: 'text', text: 'What is in this image?' },
+            { type: 'image_url', image_url: { url: imageUrl } }
+        ]}
+    ];
+
+    const { modifiedMessages } = await anthropicPlugin.convertMessagesToClaudeVertex(messages);
+
+    t.is(modifiedMessages.length, 1);
+    t.is(modifiedMessages[0].content[0].type, 'text');
+    t.is(modifiedMessages[0].content[0].text, 'What is in this image?');
+    t.is(modifiedMessages[0].content[1].type, 'image');
+    t.is(modifiedMessages[0].content[1].source.type, 'url');
+    t.is(modifiedMessages[0].content[1].source.url, imageUrl);
+});
+
+// Test Anthropic plugin still uses base64 for data: URLs
+test('Anthropic plugin uses base64 for data: URLs', async (t) => {
+    const anthropicPlugin = new ClaudeAnthropicPlugin(mockPathway, mockModel);
+
+    const messages = [
+        { role: 'user', content: [
+            { type: 'text', text: 'Describe this:' },
+            { type: 'image_url', image_url: { url: sampleBase64Image } }
+        ]}
+    ];
+
+    const { modifiedMessages } = await anthropicPlugin.convertMessagesToClaudeVertex(messages);
+
+    t.is(modifiedMessages.length, 1);
+    t.is(modifiedMessages[0].content[1].type, 'image');
+    t.is(modifiedMessages[0].content[1].source.type, 'base64');
+});
+
+// Test Vertex plugin still uses base64 for HTTP URLs (no supportsUrlImages)
+test('Vertex plugin still uses base64 for HTTP URLs', async (t) => {
+    const { claude } = createPlugins();
+
+    const messages = [
+        { role: 'user', content: [
+            { type: 'text', text: 'What is this?' },
+            { type: 'image_url', image_url: { url: 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg' } }
+        ]}
+    ];
+
+    const { modifiedMessages } = await claude.convertMessagesToClaudeVertex(messages);
+
+    t.is(modifiedMessages[0].content[1].type, 'image');
+    t.is(modifiedMessages[0].content[1].source.type, 'base64');
 });

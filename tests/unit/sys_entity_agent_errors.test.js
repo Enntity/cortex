@@ -1241,3 +1241,136 @@ test.serial('executePathway returns non-empty response on non-streaming empty ca
   const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
   t.true(text.length > 0, 'Non-streaming empty response must be caught too');
 });
+
+// --- Circular reference safety (regression: IncomingMessage from streaming synthesis) ---
+
+test.serial('executePathway handles response with circular references without crashing', async (t) => {
+  // This is the exact prod bug: streaming synthesis returns a raw IncomingMessage
+  // (Node.js HTTP response object) through drainStreamingCallbacks. The object has
+  // circular refs: IncomingMessage.req → ClientRequest.res → IncomingMessage.
+  // extractResponseText used to fall through to JSON.stringify(response), crashing with
+  // "Converting circular structure to JSON".
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'trigger circular ref response',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: true,
+  };
+
+  const runAllPrompts = async () => {
+    // Simulate: streaming callback resolves with an IncomingMessage-like object
+    // that has circular references and no output_text/content
+    const fakeIncomingMessage = { on: () => {}, headers: {} };
+    const fakeClientRequest = { res: fakeIncomingMessage };
+    fakeIncomingMessage.req = fakeClientRequest; // circular!
+
+    resolver._streamingToolCallbackPromise = Promise.resolve(fakeIncomingMessage);
+    return { on: () => {} };
+  };
+
+  // Must not throw "Converting circular structure to JSON"
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  t.truthy(result, 'Must return a response, not crash');
+  const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
+  t.true(text.length > 0, 'Should produce an error response when response text is unextractable');
+});
+
+test.serial('executePathway handles circular-ref response on non-streaming path', async (t) => {
+  // Same circular reference bug but via the non-streaming code path
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const resolver = buildResolver();
+  const args = {
+    text: 'trigger circular ref non-streaming',
+    chatHistory: [{ role: 'user', content: 'hi' }],
+    agentContext: [],
+    entityId: originals.entityId,
+    stream: false,
+  };
+
+  // Return an object with circular references and no output_text/content
+  const circular = { foo: 'bar' };
+  circular.self = circular;
+
+  const runAllPrompts = async () => circular;
+
+  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+
+  t.truthy(result, 'Must return a response, not crash');
+  const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
+  t.true(text.length > 0, 'Should produce an error response for unextractable circular object');
+});
+
+// === TOOL IMAGE INJECTION TESTS ===
+
+test.serial('toolCallback injects toolImages into chat history as user message', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  // Create a tool that returns imageUrls (like ViewImages tool)
+  const imageToolPathways = {
+    ...config.get('pathways'),
+    test_tool_images: {
+      rootResolver: async () => ({
+        result: JSON.stringify({
+          message: 'Image is now available for viewing',
+          imageUrls: [
+            { url: 'https://example.com/photo1.jpg', gcs: 'gs://bucket/photo1.jpg' },
+            { url: 'https://example.com/photo2.jpg', gcs: 'gs://bucket/photo2.jpg' },
+          ],
+        }),
+      }),
+    },
+  };
+  config.load({ pathways: imageToolPathways });
+
+  const tools = {
+    ...originals.testEntity.customTools,
+    viewimages: buildToolDefinition('ViewImages', 'test_tool_images'),
+  };
+
+  const modifiedEntity = {
+    ...originals.testEntity,
+    tools: [...originals.testEntity.tools, 'viewimages'],
+    customTools: tools,
+  };
+
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(modifiedEntity);
+
+  let promptArgs;
+  const resolver = buildResolver({
+    promptAndParse: async (args) => {
+      promptArgs = args;
+      return 'I can see two photos';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'Show me the photos' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+  };
+
+  const message = { tool_calls: [buildToolCall('ViewImages')] };
+  await sysEntityAgent.toolCallback(args, message, resolver);
+
+  // Find the injected user message with image content blocks
+  const imageMessage = promptArgs.chatHistory.find((entry) =>
+    entry.role === 'user' && Array.isArray(entry.content) &&
+    entry.content.some(c => c.type === 'image_url')
+  );
+
+  t.truthy(imageMessage, 'Should inject a user message with image content blocks');
+  t.is(imageMessage.content.length, 2, 'Should have two image content blocks');
+  t.is(imageMessage.content[0].type, 'image_url');
+  t.is(imageMessage.content[0].url, 'https://example.com/photo1.jpg');
+  t.is(imageMessage.content[0].gcs, 'gs://bucket/photo1.jpg');
+  t.is(imageMessage.content[1].url, 'https://example.com/photo2.jpg');
+});

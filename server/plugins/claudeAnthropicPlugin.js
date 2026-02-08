@@ -19,6 +19,7 @@ class ClaudeAnthropicPlugin extends Claude4VertexPlugin {
   
   constructor(pathway, model) {
     super(pathway, model);
+    this.supportsUrlImages = true;
   }
   
   async getRequestParameters(text, parameters, prompt) {
