@@ -1259,7 +1259,9 @@ export default {
             // Safety net: NEVER return an empty response. If every model call, tool
             // execution, and callback produced nothing, we still owe the client a response.
             // Without this, a streaming client hangs forever waiting for text that never arrives.
-            if (!extractResponseText(response).trim()) {
+            // Skip for stream objects — text was already delivered via SSE events.
+            const isStreamObject = response && typeof response.on === 'function';
+            if (!isStreamObject && !extractResponseText(response).trim()) {
                 logEventError(rid, 'request.error', { phase: 'empty_response', error: 'All processing completed but no text was produced', durationMs: Date.now() - requestStartTime });
                 response = await generateErrorResponse(
                     new Error('I processed your request but wasn\'t able to generate a response. Please try again.'),

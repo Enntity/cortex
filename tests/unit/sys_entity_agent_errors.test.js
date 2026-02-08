@@ -1245,11 +1245,11 @@ test.serial('executePathway returns non-empty response on non-streaming empty ca
 // --- Circular reference safety (regression: IncomingMessage from streaming synthesis) ---
 
 test.serial('executePathway handles response with circular references without crashing', async (t) => {
-  // This is the exact prod bug: streaming synthesis returns a raw IncomingMessage
-  // (Node.js HTTP response object) through drainStreamingCallbacks. The object has
-  // circular refs: IncomingMessage.req → ClientRequest.res → IncomingMessage.
-  // extractResponseText used to fall through to JSON.stringify(response), crashing with
-  // "Converting circular structure to JSON".
+  // Streaming synthesis returns a raw IncomingMessage (Node.js HTTP response object)
+  // through drainStreamingCallbacks. The object has circular refs:
+  // IncomingMessage.req → ClientRequest.res → IncomingMessage.
+  // This must not crash, and the empty_response safety net must NOT fire because
+  // the text was already delivered to the client via SSE events.
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -1276,9 +1276,9 @@ test.serial('executePathway handles response with circular references without cr
   // Must not throw "Converting circular structure to JSON"
   const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
 
+  // Stream objects are returned as-is — text was already delivered via SSE.
+  // The empty_response safety net must NOT fire for stream objects.
   t.truthy(result, 'Must return a response, not crash');
-  const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
-  t.true(text.length > 0, 'Should produce an error response when response text is unextractable');
 });
 
 test.serial('executePathway handles circular-ref response on non-streaming path', async (t) => {
