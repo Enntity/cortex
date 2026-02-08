@@ -1,9 +1,12 @@
 // sys_tool_image.js
 // Entity tool that creates and modifies images for the entity to show to the user
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { uploadFileToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, loadFileCollection, findFileInCollection } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, loadFileCollection, findFileInCollection, ensureShortLivedUrl } from '../../../../lib/fileUtils.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
 import { getEntityStore } from '../../../../lib/MongoEntityStore.js';
+import { config } from '../../../../config.js';
+
+const MEDIA_API_URL = config.get('whisperMediaApiUrl');
 
 export default {
     prompt: [],
@@ -71,8 +74,13 @@ export default {
                 // Get base avatar image from entity record
                 const baseAvatar = entityConfig.avatar?.image;
                 if (baseAvatar && baseAvatar.url) {
-                    // Use the base avatar URL directly (it's already a permanent URL)
-                    resolvedBaseAvatarImage = baseAvatar.url;
+                    // Refresh SAS token for external service consumption
+                    if (baseAvatar.hash && MEDIA_API_URL) {
+                        const refreshed = await ensureShortLivedUrl(baseAvatar, MEDIA_API_URL);
+                        resolvedBaseAvatarImage = refreshed.url;
+                    } else {
+                        resolvedBaseAvatarImage = baseAvatar.url;
+                    }
                 } else {
                     // No base avatar exists - will generate from scratch
                     needsBaseAvatarSet = true;
@@ -287,7 +295,8 @@ export default {
                                         const avatarImage = {
                                             url: firstImage.fileEntry?.url || firstImage.url,
                                             gcs: firstImage.fileEntry?.gcs || firstImage.gcs || null,
-                                            name: firstImage.fileEntry?.filename || firstImage.fileEntry?.displayFilename || null
+                                            name: firstImage.fileEntry?.filename || firstImage.fileEntry?.displayFilename || null,
+                                            hash: firstImage.fileEntry?.hash || firstImage.hash || null
                                         };
                                         
                                         // Update entity with new base avatar
@@ -365,7 +374,8 @@ export default {
                 const avatarImage = {
                     url: foundFile.url,
                     gcs: foundFile.gcs || null,
-                    name: foundFile.filename || foundFile.displayFilename || null
+                    name: foundFile.filename || foundFile.displayFilename || null,
+                    hash: foundFile.hash || null
                 };
                 
                 // Update entity with new avatar

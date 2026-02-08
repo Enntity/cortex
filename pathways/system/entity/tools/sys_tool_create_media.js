@@ -3,10 +3,12 @@
 // Replaces: GenerateImage, ModifyImage, CreateAvatarVariant, GenerateVideo
 
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { uploadFileToCloud, uploadImageToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, uploadImageToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, ensureShortLivedUrl } from '../../../../lib/fileUtils.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
 import { config } from '../../../../config.js';
 import axios from 'axios';
+
+const MEDIA_API_URL = config.get('whisperMediaApiUrl');
 
 /**
  * Download a file from GCS using authenticated request
@@ -160,7 +162,13 @@ Videos are 8-second clips with AI audio. Use sparingly - video is slow and expen
 
                 const baseAvatar = entityConfig.avatar?.image;
                 if (baseAvatar?.url) {
-                    resolvedReferenceImages.push(baseAvatar.url);
+                    // Refresh SAS token for external service consumption
+                    if (baseAvatar.hash && MEDIA_API_URL) {
+                        const refreshed = await ensureShortLivedUrl(baseAvatar, MEDIA_API_URL);
+                        resolvedReferenceImages.push(refreshed.url);
+                    } else {
+                        resolvedReferenceImages.push(baseAvatar.url);
+                    }
                 }
                 // If no base avatar, we'll generate from scratch but they'll look generic
             }
