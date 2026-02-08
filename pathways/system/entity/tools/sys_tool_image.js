@@ -76,7 +76,7 @@ export default {
                 if (baseAvatar && baseAvatar.url) {
                     // Refresh SAS token for external service consumption
                     if (baseAvatar.hash && MEDIA_API_URL) {
-                        const refreshed = await ensureShortLivedUrl(baseAvatar, MEDIA_API_URL);
+                        const refreshed = await ensureShortLivedUrl(baseAvatar, MEDIA_API_URL, baseAvatar.contextId || null);
                         resolvedBaseAvatarImage = refreshed.url;
                     } else {
                         resolvedBaseAvatarImage = baseAvatar.url;
@@ -296,7 +296,8 @@ export default {
                                             url: firstImage.fileEntry?.url || firstImage.url,
                                             gcs: firstImage.fileEntry?.gcs || firstImage.gcs || null,
                                             name: firstImage.fileEntry?.filename || firstImage.fileEntry?.displayFilename || null,
-                                            hash: firstImage.fileEntry?.hash || firstImage.hash || null
+                                            hash: firstImage.fileEntry?.hash || firstImage.hash || null,
+                                            contextId: args.contextId || null
                                         };
                                         
                                         // Update entity with new base avatar
@@ -375,7 +376,8 @@ export default {
                     url: foundFile.url,
                     gcs: foundFile.gcs || null,
                     name: foundFile.filename || foundFile.displayFilename || null,
-                    hash: foundFile.hash || null
+                    hash: foundFile.hash || null,
+                    contextId: foundFile._contextId || null
                 };
                 
                 // Update entity with new avatar

@@ -164,7 +164,7 @@ Videos are 8-second clips with AI audio. Use sparingly - video is slow and expen
                 if (baseAvatar?.url) {
                     // Refresh SAS token for external service consumption
                     if (baseAvatar.hash && MEDIA_API_URL) {
-                        const refreshed = await ensureShortLivedUrl(baseAvatar, MEDIA_API_URL);
+                        const refreshed = await ensureShortLivedUrl(baseAvatar, MEDIA_API_URL, baseAvatar.contextId || null);
                         resolvedReferenceImages.push(refreshed.url);
                     } else {
                         resolvedReferenceImages.push(baseAvatar.url);
