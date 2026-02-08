@@ -177,9 +177,10 @@ class PathwayResolver {
         }
 
         // If the response is a stream, handle it as streaming response
-        if (responseData && typeof responseData.on === 'function') {
+        // Skip if the stream was already consumed by promptAndParse.handleStream
+        if (responseData && typeof responseData.on === 'function' && !responseData.readableEnded) {
             await this.handleStream(responseData);
-        } else {
+        } else if (responseData && typeof responseData.on !== 'function') {
             const { completedCount = 1, totalCount = 1 } = requestState[this.requestId];
             requestState[this.requestId].data = responseData;
             
@@ -525,10 +526,6 @@ class PathwayResolver {
         
         const loadMemory = async () => {
             try {
-                // Always load savedContext (legacy feature, used for non-memory state)
-                this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.savedContextId)) || {};
-                this.initialState = { savedContext: this.savedContext };
-                
                 // === CONTINUITY MEMORY INTEGRATION ===
                 // Load narrative context from the Continuity Architecture if enabled
                 // When enabled, this replaces the legacy memory system
@@ -536,17 +533,12 @@ class PathwayResolver {
                     try {
                         const continuityService = getContinuityMemoryService();
                         if (continuityService.isAvailable() && args.entityId) {
-                            // Extract entity and user identifiers
-                            // Use args.entityId (UUID) for memory operations, not args.aiName (display name)
-                            // If no entityId is provided, skip continuity memory entirely
                             const entityId = args.entityId;
                             const userId = this.savedContextId;
-                            
+
                             // Extract current query from args.text or last USER message in chatHistory
-                            // Prefer user messages over assistant/tool responses for semantic search
                             let currentQuery = args.text || '';
                             if (!currentQuery && args.chatHistory?.length > 0) {
-                                // Find the last user message (not assistant/tool response)
                                 let lastUserMessage = null;
                                 for (let i = args.chatHistory.length - 1; i >= 0; i--) {
                                     const msg = args.chatHistory[i];
@@ -555,23 +547,18 @@ class PathwayResolver {
                                         break;
                                     }
                                 }
-                                
-                                // Fallback to last message if no user message found
+
                                 const messageToUse = lastUserMessage || args.chatHistory.slice(-1)[0];
                                 const content = messageToUse?.content;
-                                
+
                                 if (typeof content === 'string') {
-                                    // Skip if it looks like a tool response JSON
                                     if (!content.trim().startsWith('{') || !content.includes('"success"')) {
                                         currentQuery = content;
                                     }
                                 } else if (Array.isArray(content)) {
-                                    // Content is array - could be strings or objects
                                     const firstItem = content[0];
                                     if (typeof firstItem === 'string') {
-                                        // Skip if it looks like a tool response JSON
                                         if (!firstItem.trim().startsWith('{') || !firstItem.includes('"success"')) {
-                                            // Try to parse as JSON (stringified content block)
                                             try {
                                                 const parsed = JSON.parse(firstItem);
                                                 currentQuery = parsed.text || parsed.content || firstItem;
@@ -587,10 +574,15 @@ class PathwayResolver {
                                 }
                             }
                             currentQuery = typeof currentQuery === 'string' ? currentQuery : '';
-                            
-                            // Initialize session
-                            await continuityService.initSession(entityId, userId);
-                            
+
+                            // Run savedContext load and session init in parallel
+                            const [savedContextResult] = await Promise.all([
+                                getvWithDoubleDecryption ? getvWithDoubleDecryption(this.savedContextId, this.savedContextId) : Promise.resolve(null),
+                                continuityService.initSession(entityId, userId),
+                            ]);
+                            this.savedContext = savedContextResult || {};
+                            this.initialState = { savedContext: this.savedContext };
+
                             // Stale-while-revalidate: check Redis cache first
                             const cached = await continuityService.hotMemory?.getRenderedContextCache(entityId, userId);
                             
@@ -670,11 +662,23 @@ class PathwayResolver {
                                 
                                 logger.debug(`[PROFILE:mem] Loaded continuity context (${continuityContext?.length || 0} chars) in ${Date.now() - loadStart}ms (cold)`);
                             }
+                        } else {
+                            // Continuity enabled but service unavailable — load savedContext only
+                            this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.savedContextId)) || {};
+                            this.initialState = { savedContext: this.savedContext };
                         }
                     } catch (error) {
                         logger.warn(`Continuity memory load failed (non-fatal): ${error.message}`);
                         this.continuityContext = '';
+                        if (!this.savedContext) {
+                            this.savedContext = {};
+                            this.initialState = { savedContext: {} };
+                        }
                     }
+                } else {
+                    // Non-continuity path: load savedContext only
+                    this.savedContext = (getvWithDoubleDecryption && await getvWithDoubleDecryption(this.savedContextId, this.savedContextId)) || {};
+                    this.initialState = { savedContext: this.savedContext };
                 }
             } catch (error) {
                 this.logError(`Error in loadMemory: ${error.message}`);
