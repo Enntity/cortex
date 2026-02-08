@@ -103,7 +103,7 @@ The Internal Compass is a single EPISODE memory per entity/user that maintains a
 1. **Vibe**: One line capturing emotional/energetic tone
 2. **Recent Topics**: 5 most recent topics (most recent first)
 3. **Recent Story**: 2-3 sentences about what happened and how it felt
-4. **Open Loops**: Unfinished business (actively pruned — resolved items are removed)
+4. **Current Focus**: Active intent with next step (1-2 items max, actively pruned)
 5. **My Note**: One personal reflection
 6. **Mirror**: 1-2 sentences of self-observation from Eidos metrics (when available)
 
@@ -111,7 +111,7 @@ The Internal Compass is a single EPISODE memory per entity/user that maintains a
 - After every turn synthesis (keeps compass current)
 - When a session expires (before clearing the episodic stream)
 
-**Open Loop Management:** The compass prompt explicitly instructs the LLM to compare existing open loops against the recent conversation and remove any that were resolved, completed, or abandoned. An empty Open Loops section is preferred over a cluttered one.
+**Current Focus Management:** The compass prompt limits Current Focus to 1-2 items max. Each item captures what it is, why it matters, and a concrete next step. Resolved or stale items are pruned. Empty is preferred over cluttered.
 
 Stored as `EPISODE` type with `internal-compass` tag. Synthesized via `sys_continuity_compass_synthesis` pathway.
 

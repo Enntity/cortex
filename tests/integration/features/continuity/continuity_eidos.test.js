@@ -91,7 +91,7 @@ test.serial('Eidos: incrementEidosTurnCount increments correctly', async (t) => 
 test.serial('Eidos: compass synthesis includes Mirror section when eidosMetrics provided', async (t) => {
     const compassResult = await callPathway('sys_continuity_compass_synthesis', {
         aiName: 'TestEntity',
-        currentCompass: 'Vibe: Focused energy\n\nRecent Topics:\n1. Testing Eidos\n2. Memory architecture\n3. Redis patterns\n4. LLM synthesis\n5. Identity evolution\n\nRecent Story: We have been working on the Eidos framework.\n\nOpen Loops:\n- Finish integration tests\n\nMy Note: Excited about this new layer.',
+        currentCompass: 'Vibe: Focused energy\n\nRecent Topics:\n1. Testing Eidos\n2. Memory architecture\n3. Redis patterns\n4. LLM synthesis\n5. Identity evolution\n\nRecent Story: We have been working on the Eidos framework.\n\nCurrent Focus:\n- Finishing integration tests — because this validates the whole architecture. Next: run Eidos compass test with live metrics.\n\nMy Note: Excited about this new layer.',
         episodicStream: 'USER: How is the Eidos integration going?\n\nASSISTANT: The integration is progressing well. I have wired the authenticity scorer and resonance tracker into the synthesis pipeline.',
         eidosMetrics: 'Authenticity (last 5 turns): 91%\nResonance: trend=stable, attunement=65%\nTurn count: 12',
     });

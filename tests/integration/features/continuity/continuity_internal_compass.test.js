@@ -185,7 +185,7 @@ ASSISTANT: I'd recommend a junction table for that.`;
         t.true(result.length > 0, 'Result should not be empty');
         
         // Should have the expected sections (at least some of them)
-        const hasVibeOrStory = result.includes('Vibe') || result.includes('Story') || result.includes('Loop');
+        const hasVibeOrStory = result.includes('Vibe') || result.includes('Story') || result.includes('Focus');
         t.true(hasVibeOrStory, 'Should contain compass sections');
         
         t.log(`Pathway result: ${result.substring(0, 200)}...`);
