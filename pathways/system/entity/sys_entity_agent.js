@@ -492,7 +492,11 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
 
     args.chatHistory = processedMessages;
     resolver.errors = [];
-    return { messages: processedMessages, budgetExhausted: resolver.toolBudgetUsed >= TOOL_BUDGET };
+
+    // Signal if EndPulse was called — executor loop should stop immediately
+    const endPulseCalled = realToolCalls.some(tc => tc.function.name === 'EndPulse');
+
+    return { messages: processedMessages, budgetExhausted: resolver.toolBudgetUsed >= TOOL_BUDGET, endPulseCalled };
 }
 
 // ─── Context Management ──────────────────────────────────────────────────────
@@ -804,8 +808,8 @@ async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat
             const calls = extractToolCalls(result);
             if (calls.length === 0) break; // SYNTHESIZE
 
-            const { budgetExhausted } = await processToolCallRound(calls, args, resolver, entityTools);
-            if (budgetExhausted) break;
+            const { budgetExhausted, endPulseCalled } = await processToolCallRound(calls, args, resolver, entityTools);
+            if (budgetExhausted || endPulseCalled) break;
         } catch (e) {
             return await handlePromptError(e);
         }
@@ -880,7 +884,10 @@ async function runDualModelPath(currentToolCalls, args, resolver, entityTools, e
     // calling tools at any nesting level, let it — as long as budget holds.
 
     // Gate (initial call only — nested callbacks already passed the gate)
-    if (callbackDepth <= 1) {
+    // Skip gate for pulse invocations — pulses are autonomous work, not user-driven.
+    // Requiring SetGoals wastes 5-10s per pulse on gate retries.
+    const isPulse = args.invocationType === 'pulse';
+    if (callbackDepth <= 1 && !isPulse) {
         const gateResult = await enforceGate(currentToolCalls, args, resolver, entityToolsOpenAiFormat, callbackDepth, handlePromptError);
         if (gateResult.error) return gateResult.error;
         currentToolCalls = gateResult.toolCalls;

@@ -10,6 +10,7 @@ import { getvWithDoubleDecryption, setvWithDoubleEncryption } from '../lib/keyVa
 import { requestState } from './requestState.js';
 import { addCitationsToResolver } from '../lib/pathwayTools.js';
 import logger from '../lib/logger.js';
+import { logEvent } from '../lib/requestLogger.js';
 import { publishRequestProgress } from '../lib/redisSubscription.js';
 // eslint-disable-next-line import/no-extraneous-dependencies
 import { createParser } from 'eventsource-parser';
@@ -525,6 +526,8 @@ class PathwayResolver {
         const useContinuityMemory = useMemory !== false;
         
         const loadMemory = async () => {
+            const rid = this.rootRequestId || this.requestId;
+            const memStart = Date.now();
             try {
                 // === CONTINUITY MEMORY INTEGRATION ===
                 // Load narrative context from the Continuity Architecture if enabled
@@ -576,20 +579,22 @@ class PathwayResolver {
                             currentQuery = typeof currentQuery === 'string' ? currentQuery : '';
 
                             // Run savedContext load and session init in parallel
+                            const initStart = Date.now();
                             const [savedContextResult] = await Promise.all([
                                 getvWithDoubleDecryption ? getvWithDoubleDecryption(this.savedContextId, this.savedContextId) : Promise.resolve(null),
                                 continuityService.initSession(entityId, userId),
                             ]);
                             this.savedContext = savedContextResult || {};
                             this.initialState = { savedContext: this.savedContext };
+                            const initMs = Date.now() - initStart;
 
                             // Stale-while-revalidate: check Redis cache first
                             const cached = await continuityService.hotMemory?.getRenderedContextCache(entityId, userId);
-                            
+
                             if (cached?.context) {
                                 // Use cached context immediately, but add fresh time context
                                 let context = cached.context || '';
-                                
+
                                 // Fetch expression state from Redis (fast) for fresh time data
                                 try {
                                     const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
@@ -600,12 +605,17 @@ class PathwayResolver {
                                 } catch (timeErr) {
                                     logger.debug(`Could not add time context: ${timeErr.message}`);
                                 }
-                                
+
                                 this.continuityContext = context;
                                 this.continuityEntityId = entityId;
                                 this.continuityUserId = userId;
-                                logger.debug(`[PROFILE:mem] Using Redis cached context (${cached.context?.length || 0} chars, age: ${Date.now() - cached.timestamp}ms)`);
-                                
+
+                                logEvent(rid, 'memory.load', {
+                                    durationMs: Date.now() - memStart, initSessionMs: initMs,
+                                    source: 'cache', contextChars: cached.context?.length || 0,
+                                    cacheAgeMs: Date.now() - cached.timestamp,
+                                });
+
                                 // Refresh cache in background (fire-and-forget)
                                 continuityService.getContextWindow({
                                     entityId,
@@ -627,7 +637,7 @@ class PathwayResolver {
                                 });
                             } else {
                                 // No cache - must load synchronously (first request)
-                                const loadStart = Date.now();
+                                const coldStart = Date.now();
                                 let continuityContext = await continuityService.getContextWindow({
                                     entityId,
                                     userId,
@@ -640,10 +650,10 @@ class PathwayResolver {
                                         expandGraph: true
                                     }
                                 });
-                                
+
                                 // Cache to Redis WITHOUT time-sensitive parts
                                 continuityService.hotMemory?.setRenderedContextCache(entityId, userId, continuityContext || '');
-                                
+
                                 // Add fresh time context for this request
                                 try {
                                     const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
@@ -654,13 +664,17 @@ class PathwayResolver {
                                 } catch (timeErr) {
                                     logger.debug(`Could not add time context: ${timeErr.message}`);
                                 }
-                                
+
                                 // Store for injection into prompts
                                 this.continuityContext = continuityContext || '';
                                 this.continuityEntityId = entityId;
                                 this.continuityUserId = userId;
-                                
-                                logger.debug(`[PROFILE:mem] Loaded continuity context (${continuityContext?.length || 0} chars) in ${Date.now() - loadStart}ms (cold)`);
+
+                                logEvent(rid, 'memory.load', {
+                                    durationMs: Date.now() - memStart, initSessionMs: initMs,
+                                    source: 'cold', contextWindowMs: Date.now() - coldStart,
+                                    contextChars: continuityContext?.length || 0,
+                                });
                             }
                         } else {
                             // Continuity enabled but service unavailable — load savedContext only
