@@ -67,11 +67,13 @@ async function graphql(query, variables = {}) {
 async function dequeue() {
     const data = await graphql(`
         query {
-            sys_dequeue_code_help(action: "dequeue")
+            sys_dequeue_code_help(action: "dequeue") {
+                result
+            }
         }
     `);
 
-    const result = JSON.parse(data.sys_dequeue_code_help);
+    const result = JSON.parse(data.sys_dequeue_code_help.result);
     return result.request || null;
 }
 
@@ -87,7 +89,9 @@ async function report(requestId, { status, summary, filesChanged, error }) {
                 summary: $summary,
                 filesChanged: $filesChanged,
                 error: $error
-            )
+            ) {
+                result
+            }
         }
     `, { requestId, status, summary, filesChanged, error });
 }
@@ -109,11 +113,15 @@ function buildPrompt(request) {
 
 function runClaude(prompt) {
     return new Promise((resolve, reject) => {
-        const child = spawn('claude', ['-p', prompt, '--allowedTools', 'Bash,Read,Write,Edit,Glob,Grep'], {
+        const child = spawn('claude', ['-p', '--allowedTools', 'Bash,Read,Write,Edit,Glob,Grep'], {
             cwd: PROJECT_DIR,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env },
         });
+
+        // Pipe prompt via stdin to avoid arg length / special char issues
+        child.stdin.write(prompt);
+        child.stdin.end();
 
         let stdout = '';
         let stderr = '';
@@ -125,7 +133,9 @@ function runClaude(prompt) {
             if (code === 0) {
                 resolve(stdout.trim());
             } else {
-                reject(new Error(stderr.trim() || `claude exited with code ${code}`));
+                console.error(`  claude stderr: ${stderr.trim()}`);
+                if (stdout.trim()) console.error(`  claude stdout: ${stdout.trim().substring(0, 500)}`);
+                reject(new Error(stderr.trim() || stdout.trim() || `claude exited with code ${code}`));
             }
         });
 
