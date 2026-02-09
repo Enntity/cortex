@@ -442,10 +442,9 @@ test('parity fix - dual-model synthesis scenario: Gemini initial + Claude execut
   }
 });
 
-test('parity fix - without name field, Claude tool_call_ids produce wrong functionResponse names', t => {
-  // This test documents the bug: when tool messages lack the name field and only
-  // have Claude-format tool_call_ids, the functionResponse names are all 'toolu',
-  // which causes the parity fix to misgroup tool results across rounds.
+test('parity fix - without name field, position-based matching maintains parity', t => {
+  // Without the name field on tool messages, the position-based rebuild still
+  // maintains correct parity because it processes messages in order, not by name.
   const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
   const plugin = resolver.modelExecutor.plugin;
 
@@ -463,7 +462,7 @@ test('parity fix - without name field, Claude tool_call_ids produce wrong functi
           { id: 'toolu_01BBBB', type: 'function', function: { name: 'ToolB', arguments: '{}' } },
         ]
       },
-      // NO name field — this triggers the bug
+      // NO name field — falls back to 'unknown_tool' but parity is correct
       { role: 'tool', tool_call_id: 'toolu_01AAAA', content: 'result A' },
       { role: 'tool', tool_call_id: 'toolu_01BBBB', content: 'result B' },
       // Round 2: 1 tool call
@@ -480,10 +479,6 @@ test('parity fix - without name field, Claude tool_call_ids produce wrong functi
 
   const params = plugin.getRequestParameters('test', {}, { prompt: 'test' }, { pathway: {} });
 
-  // Without the name field, tool_call_id.split('_')[0] gives 'toolu' for all
-  // functionResponse parts. The parity fix greedily matches the first 'toolu'
-  // response to the first assistant message, then the second 'toolu' to the
-  // second assistant message, leaving the third orphaned.
   const fcTurns = params.contents.filter(c =>
     c.role === 'model' && c.parts?.some(p => p.functionCall)
   );
@@ -491,25 +486,20 @@ test('parity fix - without name field, Claude tool_call_ids produce wrong functi
     c.parts?.some(p => p.functionResponse)
   );
 
-  // The parity fix still creates the correct number of model turns
-  t.is(fcTurns.length, 2, 'Should still produce 2 model turns with functionCalls');
+  t.is(fcTurns.length, 2, 'Should produce 2 model turns with functionCalls');
+  t.is(frTurns.length, 2, 'Should produce 2 user turns with functionResponses');
 
-  // But without the name field, the functionResponse names are all 'toolu'
-  const allFrNames = frTurns.flatMap(turn =>
-    turn.parts.filter(p => p.functionResponse).map(p => p.functionResponse.name)
-  );
-  t.true(allFrNames.every(n => n === 'toolu'),
-    'Without name field, all functionResponse names are "toolu" (the bug)');
-
-  // The critical failure: parity is broken because the greedy matching
-  // assigns one 'toolu' response to the first assistant (which has 2 calls)
-  // and one 'toolu' response to the second assistant (which has 1 call),
-  // leaving one orphaned
+  // Parity is maintained: round 1 has 2 calls and 2 responses
   const round1FcCount = fcTurns[0].parts.filter(p => p.functionCall).length;
   const round1FrCount = frTurns[0].parts.filter(p => p.functionResponse).length;
-  // Round 1 has 2 functionCalls but only 1 functionResponse — MISMATCH
-  t.not(round1FcCount, round1FrCount,
-    'Bug: round 1 parity is broken (2 functionCalls vs 1 functionResponse)');
+  t.is(round1FcCount, 2, 'Round 1 should have 2 functionCall parts');
+  t.is(round1FrCount, 2, 'Round 1 should have 2 functionResponse parts');
+
+  // Round 2 has 1 call and 1 response
+  const round2FcCount = fcTurns[1].parts.filter(p => p.functionCall).length;
+  const round2FrCount = frTurns[1].parts.filter(p => p.functionResponse).length;
+  t.is(round2FcCount, 1, 'Round 2 should have 1 functionCall part');
+  t.is(round2FrCount, 1, 'Round 2 should have 1 functionResponse part');
 });
 
 test('parity fix - name field on tool messages fixes parity for Claude tool_call_ids', t => {
@@ -849,6 +839,135 @@ test('parity fix - multi-tool digest scenario maintains parity and structure', t
       t.is(next.role, 'user', `Entry after model functionCall must be user`);
       const frCount = next.parts.filter(p => p.functionResponse).length;
       t.is(fcCount, frCount, `Parity: ${fcCount} functionCalls must match ${frCount} functionResponses`);
+    }
+  }
+});
+
+test('parity fix - 4-round digest with repeated SearchInternet maintains parity', t => {
+  // Reproduces the exact production digest failure: 4 tool rounds where SearchInternet
+  // appears in every round. The old name-based matching would match round 2's
+  // SearchInternet results to round 3's assistant (since round 2's was already emitted),
+  // breaking parity. Position-based rebuild fixes this.
+  const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
+  const plugin = resolver.modelExecutor.plugin;
+
+  const originalGetCompiledPrompt = plugin.getCompiledPrompt.bind(plugin);
+  plugin.getCompiledPrompt = (text, parameters, prompt) => {
+    const result = originalGetCompiledPrompt(text, parameters, prompt);
+    result.modelPromptMessages = [
+      { role: 'user', content: 'Generate a 7-day AI/tech digest.' },
+      // Initial model response (preservePriorText)
+      { role: 'assistant', content: 'I\'ll compile your weekly digest by searching multiple sources.' },
+      // Round 1: SearchMemory + SearchInternet + SearchInternet (3 tools)
+      {
+        role: 'assistant', content: '',
+        tool_calls: [
+          { id: 'SearchMemory_r1_1', type: 'function', function: { name: 'SearchMemory', arguments: '{"query":"digest preferences"}' } },
+          { id: 'SearchInternet_r1_2', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"AI news this week"}' } },
+          { id: 'SearchInternet_r1_3', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"tech industry news"}' } },
+        ]
+      },
+      { role: 'tool', tool_call_id: 'SearchMemory_r1_1', name: 'SearchMemory', content: '{"memories":["user likes AI topics"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r1_2', name: 'SearchInternet', content: '{"results":["AI news 1"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r1_3', name: 'SearchInternet', content: '{"results":["tech news 1"]}' },
+      // Round 2: SearchInternet x7 (executor deep-dives)
+      {
+        role: 'assistant', content: '',
+        tool_calls: [
+          { id: 'SearchInternet_r2_1', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"OpenAI updates"}' } },
+          { id: 'SearchInternet_r2_2', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"Google AI updates"}' } },
+          { id: 'SearchInternet_r2_3', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"Meta AI updates"}' } },
+          { id: 'SearchInternet_r2_4', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"Anthropic updates"}' } },
+          { id: 'SearchInternet_r2_5', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"semiconductor news"}' } },
+          { id: 'SearchInternet_r2_6', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"robotics AI"}' } },
+          { id: 'SearchInternet_r2_7', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"AI regulation"}' } },
+        ]
+      },
+      { role: 'tool', tool_call_id: 'SearchInternet_r2_1', name: 'SearchInternet', content: '{"results":["OpenAI news"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r2_2', name: 'SearchInternet', content: '{"results":["Google news"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r2_3', name: 'SearchInternet', content: '{"results":["Meta news"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r2_4', name: 'SearchInternet', content: '{"results":["Anthropic news"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r2_5', name: 'SearchInternet', content: '{"results":["chip news"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r2_6', name: 'SearchInternet', content: '{"results":["robotics news"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r2_7', name: 'SearchInternet', content: '{"results":["regulation news"]}' },
+      // Round 3: SearchInternet x5 (more detail)
+      {
+        role: 'assistant', content: '',
+        tool_calls: [
+          { id: 'SearchInternet_r3_1', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"GPT-5 release"}' } },
+          { id: 'SearchInternet_r3_2', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"Gemini 3 launch"}' } },
+          { id: 'SearchInternet_r3_3', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"Apple AI strategy"}' } },
+          { id: 'SearchInternet_r3_4', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"AI startup funding"}' } },
+          { id: 'SearchInternet_r3_5', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"open source AI models"}' } },
+        ]
+      },
+      { role: 'tool', tool_call_id: 'SearchInternet_r3_1', name: 'SearchInternet', content: '{"results":["GPT-5 info"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r3_2', name: 'SearchInternet', content: '{"results":["Gemini 3 info"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r3_3', name: 'SearchInternet', content: '{"results":["Apple AI info"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r3_4', name: 'SearchInternet', content: '{"results":["funding info"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r3_5', name: 'SearchInternet', content: '{"results":["open source info"]}' },
+      // Round 4: SearchInternet x4 (final details)
+      {
+        role: 'assistant', content: '',
+        tool_calls: [
+          { id: 'SearchInternet_r4_1', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"AI ethics debate"}' } },
+          { id: 'SearchInternet_r4_2', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"quantum computing AI"}' } },
+          { id: 'SearchInternet_r4_3', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"AI healthcare breakthroughs"}' } },
+          { id: 'SearchInternet_r4_4', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"autonomous vehicles update"}' } },
+        ]
+      },
+      { role: 'tool', tool_call_id: 'SearchInternet_r4_1', name: 'SearchInternet', content: '{"results":["ethics debate"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r4_2', name: 'SearchInternet', content: '{"results":["quantum info"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r4_3', name: 'SearchInternet', content: '{"results":["healthcare info"]}' },
+      { role: 'tool', tool_call_id: 'SearchInternet_r4_4', name: 'SearchInternet', content: '{"results":["vehicles info"]}' },
+      // Synthesis review message
+      { role: 'user', content: '[system message: rid456] Review the tool results above against your todo list.' },
+    ];
+    return result;
+  };
+
+  const params = plugin.getRequestParameters('test', {}, { prompt: 'test' }, { pathway: {} });
+
+  // Must start with user
+  t.is(params.contents[0].role, 'user', 'Must start with user turn');
+
+  // No consecutive same-role turns
+  for (let i = 1; i < params.contents.length; i++) {
+    t.not(params.contents[i - 1].role, params.contents[i].role,
+      `No consecutive same-role at ${i - 1}/${i}: both are ${params.contents[i].role}`);
+  }
+
+  // Extract functionCall model turns and functionResponse user turns
+  const fcTurns = params.contents.filter(c =>
+    c.role === 'model' && c.parts?.some(p => p.functionCall));
+  const frTurns = params.contents.filter(c =>
+    c.role === 'user' && c.parts?.some(p => p.functionResponse));
+
+  t.is(fcTurns.length, 4, 'Should have 4 model turns with functionCalls (one per round)');
+  t.is(frTurns.length, 4, 'Should have 4 user turns with functionResponses (one per round)');
+
+  // Verify parity for each round
+  const expectedCounts = [3, 7, 5, 4]; // tool calls per round
+  for (let i = 0; i < 4; i++) {
+    const fcCount = fcTurns[i].parts.filter(p => p.functionCall).length;
+    const frCount = frTurns[i].parts.filter(p => p.functionResponse).length;
+    t.is(fcCount, expectedCounts[i], `Round ${i + 1}: should have ${expectedCounts[i]} functionCall parts`);
+    t.is(frCount, expectedCounts[i], `Round ${i + 1}: should have ${expectedCounts[i]} functionResponse parts`);
+  }
+
+  // Verify strict alternation: each functionCall turn is immediately followed by its functionResponse turn
+  for (let i = 0; i < params.contents.length; i++) {
+    const entry = params.contents[i];
+    if (entry.role === 'model' && entry.parts?.some(p => p.functionCall)) {
+      const next = params.contents[i + 1];
+      t.truthy(next, `Model functionCall turn at index ${i} must have a following entry`);
+      t.is(next.role, 'user', `Entry after model functionCall at ${i} must be user`);
+      t.true(next.parts?.some(p => p.functionResponse),
+        `User turn after model functionCall at ${i} must contain functionResponse parts`);
+      const fcCount = entry.parts.filter(p => p.functionCall).length;
+      const frCount = next.parts.filter(p => p.functionResponse).length;
+      t.is(fcCount, frCount,
+        `Parity at index ${i}: ${fcCount} functionCalls must equal ${frCount} functionResponses`);
     }
   }
 });

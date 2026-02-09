@@ -54,123 +54,98 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
         
         const baseParameters = super.getRequestParameters(text, parameters, prompt, cortexRequest);
         
-        // Transform contents for Gemini 3 format:
-        // 1. Function responses: role 'function' -> 'user', response.content -> response.output
-        // 2. Add functionCall messages for assistant tool_calls (with thoughtSignature)
-        if (baseParameters.contents && Array.isArray(baseParameters.contents)) {
-            const newContents = [];
+        // Rebuild contents from original messages for Gemini 3 format.
+        // The base converter drops assistant messages with empty content (losing tool_calls)
+        // and doesn't convert tool_calls to functionCall parts. We rebuild directly from
+        // the original messages to guarantee per-turn parity by construction:
+        // each model turn with N functionCall parts is followed by one user turn with N functionResponse parts.
+        if (messages.some(m => m.role === 'tool' || m.tool_calls?.length > 0)) {
+            const rebuilt = [];
 
-            // Track which assistant messages (by index in original messages array)
-            // have already been emitted as functionCall messages, so parallel tool
-            // results from the same assistant message only produce ONE functionCall entry.
-            const emittedAssistantIndices = new Set();
+            for (const msg of messages) {
+                if (msg.role === 'system') {
+                    // System messages are handled separately by the base converter
+                    continue;
+                }
 
-            for (let i = 0; i < baseParameters.contents.length; i++) {
-                const content = baseParameters.contents[i];
-
-                // Check if we need to insert a functionCall message before this function response
-                if (content.role === 'function' && content.parts?.[0]?.functionResponse) {
-                    const functionName = content.parts[0].functionResponse.name;
-
-                    // Find matching assistant message with this tool call
-                    for (let mi = 0; mi < messages.length; mi++) {
-                        const message = messages[mi];
-                        if (message.role === 'assistant' && message.tool_calls?.length > 0) {
-                            const hasMatchingToolCall = message.tool_calls.some(tc =>
-                                tc.function?.name === functionName ||
-                                tc.id?.startsWith(functionName + '_')
-                            );
-
-                            if (hasMatchingToolCall && !emittedAssistantIndices.has(mi)) {
-                                // Build functionCall message with thoughtSignature (once per assistant message)
-                                const parts = [];
-                                if (message.content && typeof message.content === 'string' && message.content.trim()) {
-                                    parts.push({ text: message.content });
-                                }
-                                for (const toolCall of message.tool_calls) {
-                                    if (toolCall.function?.name) {
-                                        let args = {};
-                                        try {
-                                            args = typeof toolCall.function.arguments === 'string'
-                                                ? JSON.parse(toolCall.function.arguments)
-                                                : (toolCall.function.arguments || {});
-                                        } catch (e) { args = {}; }
-                                        parts.push(this.buildFunctionCallPart(toolCall, args));
-                                    }
-                                }
-                                if (parts.length > 0) {
-                                    newContents.push({ role: 'model', parts: parts });
-                                }
-                                emittedAssistantIndices.add(mi);
-                                break;
+                if (msg.role === 'user') {
+                    const raw = msg.content;
+                    const text = typeof raw === 'string' ? raw
+                        : Array.isArray(raw) ? raw.map(p => typeof p === 'string' ? p : p?.text || '').filter(Boolean).join('\n')
+                        : '';
+                    if (text.trim()) {
+                        rebuilt.push({ role: 'user', parts: [{ text }] });
+                    }
+                } else if (msg.role === 'assistant') {
+                    if (msg.tool_calls?.length > 0) {
+                        // Assistant with tool_calls → model turn with functionCall parts
+                        const parts = [];
+                        if (msg.content && typeof msg.content === 'string' && msg.content.trim()) {
+                            parts.push({ text: msg.content });
+                        }
+                        for (const toolCall of msg.tool_calls) {
+                            if (toolCall.function?.name) {
+                                let args = {};
+                                try {
+                                    args = typeof toolCall.function.arguments === 'string'
+                                        ? JSON.parse(toolCall.function.arguments)
+                                        : (toolCall.function.arguments || {});
+                                } catch (e) { args = {}; }
+                                parts.push(this.buildFunctionCallPart(toolCall, args));
                             }
                         }
-                    }
-
-                    // Transform function response: role 'function' -> 'user', content -> output
-                    const fr = content.parts[0].functionResponse;
-                    let responseData = fr.response;
-                    if (responseData?.content !== undefined) {
-                        const contentStr = responseData.content;
-                        try {
-                            responseData = JSON.parse(contentStr);
-                        } catch (e) {
-                            responseData = { output: contentStr };
+                        if (parts.length > 0) {
+                            rebuilt.push({ role: 'model', parts });
+                        }
+                    } else if (msg.content) {
+                        // Text-only assistant → model turn with text
+                        const text = typeof msg.content === 'string' ? msg.content
+                            : Array.isArray(msg.content) ? msg.content.map(p => typeof p === 'string' ? p : p?.text || '').filter(Boolean).join('\n')
+                            : '';
+                        if (text.trim()) {
+                            rebuilt.push({ role: 'model', parts: [{ text }] });
                         }
                     }
-                    newContents.push({
+                } else if (msg.role === 'tool') {
+                    // Tool result → user turn with functionResponse
+                    const toolName = msg.name || 'unknown_tool';
+                    let toolContent = msg.content;
+                    if (Array.isArray(toolContent)) {
+                        toolContent = toolContent.map(item => typeof item === 'string' ? item : item?.text || JSON.stringify(item)).join('\n');
+                    }
+                    let responseData;
+                    try {
+                        responseData = JSON.parse(toolContent);
+                    } catch (e) {
+                        responseData = { output: toolContent };
+                    }
+                    rebuilt.push({
                         role: 'user',
                         parts: [{
                             functionResponse: {
-                                name: fr.name,
+                                name: toolName,
                                 response: responseData
                             }
                         }]
                     });
-                } else {
-                    newContents.push(content);
                 }
             }
 
-            // Gemini 3 requires per-turn parity: a model turn with N functionCall parts
-            // must be followed by ONE user turn with exactly N functionResponse parts.
-            // The loop above emits each functionResponse as a separate user turn — merge them.
-            // Also merge any adjacent user turns (e.g. functionResponse + text from
-            // prepareForSynthesis review message) to maintain alternating user/model structure.
-            const mergedContents = [];
-            for (const c of newContents) {
-                const prev = mergedContents[mergedContents.length - 1];
-                if (prev && prev.role === 'user' && c.role === 'user') {
+            // Merge consecutive same-role turns.
+            // This ensures: model [N functionCalls] + user [N functionResponses] parity,
+            // and merges adjacent user turns (functionResponse + review text).
+            const merged = [];
+            for (const c of rebuilt) {
+                const prev = merged[merged.length - 1];
+                if (prev && prev.role === c.role) {
                     prev.parts.push(...c.parts);
                 } else {
-                    mergedContents.push(c);
-                }
-            }
-
-            // Collapse consecutive model/assistant turns that arise when the parent
-            // emits a text-only message and we insert a functionCall message for the
-            // same assistant turn. Keep the functionCall message (it already carries
-            // the text content) and drop the text-only predecessor.
-            const finalContents = [];
-            for (const c of mergedContents) {
-                const prev = finalContents[finalContents.length - 1];
-                const prevIsModelLike = prev && (prev.role === 'model' || prev.role === 'assistant');
-                const curIsModelLike = (c.role === 'model' || c.role === 'assistant');
-                if (prevIsModelLike && curIsModelLike &&
-                    prev.parts?.every(p => p.text !== undefined && !p.functionCall) &&
-                    c.parts?.some(p => p.functionCall)) {
-                    // Replace text-only predecessor with the functionCall message
-                    finalContents[finalContents.length - 1] = c;
-                } else {
-                    finalContents.push(c);
+                    merged.push(c);
                 }
             }
 
             // Ensure the conversation starts with a user turn (Gemini requirement).
-            // The base converter's even-number heuristic can slice off the first user
-            // message when function entries change the expected count. Reconstruct it
-            // from the original messages if needed.
-            if (finalContents.length > 0 && finalContents[0].role !== 'user') {
+            if (merged.length > 0 && merged[0].role !== 'user') {
                 const firstUserMsg = messages.find(m => m.role === 'user');
                 if (firstUserMsg) {
                     const raw = firstUserMsg.content;
@@ -178,12 +153,12 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
                         : Array.isArray(raw) ? raw.map(p => typeof p === 'string' ? p : p?.text || '').filter(Boolean).join('\n')
                         : '';
                     if (text.trim()) {
-                        finalContents.unshift({ role: 'user', parts: [{ text }] });
+                        merged.unshift({ role: 'user', parts: [{ text }] });
                     }
                 }
             }
 
-            baseParameters.contents = finalContents;
+            baseParameters.contents = merged;
         }
         
         // Add Gemini 3 thinking support
