@@ -29,13 +29,14 @@ export default {
         toolCost: 1,
         function: {
             name: "SearchMemory",
-            description: `Search your narrative memory for relational context, insights, and identity notes. Use this when you need to explicitly recall:
-- Relational anchors: Emotional bonds, user patterns, shared experiences
-- Resonance artifacts: Synthesized insights and conclusions from past conversations
-- Identity evolution: Notes about your own growth and changes
-- Shared vocabulary: Nicknames, metaphors, and inside references you've developed together
+            description: `Search your narrative memory for relational context, insights, and identity notes. Use this when you need to:
+- Verify a memory before referencing it (if it's not in your current context window, search first)
+- Recall relational anchors: Emotional bonds, user patterns, shared experiences
+- Recall resonance artifacts: Synthesized insights and conclusions from past conversations
+- Recall identity evolution: Notes about your own growth and changes
+- Recall shared vocabulary: Nicknames, metaphors, and inside references
 
-This searches your long-term memory beyond the current context window.`,
+IMPORTANT: Your context window contains only a subset of your memories. Never claim to remember something that isn't explicitly in your context — use this tool to check first.`,
             parameters: {
                 type: 'object',
                 properties: {
