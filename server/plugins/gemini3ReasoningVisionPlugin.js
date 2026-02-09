@@ -135,12 +135,12 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
             // Gemini 3 requires per-turn parity: a model turn with N functionCall parts
             // must be followed by ONE user turn with exactly N functionResponse parts.
             // The loop above emits each functionResponse as a separate user turn — merge them.
+            // Also merge any adjacent user turns (e.g. functionResponse + text from
+            // prepareForSynthesis review message) to maintain alternating user/model structure.
             const mergedContents = [];
             for (const c of newContents) {
                 const prev = mergedContents[mergedContents.length - 1];
-                if (prev && prev.role === 'user' && c.role === 'user' &&
-                    prev.parts?.every(p => p.functionResponse) &&
-                    c.parts?.every(p => p.functionResponse)) {
+                if (prev && prev.role === 'user' && c.role === 'user') {
                     prev.parts.push(...c.parts);
                 } else {
                     mergedContents.push(c);
@@ -163,6 +163,23 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
                     finalContents[finalContents.length - 1] = c;
                 } else {
                     finalContents.push(c);
+                }
+            }
+
+            // Ensure the conversation starts with a user turn (Gemini requirement).
+            // The base converter's even-number heuristic can slice off the first user
+            // message when function entries change the expected count. Reconstruct it
+            // from the original messages if needed.
+            if (finalContents.length > 0 && finalContents[0].role !== 'user') {
+                const firstUserMsg = messages.find(m => m.role === 'user');
+                if (firstUserMsg) {
+                    const raw = firstUserMsg.content;
+                    const text = typeof raw === 'string' ? raw
+                        : Array.isArray(raw) ? raw.map(p => typeof p === 'string' ? p : p?.text || '').filter(Boolean).join('\n')
+                        : '';
+                    if (text.trim()) {
+                        finalContents.unshift({ role: 'user', parts: [{ text }] });
+                    }
                 }
             }
 

@@ -694,6 +694,165 @@ test('parity fix - assistant message with empty content still gets functionCall 
   }
 });
 
+// ===== Digest / synthesis scenario tests =====
+// These tests cover the "function response parts didn't match the call parts" error
+// that occurs when prepareForSynthesis adds a user-role review message after tool
+// results, creating consecutive user turns that Gemini 3 rejects.
+
+test('parity fix - user text after functionResponse is merged into same user turn', t => {
+  // Reproduces the exact digest failure: after the tool loop, prepareForSynthesis
+  // adds a user-role review message. After parity fix converts function→user,
+  // this creates consecutive user turns: user(functionResponse) + user(text).
+  // The fix merges them into one user turn.
+  const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
+  const plugin = resolver.modelExecutor.plugin;
+
+  const originalGetCompiledPrompt = plugin.getCompiledPrompt.bind(plugin);
+  plugin.getCompiledPrompt = (text, parameters, prompt) => {
+    const result = originalGetCompiledPrompt(text, parameters, prompt);
+    result.modelPromptMessages = [
+      { role: 'user', content: 'Generate a 7-day digest for this entity.' },
+      // preservePriorText from initial model response
+      { role: 'assistant', content: 'I\'ll search your memory for context to generate the digest.' },
+      // Tool call (after SetGoals stripped)
+      {
+        role: 'assistant', content: '',
+        tool_calls: [
+          { id: 'SearchMemory_1234_1', type: 'function', function: { name: 'SearchMemory', arguments: '{"query":"recent conversations"}' } },
+        ]
+      },
+      { role: 'tool', tool_call_id: 'SearchMemory_1234_1', name: 'SearchMemory', content: '{"memories":[]}' },
+      // prepareForSynthesis review message (user-role system message)
+      { role: 'user', content: '[system message: abc123] Review the tool results above against your todo list (Goal: Generate digest).' },
+    ];
+    return result;
+  };
+
+  const params = plugin.getRequestParameters('test', {}, { prompt: 'test' }, { pathway: {} });
+
+  // Should have no consecutive same-role turns
+  for (let i = 1; i < params.contents.length; i++) {
+    const prev = params.contents[i - 1];
+    const cur = params.contents[i];
+    t.not(prev.role, cur.role,
+      `Consecutive same-role turns at index ${i - 1}/${i}: ${prev.role}`);
+  }
+
+  // Should start with user
+  t.is(params.contents[0].role, 'user', 'Must start with user turn');
+
+  // The review text should be merged into the functionResponse user turn
+  const userTurnsWithFR = params.contents.filter(c =>
+    c.role === 'user' && c.parts?.some(p => p.functionResponse)
+  );
+  t.is(userTurnsWithFR.length, 1, 'Should have exactly one user turn with functionResponse');
+
+  // That turn should also contain the review text
+  const hasText = userTurnsWithFR[0].parts.some(p => p.text && p.text.includes('Review the tool results'));
+  t.true(hasText, 'Review message text should be merged into the functionResponse user turn');
+});
+
+test('parity fix - even-number slicing does not drop first user message', t => {
+  // When the base converter produces an even number of messages, it slices off
+  // the first one (a legacy heuristic). If that first message is the user's query,
+  // it's lost. The Gemini3 parity fix should restore it.
+  const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
+  const plugin = resolver.modelExecutor.plugin;
+
+  const originalGetCompiledPrompt = plugin.getCompiledPrompt.bind(plugin);
+  plugin.getCompiledPrompt = (text, parameters, prompt) => {
+    const result = originalGetCompiledPrompt(text, parameters, prompt);
+    // 4 non-system messages → base converter produces 4 entries (even) → slices first
+    // system msgs are extracted separately, leaving: user, model, function, user = 4
+    result.modelPromptMessages = [
+      { role: 'user', content: 'Generate digest for the past 7 days.' },
+      { role: 'assistant', content: 'Let me search for context.' },
+      {
+        role: 'assistant', content: '',
+        tool_calls: [
+          { id: 'SearchMemory_5678_1', type: 'function', function: { name: 'SearchMemory', arguments: '{"query":"digest"}' } },
+        ]
+      },
+      { role: 'tool', tool_call_id: 'SearchMemory_5678_1', name: 'SearchMemory', content: '{"memories":[]}' },
+      { role: 'user', content: 'Review the tool results and respond.' },
+    ];
+    return result;
+  };
+
+  const params = plugin.getRequestParameters('test', {}, { prompt: 'test' }, { pathway: {} });
+
+  // Must start with user
+  t.is(params.contents[0].role, 'user', 'Must start with user turn');
+
+  // The original user query must be present
+  const userTexts = params.contents
+    .filter(c => c.role === 'user')
+    .flatMap(c => c.parts.filter(p => p.text).map(p => p.text));
+  t.true(userTexts.some(t => t.includes('Generate digest')),
+    'Original user query must be preserved even after even-number slicing');
+});
+
+test('parity fix - multi-tool digest scenario maintains parity and structure', t => {
+  // Full digest scenario: 2 tool rounds (initial + executor) then synthesis review
+  const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
+  const plugin = resolver.modelExecutor.plugin;
+
+  const originalGetCompiledPrompt = plugin.getCompiledPrompt.bind(plugin);
+  plugin.getCompiledPrompt = (text, parameters, prompt) => {
+    const result = originalGetCompiledPrompt(text, parameters, prompt);
+    result.modelPromptMessages = [
+      { role: 'user', content: 'Generate a weekly digest.' },
+      // Round 1: Initial model response + SearchMemory (SetGoals already stripped)
+      { role: 'assistant', content: 'I\'ll gather information for your digest.' },
+      {
+        role: 'assistant', content: '',
+        tool_calls: [
+          { id: 'SearchMemory_100_1', type: 'function', function: { name: 'SearchMemory', arguments: '{"query":"week summary"}' } },
+          { id: 'SearchInternet_100_2', type: 'function', function: { name: 'SearchInternet', arguments: '{"q":"recent news"}' } },
+        ]
+      },
+      { role: 'tool', tool_call_id: 'SearchMemory_100_1', name: 'SearchMemory', content: 'memory results' },
+      { role: 'tool', tool_call_id: 'SearchInternet_100_2', name: 'SearchInternet', content: 'news results' },
+      // Round 2: Executor called one more tool
+      {
+        role: 'assistant', content: '',
+        tool_calls: [
+          { id: 'toolu_01Executor123', type: 'function', function: { name: 'SearchMemory', arguments: '{"query":"user preferences"}' } },
+        ]
+      },
+      { role: 'tool', tool_call_id: 'toolu_01Executor123', name: 'SearchMemory', content: 'preferences results' },
+      // Synthesis review message
+      { role: 'user', content: '[system message: rid123] Review the tool results above.' },
+    ];
+    return result;
+  };
+
+  const params = plugin.getRequestParameters('test', {}, { prompt: 'test' }, { pathway: {} });
+
+  // Must start with user
+  t.is(params.contents[0].role, 'user', 'Must start with user turn');
+
+  // No consecutive same-role turns
+  for (let i = 1; i < params.contents.length; i++) {
+    t.not(params.contents[i - 1].role, params.contents[i].role,
+      `No consecutive same-role at ${i - 1}/${i}`);
+  }
+
+  // Parity check: each model functionCall turn must be followed by a user turn
+  // with matching functionResponse count
+  for (let i = 0; i < params.contents.length; i++) {
+    const entry = params.contents[i];
+    if (entry.role === 'model' && entry.parts?.some(p => p.functionCall)) {
+      const fcCount = entry.parts.filter(p => p.functionCall).length;
+      const next = params.contents[i + 1];
+      t.truthy(next, `Model functionCall turn at ${i} must have a next entry`);
+      t.is(next.role, 'user', `Entry after model functionCall must be user`);
+      const frCount = next.parts.filter(p => p.functionResponse).length;
+      t.is(fcCount, frCount, `Parity: ${fcCount} functionCalls must match ${frCount} functionResponses`);
+    }
+  }
+});
+
 test('Gemini3ReasoningVisionPlugin - inherits from Gemini3ImagePlugin', t => {
   const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
   const plugin = resolver.modelExecutor.plugin;
