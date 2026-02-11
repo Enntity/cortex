@@ -241,7 +241,10 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
                     return;
                 }
                 if (this.sttReconnectAttempts >= StreamingTTSProvider.MAX_STT_RECONNECT_ATTEMPTS) {
-                    console.error(`[${this.type}] Max STT reconnection attempts reached`);
+                    if (this.sttReconnectAttempts === StreamingTTSProvider.MAX_STT_RECONNECT_ATTEMPTS) {
+                        console.error(`[${this.type}] Max STT reconnection attempts reached`);
+                        this.sttReconnectAttempts++; // Increment past max to suppress further logs
+                    }
                     return;
                 }
                 this.sttReconnectAttempts++;

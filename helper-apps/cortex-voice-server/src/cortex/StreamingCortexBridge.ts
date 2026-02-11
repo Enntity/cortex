@@ -775,8 +775,8 @@ export class StreamingCortexBridge extends EventEmitter {
         // Clean any remaining markdown from text (in case it wasn't caught in buffer)
         const cleanText = this.cleanMarkdownFromText(text);
 
-        // Emit the cleaned text for TTS
-        if (cleanText.trim()) {
+        // Emit the cleaned text for TTS (skip if no speakable characters)
+        if (cleanText.trim() && /\w/.test(cleanText)) {
             this.emitSpeech(cleanText.trim());
         }
     }
