@@ -123,14 +123,14 @@ Return only valid JSON, no markdown or explanation.`},
                         code: ['Writing some code...', 'Let me code that up...', 'Working on the code...'],
                     };
                 }
-                return fillers;
+                return JSON.stringify(fillers);
             }
         } catch (e) {
             logger.warn(`Voice filler parsing failed: ${e.message}, using defaults`);
         }
 
         // Default fillers if generation fails
-        return {
+        return JSON.stringify({
             acknowledgment: ['Mm', 'Hmm', 'Ah', 'Mhm', 'Oh'],
             nonverbal: ['[soft breath]', '[thoughtful hum]', 'Mm', '[quiet inhale]', 'Hmm'],
             thinking: ['Let me think...', 'Hmm...', 'One moment...', 'Good question...', 'Let me see...'],
@@ -143,6 +143,6 @@ Return only valid JSON, no markdown or explanation.`},
                 analysis: ['Taking a look...', 'Analyzing that...', 'Let me examine this...'],
                 code: ['Writing some code...', 'Let me code that up...', 'Working on the code...'],
             }
-        };
+        });
     }
 }
