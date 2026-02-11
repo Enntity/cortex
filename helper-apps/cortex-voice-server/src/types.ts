@@ -106,6 +106,7 @@ export interface AudioData {
     data: string; // Base64 encoded PCM16
     sampleRate: number;
     trackId?: string; // For tracking sentence audio streams
+    generationId?: number; // Monotonic counter for interrupt staleness detection
 }
 
 export interface SessionState {
@@ -148,6 +149,7 @@ export interface TrackCompleteEvent {
 export interface TrackStartEvent {
     trackId: string;
     text: string;
+    generationId?: number; // Monotonic counter for interrupt staleness detection
 }
 
 export interface VoiceProviderEvents {

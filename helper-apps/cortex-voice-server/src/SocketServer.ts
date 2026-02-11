@@ -32,6 +32,7 @@ interface SessionData {
     idleTimeout: NodeJS.Timeout | null;
     idleCount: number;
     audioBlockTimeout: NodeJS.Timeout | null;
+    generationId: number;
 }
 
 const MAX_SESSIONS = 100;
@@ -347,6 +348,7 @@ export class SocketServer {
                 idleTimeout: null,
                 idleCount: 0,
                 audioBlockTimeout: null,
+                generationId: 0,
             };
 
             // Setup provider event handlers
@@ -418,13 +420,13 @@ export class SocketServer {
 
         // Audio output
         provider.on('audio', (data: AudioData) => {
-            socket.emit('audio:output', data);
+            socket.emit('audio:output', { ...data, generationId: sessionData.generationId });
             this.resetAudioBlockTimeout(sessionData, socket);
         });
 
         // Track start (send text for transcript sync)
         provider.on('track-start', (event: TrackStartEvent) => {
-            socket.emit('audio:trackStart', event);
+            socket.emit('audio:trackStart', { ...event, generationId: sessionData.generationId });
         });
 
         // Track complete (signal client to flush audio buffer)
@@ -594,9 +596,10 @@ export class SocketServer {
 
         if (sessionData) {
             console.log('[SocketServer] Manual interrupt requested');
+            sessionData.generationId++;
             sessionData.provider.interrupt();
-            // Tell client to stop playing audio
-            socket.emit('audio:stop');
+            // Tell client to stop playing audio (with generation ID for staleness)
+            socket.emit('audio:stop', { generationId: sessionData.generationId });
         }
     }
 
@@ -611,9 +614,10 @@ export class SocketServer {
         const state = sessionData.provider.state;
         if (state === 'speaking' || state === 'processing') {
             console.log('[SocketServer] User started speaking - interrupting AI');
+            sessionData.generationId++;
             sessionData.provider.interrupt();
-            // Tell client to stop playing audio immediately
-            socket.emit('audio:stop');
+            // Tell client to stop playing audio immediately (with generation ID for staleness)
+            socket.emit('audio:stop', { generationId: sessionData.generationId });
         }
     }
 
