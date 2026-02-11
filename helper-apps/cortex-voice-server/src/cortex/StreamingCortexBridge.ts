@@ -134,6 +134,24 @@ interface RequestProgressData {
     };
 }
 
+// Map tool names to filler groups for tool-aware fillers
+const TOOL_GROUP_MAP: Record<string, string> = {
+    CreateMedia: 'media',
+    CreateChart: 'media',
+    GenerateSlides: 'media',
+    SetBaseAvatar: 'media',
+    SearchInternet: 'search',
+    SearchXPlatform: 'search',
+    FetchWebPageContentJina: 'search',
+    SearchMemory: 'memory',
+    StoreContinuityMemory: 'memory',
+    AnalyzePDF: 'analysis',
+    AnalyzeVideo: 'analysis',
+    ViewImages: 'analysis',
+    RequestCodeHelp: 'code',
+    WorkspaceSSH: 'code',
+};
+
 export class StreamingCortexBridge extends EventEmitter {
     private httpUrl: string;
     private wsUrl: string;
@@ -157,9 +175,9 @@ export class StreamingCortexBridge extends EventEmitter {
     private hasEmittedContent: boolean = false; // Track if any real content has been emitted
 
     // Timing milestones for fillers (ms from start)
-    // Note: acknowledgment disabled for now - was stepping on responses
+    // nonverbal at 1.6s provides gentle presence before verbal fillers
     private readonly FILLER_MILESTONES = [
-        // { time: 1600, category: 'acknowledgment' as const },
+        { time: 1600, category: 'nonverbal' as const },
         { time: 4000, category: 'thinking' as const },
         { time: 10000, category: 'extended' as const },
         // Extended fillers repeat every ~4s after 10s mark
@@ -171,16 +189,29 @@ export class StreamingCortexBridge extends EventEmitter {
     // Categorized filler phrases
     private fillers: {
         acknowledgment: string[];
+        nonverbal: string[];
         thinking: string[];
         tool: string[];
         extended: string[];
     } = {
         acknowledgment: ['Mm', 'Hmm', 'Ah', 'Mhm', 'Oh'],
+        nonverbal: ['[soft breath]', '[thoughtful hum]', 'Mm', '[quiet inhale]', 'Hmm'],
         thinking: ['Let me think...', 'Hmm...', 'One moment...', 'Good question...', 'Let me see...'],
         tool: ['Working on that...', 'On it...', 'Let me check...', 'One sec...', 'Looking into it...'],
         extended: ['Still working...', 'Almost there...', 'Bear with me...', 'Just a moment longer...', 'Nearly done...']
     };
+    private toolFillers: { [group: string]: string[] } = {
+        media: ['Imagining that now...', 'Creating that for you...', 'Let me make that...'],
+        search: ['Let me look that up...', 'Searching for that...', 'Looking into it...'],
+        memory: ['Let me remember...', 'Checking my notes...', 'Going through my memory...'],
+        analysis: ['Taking a look...', 'Analyzing that...', 'Let me examine this...'],
+        code: ['Writing some code...', 'Let me code that up...', 'Working on the code...'],
+    };
     private fillersLoaded: boolean = false;
+
+    // Ring buffer for repetition avoidance
+    private recentFillers: string[] = [];
+    private readonly MAX_RECENT_FILLERS = 8;
 
     constructor(apiUrl: string) {
         super();
@@ -255,9 +286,11 @@ export class StreamingCortexBridge extends EventEmitter {
 
             interface FillerResult {
                 acknowledgment?: string[];
+                nonverbal?: string[];
                 thinking?: string[];
                 tool?: string[];
                 extended?: string[];
+                toolFillers?: { [group: string]: string[] };
             }
 
             const data = await response.json() as {
@@ -274,6 +307,9 @@ export class StreamingCortexBridge extends EventEmitter {
                     if (Array.isArray(parsed.acknowledgment) && parsed.acknowledgment.length > 0) {
                         this.fillers.acknowledgment = parsed.acknowledgment;
                     }
+                    if (Array.isArray(parsed.nonverbal) && parsed.nonverbal.length > 0) {
+                        this.fillers.nonverbal = parsed.nonverbal;
+                    }
                     if (Array.isArray(parsed.thinking) && parsed.thinking.length > 0) {
                         this.fillers.thinking = parsed.thinking;
                     }
@@ -283,12 +319,22 @@ export class StreamingCortexBridge extends EventEmitter {
                     if (Array.isArray(parsed.extended) && parsed.extended.length > 0) {
                         this.fillers.extended = parsed.extended;
                     }
+                    // Load tool-specific fillers
+                    if (parsed.toolFillers && typeof parsed.toolFillers === 'object') {
+                        for (const [group, phrases] of Object.entries(parsed.toolFillers)) {
+                            if (Array.isArray(phrases) && phrases.length > 0) {
+                                this.toolFillers[group] = phrases;
+                            }
+                        }
+                    }
                     this.fillersLoaded = true;
                     console.log('[StreamingCortexBridge] Loaded entity fillers:', {
                         acknowledgment: this.fillers.acknowledgment.length,
+                        nonverbal: this.fillers.nonverbal.length,
                         thinking: this.fillers.thinking.length,
                         tool: this.fillers.tool.length,
                         extended: this.fillers.extended.length,
+                        toolFillerGroups: Object.keys(this.toolFillers),
                     });
                 }
             }
@@ -597,7 +643,7 @@ export class StreamingCortexBridge extends EventEmitter {
             console.log('[StreamingCortexBridge] Tool started:', toolName, userMessage);
 
             // Emit a tool-specific filler immediately (if appropriate)
-            this.emitToolFiller();
+            this.emitToolFiller(toolName, userMessage);
 
         } else if (type === 'finish') {
             // Stop filler timers when tool completes
@@ -761,6 +807,7 @@ export class StreamingCortexBridge extends EventEmitter {
         this.stopFillerTimer();
         this.fillerStartTime = Date.now();
         this.hasEmittedContent = false;
+        this.recentFillers = [];
         this.scheduleNextFiller();
     }
 
@@ -772,7 +819,7 @@ export class StreamingCortexBridge extends EventEmitter {
 
         // Find the next milestone we haven't passed yet
         let nextTime: number;
-        let category: 'acknowledgment' | 'thinking' | 'extended';
+        let category: 'nonverbal' | 'acknowledgment' | 'thinking' | 'extended';
 
         // Check fixed milestones first
         const nextMilestone = this.FILLER_MILESTONES.find(m => m.time > elapsed);
@@ -832,15 +879,43 @@ export class StreamingCortexBridge extends EventEmitter {
     }
 
     /**
+     * Pick a phrase from candidates that hasn't been used recently.
+     * Uses ring buffer to avoid repetition within a session.
+     */
+    private pickNonRecentPhrase(candidates: string[]): string | null {
+        if (!candidates || candidates.length === 0) return null;
+
+        // Filter out recently used phrases
+        const fresh = candidates.filter(p => !this.recentFillers.includes(p));
+
+        let picked: string;
+        if (fresh.length > 0) {
+            picked = fresh[Math.floor(Math.random() * fresh.length)];
+        } else {
+            // All candidates are recent — pick the least-recently-used (earliest in buffer)
+            picked = this.recentFillers.find(p => candidates.includes(p)) || candidates[0];
+        }
+
+        // Push to ring buffer
+        this.recentFillers.push(picked);
+        if (this.recentFillers.length > this.MAX_RECENT_FILLERS) {
+            this.recentFillers.shift();
+        }
+
+        return picked;
+    }
+
+    /**
      * Emit a filler phrase from the specified category
      * Fillers are spoken but not added to transcript/history
      */
-    private emitFiller(category: 'acknowledgment' | 'thinking' | 'tool' | 'extended'): void {
+    private emitFiller(category: 'nonverbal' | 'acknowledgment' | 'thinking' | 'tool' | 'extended'): void {
         const phrases = this.fillers[category];
         if (!phrases || phrases.length === 0) return;
 
-        // Pick a random phrase from the category
-        const phrase = phrases[Math.floor(Math.random() * phrases.length)];
+        const phrase = this.pickNonRecentPhrase(phrases);
+        if (!phrase) return;
+
         console.log(`[StreamingCortexBridge] Emitting ${category} filler:`, phrase);
 
         // Emit as filler (not sentence) - won't be added to transcript/history
@@ -850,11 +925,39 @@ export class StreamingCortexBridge extends EventEmitter {
 
     /**
      * Emit a tool-specific filler (called when tools start)
+     * Priority: contextual userMessage > tool-group filler > generic tool filler
      */
-    private emitToolFiller(): void {
-        if (this.shouldEmitFiller()) {
-            this.emitFiller('tool');
+    private emitToolFiller(toolName?: string, userMessage?: string): void {
+        if (!this.shouldEmitFiller()) return;
+
+        // Priority 1: Use contextual userMessage if short enough
+        if (userMessage && userMessage.length > 0 && userMessage.length <= 60) {
+            console.log('[StreamingCortexBridge] Emitting contextual tool filler:', userMessage);
+            this.lastSpeechTime = Date.now();
+            this.recentFillers.push(userMessage);
+            if (this.recentFillers.length > this.MAX_RECENT_FILLERS) {
+                this.recentFillers.shift();
+            }
+            this.emit('filler', userMessage);
+            return;
         }
+
+        // Priority 2: Tool-group specific filler
+        if (toolName) {
+            const group = TOOL_GROUP_MAP[toolName];
+            if (group && this.toolFillers[group]) {
+                const phrase = this.pickNonRecentPhrase(this.toolFillers[group]);
+                if (phrase) {
+                    console.log(`[StreamingCortexBridge] Emitting ${group} tool filler:`, phrase);
+                    this.lastSpeechTime = Date.now();
+                    this.emit('filler', phrase);
+                    return;
+                }
+            }
+        }
+
+        // Priority 3: Generic tool filler
+        this.emitFiller('tool');
     }
 
     /**
@@ -895,6 +998,7 @@ export class StreamingCortexBridge extends EventEmitter {
         this.textBuffer = '';
         this.lastSpeechTime = 0;
         this.hasEmittedContent = false;
+        this.recentFillers = [];
     }
 
     /**

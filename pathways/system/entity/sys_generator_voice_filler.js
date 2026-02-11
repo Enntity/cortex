@@ -25,17 +25,28 @@ Generate fillers for these categories:
    - Examples: "Mm", "Hmm", "Ah", "Oh", "[soft hum]", "Mhm"
    - These play quickly (~800ms) after the user finishes speaking
 
-2. **thinking**: Short phrases for when you need a moment to process (~2s)
+2. **nonverbal**: Pure vocal gestures with no words — soft sounds to fill brief silences (~1.5s)
+   - Examples: "[soft breath]", "[thoughtful hum]", "Mm", "[quiet inhale]", "Hmm"
+   - These are NOT words — they are gentle sounds to show presence before speaking
+
+3. **thinking**: Short phrases for when you need a moment to process (~2s)
    - Examples: "Let me think...", "Hmm, good question...", "[thoughtful] One moment..."
    - Keep to 2-5 words
 
-3. **tool**: Phrases for when you're actively doing something (searching, creating, etc.)
+4. **tool**: Generic phrases for when you're actively doing something (searching, creating, etc.)
    - Examples: "Working on that...", "Let me check...", "[focused] On it..."
    - Should sound like you're engaged in a task
 
-4. **extended**: For longer waits (5+ seconds), reassuring the user you're still there
+5. **extended**: For longer waits (5+ seconds), reassuring the user you're still there
    - Examples: "Still working on it...", "Almost there...", "Bear with me..."
    - Can be slightly longer, 3-6 words
+
+6. **toolFillers**: Specific phrases for different tool groups (3 phrases each):
+   - **media**: For image/video/chart creation — e.g. "Imagining that now...", "Creating that for you..."
+   - **search**: For web/internet searches — e.g. "Let me look that up...", "Searching for that..."
+   - **memory**: For memory operations — e.g. "Let me remember...", "Checking my notes..."
+   - **analysis**: For analyzing files/content — e.g. "Taking a look...", "Analyzing that..."
+   - **code**: For code/programming tasks — e.g. "Writing some code...", "Let me code that up..."
 
 Requirements:
 - Make sure these sound like YOU - match your tone and personality
@@ -47,9 +58,17 @@ Requirements:
 Return a JSON object with this exact structure:
 {
   "acknowledgment": ["phrase1", "phrase2", ...],  // 5 phrases
+  "nonverbal": ["phrase1", "phrase2", ...],       // 5 phrases
   "thinking": ["phrase1", "phrase2", ...],        // 5 phrases
   "tool": ["phrase1", "phrase2", ...],            // 5 phrases
-  "extended": ["phrase1", "phrase2", ...]         // 5 phrases
+  "extended": ["phrase1", "phrase2", ...],        // 5 phrases
+  "toolFillers": {
+    "media": ["phrase1", "phrase2", "phrase3"],
+    "search": ["phrase1", "phrase2", "phrase3"],
+    "memory": ["phrase1", "phrase2", "phrase3"],
+    "analysis": ["phrase1", "phrase2", "phrase3"],
+    "code": ["phrase1", "phrase2", "phrase3"]
+  }
 }
 
 Return only valid JSON, no markdown or explanation.`},
@@ -84,12 +103,26 @@ Return only valid JSON, no markdown or explanation.`},
         try {
             const fillers = typeof result === 'string' ? JSON.parse(result) : result;
 
-            // Validate structure
+            // Validate structure — require core categories, toolFillers/nonverbal optional
             if (fillers &&
                 Array.isArray(fillers.acknowledgment) &&
                 Array.isArray(fillers.thinking) &&
                 Array.isArray(fillers.tool) &&
                 Array.isArray(fillers.extended)) {
+                // Ensure nonverbal has defaults if missing
+                if (!Array.isArray(fillers.nonverbal) || fillers.nonverbal.length === 0) {
+                    fillers.nonverbal = ['[soft breath]', '[thoughtful hum]', 'Mm', '[quiet inhale]', 'Hmm'];
+                }
+                // Ensure toolFillers has defaults if missing
+                if (!fillers.toolFillers || typeof fillers.toolFillers !== 'object') {
+                    fillers.toolFillers = {
+                        media: ['Imagining that now...', 'Creating that for you...', 'Let me make that...'],
+                        search: ['Let me look that up...', 'Searching for that...', 'Looking into it...'],
+                        memory: ['Let me remember...', 'Checking my notes...', 'Going through my memory...'],
+                        analysis: ['Taking a look...', 'Analyzing that...', 'Let me examine this...'],
+                        code: ['Writing some code...', 'Let me code that up...', 'Working on the code...'],
+                    };
+                }
                 return fillers;
             }
         } catch (e) {
@@ -99,9 +132,17 @@ Return only valid JSON, no markdown or explanation.`},
         // Default fillers if generation fails
         return {
             acknowledgment: ['Mm', 'Hmm', 'Ah', 'Mhm', 'Oh'],
+            nonverbal: ['[soft breath]', '[thoughtful hum]', 'Mm', '[quiet inhale]', 'Hmm'],
             thinking: ['Let me think...', 'Hmm...', 'One moment...', 'Good question...', 'Let me see...'],
             tool: ['Working on that...', 'On it...', 'Let me check...', 'One sec...', 'Looking into it...'],
-            extended: ['Still working...', 'Almost there...', 'Bear with me...', 'Just a moment longer...', 'Nearly done...']
+            extended: ['Still working...', 'Almost there...', 'Bear with me...', 'Just a moment longer...', 'Nearly done...'],
+            toolFillers: {
+                media: ['Imagining that now...', 'Creating that for you...', 'Let me make that...'],
+                search: ['Let me look that up...', 'Searching for that...', 'Looking into it...'],
+                memory: ['Let me remember...', 'Checking my notes...', 'Going through my memory...'],
+                analysis: ['Taking a look...', 'Analyzing that...', 'Let me examine this...'],
+                code: ['Writing some code...', 'Let me code that up...', 'Working on the code...'],
+            }
         };
     }
 }
