@@ -1,0 +1,24 @@
+services:
+  claude-code:
+    build: .
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - FILE_HANDLER_URL=${FILE_HANDLER_URL:-http://file-handler:3000}
+      - TASK_TIMEOUT_SECONDS=${TASK_TIMEOUT_SECONDS:-1800}
+      - MAX_CONCURRENT_TASKS=${MAX_CONCURRENT_TASKS:-5}
+    volumes:
+      # Workspace for task execution (ephemeral)
+      - claude-workspaces:/tmp/claude-workspaces
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+volumes:
+  claude-workspaces:
