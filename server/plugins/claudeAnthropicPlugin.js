@@ -40,25 +40,45 @@ class ClaudeAnthropicPlugin extends Claude4VertexPlugin {
                       this.modelName;
     requestParameters.model = modelName;
 
-    // Extended thinking support: map reasoningEffort to budget_tokens
-    // Anthropic uses { thinking: { type: "enabled", budget_tokens: N } }
-    // Minimum budget_tokens is 1024. Thinking is off unless explicitly enabled.
+    // Extended thinking support: dual approach based on model version
+    // Pre-4.6 models (with budgetTokensMap): use budget_tokens
+    // 4.6+ models (no budgetTokensMap): use output_config.effort + adaptive thinking
     const reasoningEffort = parameters.reasoningEffort || this.promptParameters.reasoningEffort;
     if (reasoningEffort) {
       const effort = reasoningEffort.toLowerCase();
-      if (effort !== 'none') {
-        const budgetMap = {
-          low: 1024,
-          medium: 4096,
-          high: 16384,
-          xhigh: 65536,
-        };
-        requestParameters.thinking = {
-          type: 'enabled',
-          budget_tokens: budgetMap[effort] || 4096,
-        };
+      if (effort === 'none') {
+        requestParameters.thinking = { type: 'disabled' };
+      } else {
+        const budgetTokensMap = this.model.budgetTokensMap;
+        if (budgetTokensMap) {
+          // Pre-4.6 models: use budget_tokens
+          const budgetTokens = budgetTokensMap[effort];
+          if (budgetTokens) {
+            requestParameters.thinking = {
+              type: 'enabled',
+              budget_tokens: budgetTokens,
+            };
+          }
+        } else {
+          // 4.6+ models: use output_config.effort + adaptive thinking
+          const mappedEffort = effort === 'xhigh' ? 'max' : effort;
+          if (['low', 'medium', 'high', 'max'].includes(mappedEffort)) {
+            requestParameters.output_config = {
+              ...(requestParameters.output_config &&
+              typeof requestParameters.output_config === "object"
+                ? requestParameters.output_config
+                : {}),
+              effort: mappedEffort,
+            };
+            if (!requestParameters.thinking) {
+              requestParameters.thinking = { type: 'adaptive' };
+            }
+          }
+        }
         // Temperature must be 1 when thinking is enabled
-        requestParameters.temperature = 1;
+        if (requestParameters.thinking && requestParameters.thinking.type !== 'disabled') {
+          requestParameters.temperature = 1;
+        }
       }
     }
 

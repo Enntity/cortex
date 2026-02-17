@@ -346,8 +346,31 @@ async function convertContentItemClaude4(item, maxImageSize, plugin) {
   }
 }
 
+const parseObjectParam = (value) => {
+  if (!value) return null;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value) ? value : null;
+};
+
+const normalizeOptionalString = (value) => {
+  if (value === undefined || value === null) return null;
+  const normalized = (typeof value === "string" ? value : String(value))
+    .trim()
+    .toLowerCase();
+  return normalized || null;
+};
+
 class Claude4VertexPlugin extends Claude3VertexPlugin {
-  
+
   constructor(pathway, model) {
     super(pathway, model);
     this.isMultiModal = true;
@@ -485,6 +508,96 @@ class Claude4VertexPlugin extends Claude3VertexPlugin {
       system,
       modifiedMessages: claude4Messages,
     };
+  }
+
+  async getRequestParameters(text, parameters, prompt) {
+    const requestParameters = await super.getRequestParameters(
+      text,
+      parameters,
+      prompt,
+    );
+
+    // Normalize Anthropic thinking controls for Claude 4 family.
+    const incomingThinking = parseObjectParam(parameters.thinking);
+    const incomingOutputConfig = parseObjectParam(parameters.output_config);
+
+    const thinkingType = normalizeOptionalString(
+      parameters.thinkingType ?? incomingThinking?.type,
+    );
+    const thinkingBudgetTokensRaw =
+      parameters.thinkingBudgetTokens ??
+      incomingThinking?.budget_tokens ??
+      incomingThinking?.budgetTokens;
+    const thinkingBudgetTokensNumber = Number(thinkingBudgetTokensRaw);
+    const thinkingBudgetTokens =
+      Number.isFinite(thinkingBudgetTokensNumber) &&
+      thinkingBudgetTokensNumber > 0
+        ? Math.floor(thinkingBudgetTokensNumber)
+        : null;
+
+    const reasoningEffortRaw = normalizeOptionalString(
+      parameters.reasoningEffort ?? incomingOutputConfig?.effort,
+    );
+    const reasoningEffort =
+      reasoningEffortRaw === "xhigh" ? "max" : reasoningEffortRaw;
+    const validEffort = ["low", "medium", "high", "max"].includes(
+      reasoningEffort || "",
+    )
+      ? reasoningEffort
+      : null;
+
+    if (thinkingType === "disabled" || reasoningEffort === "none") {
+      requestParameters.thinking = { type: "disabled" };
+      delete requestParameters.output_config;
+    } else {
+      if (thinkingBudgetTokens) {
+        requestParameters.thinking = {
+          type: thinkingType === "adaptive" ? "adaptive" : "enabled",
+          budget_tokens: thinkingBudgetTokens,
+        };
+      } else if (thinkingType === "adaptive" || thinkingType === "enabled") {
+        requestParameters.thinking = { type: thinkingType };
+      }
+
+      const budgetTokensMap = this.model.budgetTokensMap;
+      if (budgetTokensMap && validEffort) {
+        // Pre-4.6 models: use budget_tokens instead of output_config.effort
+        const budgetKey = reasoningEffortRaw;
+        const budgetTokens = budgetTokensMap[budgetKey];
+        if (budgetTokens) {
+          requestParameters.thinking = { type: "enabled", budget_tokens: budgetTokens };
+        }
+      } else if (validEffort) {
+        // 4.6+ models: use output_config.effort + adaptive thinking
+        requestParameters.output_config = {
+          ...(requestParameters.output_config &&
+          typeof requestParameters.output_config === "object"
+            ? requestParameters.output_config
+            : {}),
+          effort: validEffort,
+        };
+
+        if (!requestParameters.thinking) {
+          requestParameters.thinking = { type: "adaptive" };
+        }
+      }
+    }
+
+    const thinkingConfig = requestParameters.thinking;
+    const hasThinkingEnabled =
+      thinkingConfig &&
+      typeof thinkingConfig === "object" &&
+      thinkingConfig.type !== "disabled";
+
+    if (hasThinkingEnabled) {
+      requestParameters.temperature = 1;
+    }
+
+    delete requestParameters.reasoningEffort;
+    delete requestParameters.thinkingType;
+    delete requestParameters.thinkingBudgetTokens;
+
+    return requestParameters;
   }
 
   // Override logging to handle document blocks
