@@ -494,6 +494,24 @@
             "maxReturnTokens": 65535,
             "supportsStreaming": true
         },
+        "gemini-pro-31-vision": {
+            "type": "GEMINI-3-REASONING-VISION",
+            "emulateOpenAIChatModel": "gemini-pro-31",
+            "endpoints": [
+                {
+                    "name": "GLOBAL GEMINI-PRO-3.1-VISION",
+                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/gemini-3.1-pro-preview",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "requestsPerSecond": 10,
+            "maxTokenLength": 1048576,
+            "maxReturnTokens": 65535,
+            "supportsStreaming": true
+        },
         "gemini-flash-3-vision": {
             "type": "GEMINI-3-REASONING-VISION",
             "emulateOpenAIChatModel": "gemini-flash-3",
@@ -625,7 +643,29 @@
                 }
             ],
             "maxTokenLength": 200000,
-            "maxReturnTokens": 32000,
+            "maxReturnTokens": 128000,
+            "maxImageSize": 31457280,
+            "supportsStreaming": true
+        },
+        "claude-46-sonnet": {
+            "type": "CLAUDE-ANTHROPIC",
+            "emulateOpenAIChatModel": "claude-4.6-sonnet",
+            "endpoints": [
+                {
+                    "name": "Anthropic Claude Sonnet 4.6",
+                    "url": "https://api.anthropic.com/v1/messages",
+                    "headers": {
+                        "x-api-key": "{{CLAUDE_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "claude-sonnet-4-6"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 200000,
+            "maxReturnTokens": 64000,
             "maxImageSize": 31457280,
             "supportsStreaming": true
         },
