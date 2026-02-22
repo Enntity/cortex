@@ -64,7 +64,7 @@ export class SocketServer {
 
         // Authentication middleware
         this.io.use((socket, next) => {
-            const token = socket.handshake.auth?.token;
+            const token = socket.handshake.auth?.token || socket.handshake.query?.token;
             if (!token || typeof token !== 'string') {
                 return next(new Error('Authentication required'));
             }
@@ -647,12 +647,16 @@ export class SocketServer {
             (sessionData.cortexBridge as any).setClientAudioPlaying(isPlaying);
         }
 
+        // Tell TTS providers about client audio state for server-side echo gating
+        // (blocks audio:input → STT while client is playing TTS audio)
+        const provider = sessionData.provider as any;
+        if (typeof provider.setClientAudioPlaying === 'function') {
+            provider.setClientAudioPlaying(isPlaying);
+        }
+
         // Tell the realtime provider when client finishes playing audio (echo gate release)
-        if (!isPlaying) {
-            const provider = sessionData.provider as any;
-            if (typeof provider.onAudioPlaybackComplete === 'function') {
-                provider.onAudioPlaybackComplete();
-            }
+        if (!isPlaying && typeof provider.onAudioPlaybackComplete === 'function') {
+            provider.onAudioPlaybackComplete();
         }
     }
 

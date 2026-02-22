@@ -50,6 +50,9 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
     // Interim transcript gating
     private isFinalizingTranscript: boolean = false;
 
+    // Client audio playback state — server-side echo protection
+    private clientAudioPlaying: boolean = false;
+
     // STT reconnection backoff
     private sttReconnectAttempts: number = 0;
     private static readonly MAX_STT_RECONNECT_ATTEMPTS = 3;
@@ -223,12 +226,25 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
         this.setState('idle');
         this.conversationHistory = [];
         this.isSpeaking = false;
+        this.clientAudioPlaying = false;
+    }
+
+    // ── Client audio state (echo protection) ──────────────────────
+
+    setClientAudioPlaying(isPlaying: boolean): void {
+        this.clientAudioPlaying = isPlaying;
     }
 
     // ── sendAudio (shared STT forwarding) ─────────────────────────
 
     sendAudio(data: AudioData): void {
         if (!this._isConnected || this._isMuted || this.isProcessing) {
+            return;
+        }
+
+        // Server-side echo gate: don't forward mic audio to STT while
+        // the client is playing TTS audio (echo would be transcribed as user speech)
+        if (this.clientAudioPlaying) {
             return;
         }
 
@@ -572,6 +588,7 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
         this.resetBatchingState();
         this.isSpeaking = false;
         this.isProcessing = false;
+        this.clientAudioPlaying = false;
 
         if (this.streamingSTT) {
             this.streamingSTT.clearTranscript();
