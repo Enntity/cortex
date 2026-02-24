@@ -38,6 +38,7 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
     private sentenceQueue: string[] = [];
     private isSpeaking: boolean = false;
     private currentTrackId: number = 0;
+    private streamComplete: boolean = false;
 
     // Progressive batching
     private isFirstChunk: boolean = true;
@@ -52,6 +53,7 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
 
     // Client audio playback state — server-side echo protection
     private clientAudioPlaying: boolean = false;
+    private clientPlayedDuringProcessing: boolean = false;
 
     // STT reconnection backoff
     private sttReconnectAttempts: number = 0;
@@ -148,10 +150,8 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
                 console.warn(`[${this.type}] Stream completed with empty response`);
             }
 
-            if (this.sentenceQueue.length === 0 && this.pendingBatch.length === 0 && !this.isSpeaking) {
-                this.isProcessing = false;
-                this.setState('idle');
-            }
+            this.streamComplete = true;
+            this.checkProcessingComplete();
         });
 
         this.streamingBridge.on('error', (error: Error) => {
@@ -210,6 +210,11 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
     }
 
     async disconnect(): Promise<void> {
+        if (this.processingCompleteTimer) {
+            clearTimeout(this.processingCompleteTimer);
+            this.processingCompleteTimer = null;
+        }
+
         if (this.streamingBridge) {
             this.streamingBridge.cancel();
         }
@@ -232,7 +237,23 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
     // ── Client audio state (echo protection) ──────────────────────
 
     setClientAudioPlaying(isPlaying: boolean): void {
+        console.log(`[${this.type}] Client audio playing: ${isPlaying}`);
         this.clientAudioPlaying = isPlaying;
+        if (isPlaying) {
+            this.clientPlayedDuringProcessing = true;
+        }
+        if (!isPlaying) {
+            this.checkProcessingComplete();
+        }
+    }
+
+    // ── Speech start (clear phantom transcript from idle streaming) ─
+
+    onSpeechStart(): void {
+        if (this.streamingSTT) {
+            this.streamingSTT.clearTranscript();
+        }
+        this.isFinalizingTranscript = false;
     }
 
     // ── sendAudio (shared STT forwarding) ─────────────────────────
@@ -317,8 +338,8 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
                 this.flushBatch();
             } else if (this.sentenceQueue.length > 0) {
                 this.processNextBatch();
-            } else if (!this.isProcessing) {
-                this.setState('idle');
+            } else {
+                this.checkProcessingComplete();
             }
         }
     }
@@ -356,8 +377,9 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
                 this.flushBatch();
             } else if (this.sentenceQueue.length > 0) {
                 this.processNextBatch();
-            } else if (!this.isProcessing) {
-                this.setState('idle');
+            } else {
+                // All TTS done — check if stream also finished
+                this.checkProcessingComplete();
             }
         }
     }
@@ -386,6 +408,81 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
         }
     }
 
+    // ── Processing lifecycle ───────────────────────────────────────
+
+    /**
+     * isProcessing should stay true from processBufferedAudio() start until
+     * ALL of: (1) Cortex stream complete, (2) TTS queue drained, (3) not speaking,
+     * (4) client finished playing audio.
+     * This prevents the STT from receiving echo-contaminated audio during playback.
+     */
+    private processingCompleteTimer: ReturnType<typeof setTimeout> | null = null;
+
+    private checkProcessingComplete(): void {
+        if (!this.isProcessing || !this.streamComplete ||
+            this.sentenceQueue.length > 0 || this.pendingBatch.length > 0 || this.isSpeaking) {
+            return;
+        }
+
+        // Stream done + TTS synthesis done. Now wait for client playback to finish.
+        if (this.clientPlayedDuringProcessing && !this.clientAudioPlaying) {
+            // Client confirmed it started AND stopped playing — safe to clear.
+            this.finalizeProcessing('stream done + TTS done + client confirmed playback done');
+            return;
+        }
+
+        if (this.clientAudioPlaying) {
+            // Client is actively playing — wait for it to stop (with safety timeout).
+            if (!this.processingCompleteTimer) {
+                console.log(`[${this.type}] TTS done, waiting for client playback to finish...`);
+                this.processingCompleteTimer = setTimeout(() => {
+                    this.processingCompleteTimer = null;
+                    if (this.isProcessing && this.streamComplete && !this.isSpeaking) {
+                        console.log(`[${this.type}] Playback wait timeout — clearing isProcessing`);
+                        this.finalizeProcessing('timeout (client still playing after 8s)');
+                    }
+                }, 8000);
+            }
+            return;
+        }
+
+        // Client never reported playing at all during this cycle.
+        // This happens if the client's playbackStarted publisher didn't fire.
+        // Apply a safety delay to let any in-flight audio finish playing.
+        if (!this.processingCompleteTimer) {
+            console.log(`[${this.type}] TTS done but client never reported playing — safety delay`);
+            this.processingCompleteTimer = setTimeout(() => {
+                this.processingCompleteTimer = null;
+                if (this.isProcessing && this.streamComplete && !this.isSpeaking) {
+                    this.finalizeProcessing('safety delay (no client playback signal received)');
+                }
+            }, 3000);
+        }
+    }
+
+    private finalizeProcessing(reason: string): void {
+        if (this.processingCompleteTimer) {
+            clearTimeout(this.processingCompleteTimer);
+            this.processingCompleteTimer = null;
+        }
+        console.log(`[${this.type}] Processing fully complete (${reason})`);
+        this.isProcessing = false;
+        this.streamComplete = false;
+        this.setState('idle');
+
+        // Proactively reconnect STT if it disconnected during the response.
+        // Without this, the first sendAudio() after processing ends discovers
+        // the STT is down, triggers an async reconnect, and drops audio until
+        // the connection is established — causing first-word loss.
+        if (this.streamingSTT && !this.streamingSTT.connected && !this.streamingSTT.fatal) {
+            this.sttReconnectAttempts = 0;
+            console.log(`[${this.type}] Proactively reconnecting STT after processing`);
+            this.streamingSTT.start().catch(err => {
+                console.error(`[${this.type}] Failed to reconnect STT:`, err);
+            });
+        }
+    }
+
     // ── Helpers (shared) ──────────────────────────────────────────
 
     private delay(ms: number): Promise<void> {
@@ -397,6 +494,7 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
         this.pendingBatch = [];
         this.isFirstChunk = true;
         this.isFinalizingTranscript = false;
+        this.streamComplete = false;
 
         for (const [, resolve] of this.pendingTrackCompletions) {
             resolve();
@@ -412,12 +510,20 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
 
     // ── TTS chunk wrapper (calls subclass synthesizeSpeech) ───────
 
+    private static readonly TTS_TIMEOUT_MS = 30000;
+
     private async textToSpeechChunk(text: string, trackId: string, skipTranscript: boolean = false): Promise<void> {
         try {
             if (!skipTranscript) {
                 this.emit('track-start', { trackId, text });
             }
-            await this.synthesizeSpeech(text, trackId);
+            await Promise.race([
+                this.synthesizeSpeech(text, trackId),
+                new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error(`TTS synthesis timeout after ${StreamingTTSProvider.TTS_TIMEOUT_MS}ms`)),
+                        StreamingTTSProvider.TTS_TIMEOUT_MS)
+                ),
+            ]);
             this.emit('track-complete', { trackId });
         } catch (error) {
             console.error(`[${this.type}] Error generating speech for sentence:`, error);
@@ -433,6 +539,8 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
         }
 
         this.isProcessing = true;
+        this.streamComplete = false;
+        this.clientPlayedDuringProcessing = false;
         this.setState('processing');
         this.resetBatchingState();
 
@@ -476,6 +584,10 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
                     this._config!.entityId,
                     this.conversationHistory.slice(-8),
                 );
+                // NOTE: isProcessing is NOT cleared here.
+                // queryStreaming() resolves when Cortex finishes generating text,
+                // but TTS may still be playing. isProcessing stays true until
+                // checkProcessingComplete() confirms stream done + TTS done.
             } else {
                 console.log(`[${this.type}] Using non-streaming mode (fallback)`);
                 await this.processNonStreaming(userText);
@@ -483,10 +595,13 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
         } catch (error) {
             console.error(`[${this.type}] Error processing audio:`, error);
             this.emitError(error as Error);
-            this.setState('idle');
-        } finally {
             this.isProcessing = false;
+            this.streamComplete = false;
+            this.setState('idle');
         }
+        // No finally { isProcessing = false } — that was the bug.
+        // isProcessing clears via checkProcessingComplete() when both
+        // stream AND TTS are truly done.
     }
 
     // ── Non-streaming fallback (shared) ───────────────────────────
@@ -545,6 +660,8 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
         }
 
         this.isProcessing = true;
+        this.streamComplete = false;
+        this.clientPlayedDuringProcessing = false;
         this.resetBatchingState();
 
         try {
@@ -570,11 +687,14 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
                     this._config!.entityId,
                     this.conversationHistory.slice(-8),
                 );
+                // isProcessing cleared by checkProcessingComplete()
             } else {
                 await this.processNonStreaming(text);
             }
-        } finally {
+        } catch (error) {
             this.isProcessing = false;
+            this.streamComplete = false;
+            throw error;
         }
     }
 
@@ -585,10 +705,16 @@ export abstract class StreamingTTSProvider extends BaseVoiceProvider {
             this.streamingBridge.cancel();
         }
 
+        if (this.processingCompleteTimer) {
+            clearTimeout(this.processingCompleteTimer);
+            this.processingCompleteTimer = null;
+        }
+
         this.resetBatchingState();
         this.isSpeaking = false;
         this.isProcessing = false;
         this.clientAudioPlaying = false;
+        this.clientPlayedDuringProcessing = false;
 
         if (this.streamingSTT) {
             this.streamingSTT.clearTranscript();

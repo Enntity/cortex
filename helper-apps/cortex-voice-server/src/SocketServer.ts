@@ -619,6 +619,14 @@ export class SocketServer {
             // Tell client to stop playing audio immediately (with generation ID for staleness)
             socket.emit('audio:stop', { generationId: sessionData.generationId });
         }
+
+        // Clear any phantom transcript accumulated during idle audio streaming.
+        // The client streams mic audio continuously to keep STT warm — ambient noise
+        // may produce stray text that shouldn't pollute the next real utterance.
+        const provider = sessionData.provider as any;
+        if (typeof provider.onSpeechStart === 'function') {
+            provider.onSpeechStart();
+        }
     }
 
     private async handleSpeechEnd(socket: Socket): Promise<void> {
