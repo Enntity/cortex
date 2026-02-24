@@ -6,7 +6,6 @@
  */
 
 import WebSocket from 'ws';
-import * as fs from 'fs';
 import { StreamingSTT, StreamingSTTConfig } from './StreamingSTT.js';
 
 export interface ElevenLabsSTTConfig extends StreamingSTTConfig {
@@ -23,8 +22,6 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
     private _fatalError: boolean = false;
     private audioChunkCount: number = 0;
     private audioDropCount: number = 0;
-    private debugBuffers: Buffer[] = [];
-    private debugSaved: boolean = false;
 
     constructor(config: ElevenLabsSTTConfig) {
         super(config);
@@ -131,11 +128,6 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
         // ElevenLabs uses message_type field
         const msgType = message.message_type || message.type;
 
-        // Log ALL messages for debugging
-        if (msgType !== 'session_started') {
-            console.log(`[ElevenLabsSTT] Message: type=${msgType}, text="${(message.text || '').substring(0, 80)}", keys=${Object.keys(message).join(',')}`);
-        }
-
         switch (msgType) {
             case 'session_started':
                 console.log('[ElevenLabsSTT] Session started:', message.session_id);
@@ -187,28 +179,6 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
     sendAudio(audioBuffer: Buffer): void {
         if (this.ws && this.isConnected && this.ws.readyState === WebSocket.OPEN) {
             this.audioChunkCount++;
-            if (this.audioChunkCount <= 3 || this.audioChunkCount % 50 === 0) {
-                // Calculate RMS of PCM16 audio to check if it has signal
-                let sumSq = 0;
-                let maxAbs = 0;
-                const sampleCount = audioBuffer.length / 2;
-                for (let i = 0; i < audioBuffer.length - 1; i += 2) {
-                    const sample = audioBuffer.readInt16LE(i);
-                    sumSq += sample * sample;
-                    maxAbs = Math.max(maxAbs, Math.abs(sample));
-                }
-                const rms = Math.sqrt(sumSq / sampleCount);
-                console.log(`[ElevenLabsSTT] Chunk #${this.audioChunkCount}: ${audioBuffer.length} bytes, RMS=${rms.toFixed(1)}, peak=${maxAbs}, samples=${sampleCount}`);
-            }
-            // Capture first 100 chunks for debug WAV
-            if (!this.debugSaved && this.debugBuffers.length < 100) {
-                this.debugBuffers.push(Buffer.from(audioBuffer));
-            }
-            if (!this.debugSaved && this.debugBuffers.length === 100) {
-                this.debugSaved = true;
-                this.saveDebugWav();
-            }
-
             const message = JSON.stringify({
                 message_type: 'input_audio_chunk',
                 audio_base_64: audioBuffer.toString('base64'),
@@ -222,27 +192,6 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
                 console.log(`[ElevenLabsSTT] Dropping chunk #${this.audioDropCount}: ws=${!!this.ws}, connected=${this.isConnected}, readyState=${this.ws?.readyState}`);
             }
         }
-    }
-
-    private saveDebugWav(): void {
-        const data = Buffer.concat(this.debugBuffers);
-        const sampleRate = this.config.sampleRate || 16000;
-        const header = Buffer.alloc(44);
-        header.write('RIFF', 0);
-        header.writeUInt32LE(36 + data.length, 4);
-        header.write('WAVE', 8);
-        header.write('fmt ', 12);
-        header.writeUInt32LE(16, 16);
-        header.writeUInt16LE(1, 20); // PCM
-        header.writeUInt16LE(1, 22); // mono
-        header.writeUInt32LE(sampleRate, 24);
-        header.writeUInt32LE(sampleRate * 2, 28);
-        header.writeUInt16LE(2, 32);
-        header.writeUInt16LE(16, 34);
-        header.write('data', 36);
-        header.writeUInt32LE(data.length, 40);
-        fs.writeFileSync('/tmp/ios_audio_debug.wav', Buffer.concat([header, data]));
-        console.log(`[ElevenLabsSTT] Debug WAV saved: /tmp/ios_audio_debug.wav (${data.length} bytes, ${(data.length / 2 / sampleRate).toFixed(1)}s)`);
     }
 
     async finalize(): Promise<string> {
