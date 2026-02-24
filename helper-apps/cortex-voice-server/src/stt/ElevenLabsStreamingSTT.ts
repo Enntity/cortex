@@ -20,6 +20,8 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
     private pendingFinalize: ((value: string) => void) | null = null;
     private isConnecting: boolean = false;
     private _fatalError: boolean = false;
+    private audioChunkCount: number = 0;
+    private audioDropCount: number = 0;
 
     constructor(config: ElevenLabsSTTConfig) {
         super(config);
@@ -129,6 +131,8 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
         switch (msgType) {
             case 'session_started':
                 console.log('[ElevenLabsSTT] Session started:', message.session_id);
+                this.audioChunkCount = 0;
+                this.audioDropCount = 0;
                 break;
 
             case 'partial_transcript':
@@ -174,6 +178,7 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
 
     sendAudio(audioBuffer: Buffer): void {
         if (this.ws && this.isConnected && this.ws.readyState === WebSocket.OPEN) {
+            this.audioChunkCount++;
             const message = JSON.stringify({
                 message_type: 'input_audio_chunk',
                 audio_base_64: audioBuffer.toString('base64'),
@@ -181,6 +186,11 @@ export class ElevenLabsStreamingSTT extends StreamingSTT {
                 sample_rate: this.config.sampleRate || 16000,
             });
             this.ws.send(message);
+        } else {
+            this.audioDropCount++;
+            if (this.audioDropCount <= 5) {
+                console.log(`[ElevenLabsSTT] Dropping chunk #${this.audioDropCount}: ws=${!!this.ws}, connected=${this.isConnected}, readyState=${this.ws?.readyState}`);
+            }
         }
     }
 
