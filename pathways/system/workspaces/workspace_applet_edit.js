@@ -654,7 +654,7 @@ export default {
         promptDetails: "[]",
     },
     // model: 'oai-gpt41',
-    model: 'gemini-pro-25-vision',
+    model: 'gemini-pro-31-vision',
     timeout: 600,
     stream: true,
 } 

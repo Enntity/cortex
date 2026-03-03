@@ -416,32 +416,6 @@
             "maxReturnTokens": 8192,
             "supportsStreaming": true
         },
-        "gemini-flash-25-vision": {
-            "type": "GEMINI-1.5-VISION",
-            "emulateOpenAIChatModel": "gemini-flash-25",
-            "restStreaming": {
-                "geminiSafetySettings": [
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"}
-                ]
-            },
-            "endpoints": [
-                {
-                    "name": "GLOBAL GEMINI-FLASH-2.5-VISION",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/gemini-2.5-flash",
-                    "headers": {
-                        "Content-Type": "application/json"
-                    },
-                    "requestsPerSecond": 10
-                }
-            ],
-            "requestsPerSecond": 10,
-            "maxTokenLength": 1048576,
-            "maxReturnTokens": 65535,
-            "supportsStreaming": true
-        },
         "gemini-flash-31-image": {
             "type": "GEMINI-3-IMAGE",
             "endpoints": [
@@ -476,24 +450,6 @@
             "maxReturnTokens": 32768,
             "supportsStreaming": true
         },
-        "gemini-pro-3-vision": {
-            "type": "GEMINI-3-REASONING-VISION",
-            "emulateOpenAIChatModel": "gemini-pro-3",
-            "endpoints": [
-                {
-                    "name": "GLOBAL GEMINI-PRO-3.0-VISION",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/gemini-3-pro-preview",
-                    "headers": {
-                        "Content-Type": "application/json"
-                    },
-                    "requestsPerSecond": 10
-                }
-            ],
-            "requestsPerSecond": 10,
-            "maxTokenLength": 1048576,
-            "maxReturnTokens": 65535,
-            "supportsStreaming": true
-        },
         "gemini-pro-31-vision": {
             "type": "GEMINI-3-REASONING-VISION",
             "emulateOpenAIChatModel": "gemini-pro-31",
@@ -519,32 +475,6 @@
                 {
                     "name": "GLOBAL GEMINI-FLASH-3-VISION",
                     "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/gemini-3-flash-preview",
-                    "headers": {
-                        "Content-Type": "application/json"
-                    },
-                    "requestsPerSecond": 10
-                }
-            ],
-            "requestsPerSecond": 10,
-            "maxTokenLength": 1048576,
-            "maxReturnTokens": 65535,
-            "supportsStreaming": true
-        },
-        "gemini-pro-25-vision": {
-            "type": "GEMINI-1.5-VISION",
-            "emulateOpenAIChatModel": "gemini-pro-25",
-            "restStreaming": {
-                "geminiSafetySettings": [
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"}
-                ]
-            },
-            "endpoints": [
-                {
-                    "name": "GLOBAL GEMINI-PRO-2.5-VISION",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/gemini-2.5-pro",
                     "headers": {
                         "Content-Type": "application/json"
                     },

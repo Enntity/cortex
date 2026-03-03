@@ -20,7 +20,7 @@ test('Gemini streaming tool_calls appear as OAI deltas', async (t) => {
   const baseUrl = `http://localhost:${process.env.CORTEX_PORT}/v1`;
 
   // pick a Gemini-compatible model
-  let model = 'gemini-flash-25-vision';
+  let model = 'gemini-flash-3-vision';
   try {
     const res = await got(`${baseUrl}/models`, { responseType: 'json' });
     const ids = (res.body?.data || []).map(m => m.id);

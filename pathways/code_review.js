@@ -9,7 +9,7 @@ export default {
             ]
         })
     ],
-    model: 'gemini-pro-3-vision',
+    model: 'gemini-pro-31-vision',
     tokenRatio: 0.75,
     enableDuplicateRequests: false,
 }
