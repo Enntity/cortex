@@ -95,7 +95,7 @@ const resolver = async (parent, args, contextValue, _info) => {
 const cancelRequestResolver = (parent, args, contextValue, _info) => {
     const { requestId } = args;
     const { requestState } = contextValue;
-    requestState[requestId] = { canceled: true };
+    requestState[requestId] = { ...requestState[requestId], canceled: true };
     return true
 }
 

@@ -54,7 +54,7 @@ export function toAbsWorkspacePath(p) {
 
 async function handleShell(command, args, resolver) {
     const { entityId } = args;
-    const timeoutMs = 130000; // 125s effective + 5s buffer
+    const timeoutMs = 300000; // 5 min
     const result = await workspaceRequest(entityId, '/shell', { command }, { timeoutMs });
 
     return JSON.stringify(result);
@@ -346,7 +346,7 @@ async function handleFilesBackup(tokens, args, resolver) {
     const notes = tokens.slice(2).join(' ') || null;
 
     // 1. Create tarball inside workspace container
-    const backupResult = await workspaceRequest(entityId, '/backup', {}, { timeoutMs: 120000 });
+    const backupResult = await workspaceRequest(entityId, '/backup', {}, { timeoutMs: 300000 });
     if (!backupResult.success || backupResult.error) {
         return JSON.stringify({ success: false, error: backupResult.error || 'Failed to create backup archive' });
     }
@@ -466,7 +466,7 @@ async function handleFilesRestore(tokens, args, resolver) {
         // 3. Extract archive in container
         const restoreResult = await workspaceRequest(entityId, '/restore', {
             archivePath,
-        }, { timeoutMs: 120000 });
+        }, { timeoutMs: 300000 });
 
         if (!restoreResult.success) {
             return JSON.stringify({ success: false, error: restoreResult.error || 'Failed to extract backup' });
