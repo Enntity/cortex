@@ -237,7 +237,7 @@ async function generateImage(args, pathwayResolver, chatId) {
     // Select model based on nsfw flag
     // SFW: Gemini Flash Image (nano-banana) - fast and high quality
     // NSFW: Flux (replicate) - supports adult content
-    const model = args.nsfw ? "replicate-flux-dev" : "gemini-flash-25-image";
+    const model = args.nsfw ? "replicate-flux-dev" : "gemini-flash-31-image";
     const pathwayName = args.nsfw ? "image_flux" : "image_gemini_25";
 
     const params = {

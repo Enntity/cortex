@@ -442,12 +442,12 @@
             "maxReturnTokens": 65535,
             "supportsStreaming": true
         },
-        "gemini-flash-25-image": {
-            "type": "GEMINI-2.5-IMAGE",
+        "gemini-flash-31-image": {
+            "type": "GEMINI-3-IMAGE",
             "endpoints": [
                 {
-                    "name": "GLOBAL GEMINI-FLASH-2.5-IMAGE",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/gemini-2.5-flash-image-preview",
+                    "name": "GLOBAL GEMINI-3.1-FLASH-IMAGE",
+                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/gemini-3.1-flash-image-preview",
                     "headers": {
                         "Content-Type": "application/json"
                     },
@@ -455,8 +455,8 @@
                 }
             ],
             "requestsPerSecond": 10,
-            "maxTokenLength": 32768,
-            "maxReturnTokens": 16384,
+            "maxTokenLength": 131072,
+            "maxReturnTokens": 32768,
             "supportsStreaming": true
         },
         "gemini-pro-3-image": {
