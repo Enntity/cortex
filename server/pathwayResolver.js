@@ -838,7 +838,8 @@ class PathwayResolver {
 
         let anticipatedRequestCount = chunks.length * this.prompts.length   
 
-        if ((requestState[this.requestId] || {}).canceled) {
+        if ((requestState[this.requestId] || {}).canceled ||
+            (this.rootRequestId && (requestState[this.rootRequestId] || {}).canceled)) {
             throw new Error('Request canceled');
         }
 
@@ -953,7 +954,8 @@ class PathwayResolver {
     }
 
     async applyPrompt(prompt, text, parameters) {
-        if (requestState[this.requestId].canceled) {
+        if ((requestState[this.requestId] || {}).canceled ||
+            (this.rootRequestId && (requestState[this.rootRequestId] || {}).canceled)) {
             return;
         }
         let result = '';

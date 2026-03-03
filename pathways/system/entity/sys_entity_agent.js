@@ -268,6 +268,22 @@ function makeErrorHandler(args, resolver) {
         const errorMessage = error?.message || (resolver.errors.length > 0
             ? resolver.errors.join(', ')
             : 'Model request failed - no response received');
+
+        // User-initiated cancel — log cleanly and close the stream without generating an error response
+        if (errorMessage === 'Request canceled') {
+            const rid = getRequestId(resolver);
+            logEvent(rid, 'request.cancel', { phase: 'tool_loop', budgetUsed: resolver.toolBudgetUsed || 0, toolRounds: resolver.toolCallRound || 0 });
+            resolver.errors = [];
+            publishRequestProgress({
+                requestId: rid,
+                progress: 1,
+                data: '',
+                info: JSON.stringify(resolver.pathwayResultData || {}),
+                error: ''
+            });
+            return '';
+        }
+
         logEventError(getRequestId(resolver), 'request.error', { phase: 'model_call', error: errorMessage });
         const errorResponse = await generateErrorResponse(new Error(errorMessage), args, resolver);
         resolver.errors = [];
@@ -1302,6 +1318,18 @@ export default {
 
             return response;
         } catch (e) {
+            // User-initiated cancel — log cleanly and close without error response
+            if (e.message === 'Request canceled') {
+                logEvent(rid, 'request.cancel', { durationMs: Date.now() - requestStartTime, budgetUsed: resolver.toolBudgetUsed || 0, toolRounds: resolver.toolCallRound || 0 });
+                resolver.errors = [];
+                if (args.stream) {
+                    publishRequestProgress({
+                        requestId: rid, progress: 1, data: '', info: JSON.stringify(resolver.pathwayResultData || {}), error: ''
+                    });
+                }
+                return '';
+            }
+
             const usage = summarizeUsage(resolver.pathwayResultData?.usage);
             logEventError(rid, 'request.error', { phase: 'executePathway', error: e.message, durationMs: Date.now() - requestStartTime, ...(usage && { tokens: usage }) });
             const errorResponse = await generateErrorResponse(e, args, resolver);
