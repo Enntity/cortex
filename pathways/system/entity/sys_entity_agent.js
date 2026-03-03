@@ -9,7 +9,7 @@ const TOOL_TIMEOUT_MS = 120000;
 const MAX_TOOL_RESULT_LENGTH = 150000;
 const CONTEXT_COMPRESSION_THRESHOLD = 0.7;
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000;
-const TOOL_LOOP_MODEL = 'claude-45-haiku';
+const TOOL_LOOP_MODEL = 'xai-grok-4-1-fast-non-reasoning';
 const MAX_GATE_RETRIES = 2;
 const MAX_REPLAN_SAFETY_CAP = 10;
 
