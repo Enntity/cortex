@@ -14,6 +14,7 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
         this.toolCallsBuffer = [];
         this.contentBuffer = '';
         this.hadToolCalls = false;
+        this._currentResponseId = null;
     }
 
     // Override the convertMessagesToGemini method to handle multimodal vision messages
@@ -444,12 +445,17 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
         requestProgress = requestProgress || {};
         requestProgress.data = requestProgress.data || null;
         
-        // Reset tool calls flag for new stream
-        if (!requestProgress.started) {
+        // Reset state for a genuinely new stream (new responseId = new model response).
+        // Gemini includes a unique responseId in every SSE event of the same response.
+        // Only reset when a NEW responseId is seen, so tool calls accumulate across
+        // events within the same model response (e.g. Gemini 3 Flash sends each
+        // functionCall as a separate SSE event).
+        const responseId = eventData.responseId;
+        if (responseId && responseId !== this._currentResponseId) {
+            this._currentResponseId = responseId;
             this.hadToolCalls = false;
             this.toolCallsBuffer = [];
-            // Don't clear contentBuffer here - it should accumulate across all chunks
-            // this.contentBuffer = '';
+            this.contentBuffer = '';
         }
         
         // Create a helper function to generate message chunks

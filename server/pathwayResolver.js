@@ -407,6 +407,26 @@ class PathwayResolver {
                 logger.error(`Could not subscribe to stream: ${error instanceof Error ? error.stack || error.message : JSON.stringify(error)}`);
             }
 
+            // Safety net: if the stream ended without a finishReason but the plugin
+            // has pending tool calls that were never dispatched, dispatch them now.
+            // This handles edge-case models that never send finishReason: "STOP".
+            if (!toolCallbackInvoked && !completionSent && !streamErrorOccurred) {
+                const plugin = this.modelExecutor.plugin;
+                if (plugin.hadToolCalls && plugin.toolCallsBuffer?.length > 0 && plugin.pathwayToolCallback) {
+                    const validToolCalls = plugin.toolCallsBuffer.filter(tc => tc?.function?.name);
+                    if (validToolCalls.length > 0) {
+                        const toolMessage = {
+                            role: 'assistant',
+                            content: plugin.contentBuffer || '',
+                            tool_calls: validToolCalls,
+                        };
+                        plugin.pathwayToolCallback(this.args, toolMessage, this);
+                        toolCallbackInvoked = true;
+                        plugin.toolCallsBuffer = [];
+                    }
+                }
+            }
+
             // Detect empty stream (opened but closed with no data) - this should be retried
             const emptyStream = !receivedAnyData && !streamErrorOccurred && !toolCallbackInvoked;
 
