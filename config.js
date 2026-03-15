@@ -276,6 +276,31 @@ var config = convict({
         format: String,
         default: '10g',
         env: 'WORKSPACE_DISK_SIZE'
+    },
+    workspaceImageVersion: {
+        format: String,
+        default: '',
+        env: 'WORKSPACE_IMAGE_VERSION'
+    },
+    workspaceIdleTimeoutMs: {
+        format: 'nat',
+        default: 30 * 60 * 1000,
+        env: 'WORKSPACE_IDLE_TIMEOUT_MS'
+    },
+    workspaceBackend: {
+        format: String,
+        default: 'docker',
+        env: 'WORKSPACE_BACKEND'
+    },
+    dockerHost: {
+        format: String,
+        default: '',
+        env: 'DOCKER_HOST'
+    },
+    workspaceHost: {
+        format: String,
+        default: '',
+        env: 'WORKSPACE_HOST'
     }
 });
 

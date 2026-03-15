@@ -86,6 +86,7 @@ export async function getStatus() {
 /**
  * Create a tarball backup of /workspace.
  * Returns the path and size of the created archive.
+ * Excludes /workspace/files/ which may be a FUSE mount or external storage.
  */
 export async function createBackup() {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -93,7 +94,7 @@ export async function createBackup() {
 
     try {
         execSync(
-            `tar czf "${backupPath}" -C /workspace .`,
+            `tar czf "${backupPath}" --exclude='./files' -C /workspace .`,
             { encoding: 'utf8', timeout: 120000 }
         );
 
@@ -138,11 +139,15 @@ export async function restoreBackup(archivePath) {
 
 /**
  * Reset workspace: wipe /workspace except preserved paths.
+ * Always preserves /workspace/files/ which may be external storage.
  */
 export async function resetWorkspace(preservePaths = []) {
     const workspaceDir = '/workspace';
 
     const preserveSet = new Set(preservePaths.map(p => p.replace(/^\/workspace\/?/, '').replace(/\/$/, '')));
+
+    // Always preserve /workspace/files — it may be external storage
+    preserveSet.add('files');
 
     try {
         const entries = await fs.readdir(workspaceDir);

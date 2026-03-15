@@ -2,10 +2,12 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { requireAuth } from './lib/auth.js';
-import { execSync, execBackground, getResult } from './lib/shell.js';
+import { requireAuth, setSecret } from './lib/auth.js';
+import { execSync, execBackground, getResult, listBackgroundJobs } from './lib/shell.js';
 import { readFile, writeFile, editFile, browseDir } from './lib/files.js';
 import { getStatus, resetWorkspace, createBackup, restoreBackup } from './lib/system.js';
+
+const { version } = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3100', 10);
@@ -18,7 +20,7 @@ app.use(express.json({ limit: '10mb' }));
 // --- Unauthenticated ---
 
 app.get('/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    res.json({ status: 'ok', version });
 });
 
 // --- Authenticated routes ---
@@ -48,6 +50,11 @@ app.post('/shell', wrap(async (req, res) => {
 // Poll background process result
 app.get('/shell/result/:processId', (req, res) => {
     res.json(getResult(req.params.processId));
+});
+
+// List all background processes
+app.get('/shell/jobs', (_req, res) => {
+    res.json(listBackgroundJobs());
 });
 
 // Read file
@@ -160,6 +167,46 @@ app.post('/upload', wrap(async (req, res) => {
 
     const stat = await fs.promises.stat(filePath);
     res.json({ path: filePath, bytesWritten: stat.size });
+}));
+
+// Reconfigure — rotates secret, injects env vars at runtime.
+// Used by the warm pool: a pool container starts "clean" and gets reconfigured
+// when claimed by a specific entity.
+app.post('/reconfigure', wrap(async (req, res) => {
+    const { secret, env } = req.body;
+
+    // 1. Inject environment variables (optional)
+    if (env && typeof env === 'object') {
+        const SAFE_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+        const envContent = Object.entries(env)
+            .filter(([k]) => SAFE_KEY.test(k))
+            .map(([k, v]) => {
+                const escaped = String(v).replace(/'/g, "'\\''");
+                return `export ${k}='${escaped}'`;
+            })
+            .join('\n') + '\n';
+
+        fs.writeFileSync('/workspace/.env', envContent);
+
+        // Ensure .bashrc sources .env
+        const sourceLine = '[ -f /workspace/.env ] && . /workspace/.env';
+        const bashrcPath = path.join(process.env.HOME || '/root', '.bashrc');
+        try {
+            const bashrc = fs.existsSync(bashrcPath) ? fs.readFileSync(bashrcPath, 'utf8') : '';
+            if (!bashrc.includes(sourceLine)) {
+                fs.appendFileSync(bashrcPath, '\n' + sourceLine + '\n');
+            }
+        } catch {
+            // Best-effort
+        }
+    }
+
+    // 2. Rotate secret (done LAST so caller can retry with old secret if step 1 fails)
+    if (secret && typeof secret === 'string') {
+        setSecret(secret);
+    }
+
+    res.json({ success: true });
 }));
 
 // Global error handler — async rejections now route here via wrap()

@@ -1,6 +1,6 @@
 // sys_tool_workspace_ssh.js
 // Consolidated workspace tool — one shell interface replaces 14 individual tools.
-// Built-in pseudo-commands: files push/pull/backup/restore, bg, poll, reset.
+// Built-in pseudo-commands: files push/pull/backup/restore, bg, poll, jobs, reset.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -50,12 +50,34 @@ export function toAbsWorkspacePath(p) {
     return p.startsWith('/') ? p : `/workspace/${p}`;
 }
 
+/**
+ * Extract the last non-empty, non-hint line from stderr — usually the actual
+ * error message (e.g. "ModuleNotFoundError: No module named 'sympy'").
+ */
+function lastMeaningfulLine(stderr) {
+    if (!stderr) return null;
+    const lines = stderr.split('\n')
+        .map(l => l.trim())
+        .filter(l => l && !l.startsWith('hint:') && !l.startsWith('note:'));
+    return lines[lines.length - 1] || null;
+}
+
 // --- Handlers ---
 
 async function handleShell(command, args, resolver) {
-    const { entityId } = args;
-    const timeoutMs = 300000; // 5 min
+    const { entityId, timeoutSeconds } = args;
+    const timeoutMs = timeoutSeconds ? timeoutSeconds * 1000 : 300000; // default 5 min
     const result = await workspaceRequest(entityId, '/shell', { command }, { timeoutMs });
+
+    if (!result.success && !result.error) {
+        result.error = lastMeaningfulLine(result.stderr)
+            || `Command failed (exit code ${result.exitCode})`;
+    }
+
+    // Hint when a failed command looks like it tried to use bg/poll as bash commands
+    if (!result.success && /\bbg\s+|poll\s+[0-9a-f]/i.test(command)) {
+        result.hint = '`bg` and `poll` are built-in commands of this tool, not bash commands. They must be the entire command string — e.g. command: "bg python train.py", not inside scripts or chained with && or ;.';
+    }
 
     return JSON.stringify(result);
 }
@@ -67,12 +89,32 @@ async function handleBg(rawBgCommand, args, resolver) {
         background: true,
     }, { timeoutMs: 15000 });
 
+    if (!result.success && !result.error) {
+        result.error = lastMeaningfulLine(result.stderr)
+            || `Command failed (exit code ${result.exitCode})`;
+    }
+
     return JSON.stringify(result);
 }
 
 async function handlePoll(processId, args, resolver) {
     const { entityId } = args;
     const result = await workspaceRequest(entityId, `/shell/result/${encodeURIComponent(processId)}`, null, {
+        method: 'GET',
+        timeoutMs: 10000,
+    });
+
+    if (!result.success && !result.error) {
+        result.error = lastMeaningfulLine(result.stderr)
+            || `Command failed (exit code ${result.exitCode})`;
+    }
+
+    return JSON.stringify(result);
+}
+
+async function handleJobs(args) {
+    const { entityId } = args;
+    const result = await workspaceRequest(entityId, '/shell/jobs', null, {
         method: 'GET',
         timeoutMs: 10000,
     });
@@ -178,7 +220,7 @@ async function handleFilesPush(tokens, args, resolver) {
 
         const files = (expandResult.stdout || '').split('\n').map(l => l.trim()).filter(Boolean);
         if (files.length === 0) {
-    
+
             return JSON.stringify({ success: false, error: `No files matched: ${workspacePath}` });
         }
 
@@ -436,7 +478,7 @@ async function handleFilesRestore(tokens, args, resolver) {
         return JSON.stringify({ success: false, error: `No URL available for backup "${foundFile.displayFilename || fileRef}"` });
     }
 
-    // Stream download from cloud → Cortex temp file → stream upload to container
+    // Stream download from cloud -> Cortex temp file -> stream upload to container
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-restore-'));
     const tempFile = path.join(tempDir, 'restore.tar.gz');
     const archivePath = '/tmp/workspace-restore.tar.gz';
@@ -516,7 +558,7 @@ async function handleReset(tokens, args, resolver) {
     if (destroy) {
         const entityConfig = await loadEntityConfig(entityId);
         if (!entityConfig) {
-    
+
             return JSON.stringify({ success: false, error: 'Entity not found' });
         }
 
@@ -571,6 +613,10 @@ function routeCommand(command) {
         return { handler: handlePoll, processId };
     }
 
+    if (first === 'jobs') {
+        return { handler: handleJobs };
+    }
+
     if (first === 'reset') {
         return { handler: handleReset, tokens };
     }
@@ -593,9 +639,11 @@ export default {
 • files push <path|glob> [name] — upload file(s) to your file collection. Supports globs: files push *.jpg
 • files pull <fileRef|glob> [dest] — download from file collection to workspace. Supports globs: files pull *.jpg /dest/
 • files backup [notes] / files restore <ref> — snapshot or restore entire workspace
-• bg <cmd> — run in background, returns processId. poll <id> — check result
+• bg <cmd> — run in background, returns processId. poll <id> — check result. jobs — list all background processes
 • reset [--preserve .env] — wipe workspace contents
-Everything else runs as bash. Both relative and absolute paths work.`,
+Everything else runs as bash. Both relative and absolute paths work.
+
+IMPORTANT: bg, poll, jobs, and reset are built-in commands — they must be the ENTIRE command string. Do not chain them with && or embed in scripts.`,
             parameters: {
                 type: 'object',
                 properties: {
@@ -606,6 +654,10 @@ Everything else runs as bash. Both relative and absolute paths work.`,
                     userMessage: {
                         type: 'string',
                         description: 'Brief display message',
+                    },
+                    timeoutSeconds: {
+                        type: 'number',
+                        description: 'Optional timeout in seconds for long-running commands. Defaults to 300 (5 min).',
                     },
                 },
                 required: ['command', 'userMessage'],
@@ -637,11 +689,15 @@ Everything else runs as bash. Both relative and absolute paths work.`,
                 return route.handler(route.processId, args, resolver);
             }
 
+            if (route.handler === handleJobs) {
+                return route.handler(args);
+            }
+
             // files and reset handlers receive tokens
             return route.handler(route.tokens, args, resolver);
         } catch (e) {
             logger.error(`WorkspaceSSH error: ${e.message}`);
-    
+
             return JSON.stringify({ success: false, error: e.message });
         }
     },
