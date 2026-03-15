@@ -872,11 +872,22 @@ async function flushActivityToMongo() {
     }
 }
 
-// Combined interval: flush activity timestamps then reap idle workspaces
+// Combined interval: flush activity, reap idle workspaces, check host health
 const _reaperTimer = setInterval(async () => {
     try {
         await flushActivityToMongo();
         await reapIdleWorkspaces();
+
+        // Run host health checks if using Hetzner backend
+        if (config.get('workspaceBackend') === 'hetzner') {
+            try {
+                const backend = await getBackend();
+                if (backend.checkHostHealth) await backend.checkHostHealth();
+                if (backend.reconcileContainerCounts) await backend.reconcileContainerCounts();
+            } catch (e) {
+                logger.error(`Host health check failed: ${e.message}`);
+            }
+        }
     } catch (e) {
         logger.error(`Workspace reaper tick failed: ${e.message}`);
     }

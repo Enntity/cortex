@@ -301,6 +301,47 @@ var config = convict({
         format: String,
         default: '',
         env: 'WORKSPACE_HOST'
+    },
+    hetznerApiToken: {
+        format: String,
+        default: '',
+        env: 'HETZNER_API_TOKEN',
+        sensitive: true
+    },
+    hetznerLocation: {
+        format: String,
+        default: 'fsn1',
+        env: 'HETZNER_LOCATION'
+    },
+    hetznerServerType: {
+        format: String,
+        default: 'cx22',
+        env: 'HETZNER_SERVER_TYPE'
+    },
+    hetznerFirewallId: {
+        format: String,
+        default: '',
+        env: 'HETZNER_FIREWALL_ID'
+    },
+    hetznerSshKeyId: {
+        format: String,
+        default: '',
+        env: 'HETZNER_SSH_KEY_ID'
+    },
+    hetznerPrivateNetworkId: {
+        format: String,
+        default: '',
+        env: 'HETZNER_PRIVATE_NETWORK_ID'
+    },
+    hetznerMaxContainersPerHost: {
+        format: 'nat',
+        default: 50,
+        env: 'HETZNER_MAX_CONTAINERS_PER_HOST'
+    },
+    hetznerScaleUpThreshold: {
+        format: Number,
+        default: 0.8,
+        env: 'HETZNER_SCALE_UP_THRESHOLD'
     }
 });
 

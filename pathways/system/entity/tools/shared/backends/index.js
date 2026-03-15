@@ -17,8 +17,8 @@ export async function getBackend() {
     const backendType = config.get('workspaceBackend');
 
     if (backendType === 'hetzner') {
-        // Future: HetznerBackend for multi-host scaling
-        throw new Error('Hetzner backend not yet implemented — use "docker" backend');
+        const { default: HetznerBackend } = await import('./HetznerBackend.js');
+        _backend = new HetznerBackend();
     } else {
         const { default: DockerBackend } = await import('./DockerBackend.js');
         _backend = new DockerBackend();
