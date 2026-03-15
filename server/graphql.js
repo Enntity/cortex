@@ -218,6 +218,9 @@ const build = async (config) => {
         res.status(200).send('OK');
     });
 
+    // Workspace host pool admin endpoints (lazy-loaded, auth-gated internally)
+    app.use('/admin/workspace-hosts', (await import('./workspaceAdmin.js')).default);
+
     // If CORTEX_API_KEY is set, we roll our own auth middleware - usually not used if you're being fronted by a proxy
     const cortexApiKeys = config.get('cortexApiKeys');
     if (cortexApiKeys && Array.isArray(cortexApiKeys)) {
