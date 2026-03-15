@@ -415,8 +415,12 @@ async function _doProvision(entityId, entityConfig) {
  * @returns {Promise<{containerName: string, shareName: string, url: string, bootstrapSecret: string, containerId: string}>}
  */
 async function createGenericContainer(entityId, backend, options = {}) {
-    const containerName = `workspace-${entityId}`;
-    const shareName = options.shareName || containerName;
+    // Sanitize entityId to prevent injection in container/volume names
+    const safeId = entityId.replace(/[^a-zA-Z0-9_.-]/g, '');
+    const containerName = `workspace-${safeId}`;
+    const shareName = options.shareName
+        ? options.shareName.replace(/[^a-zA-Z0-9_.-]/g, '')
+        : containerName;
     const bootstrapSecret = crypto.randomBytes(32).toString('hex');
     const image = resolveWorkspaceImage();
     const cpus = parseFloat(config.get('workspaceCpus'));
