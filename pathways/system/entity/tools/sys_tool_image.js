@@ -1,12 +1,9 @@
 // sys_tool_image.js
 // Entity tool that creates and modifies images for the entity to show to the user
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { uploadFileToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, loadFileCollection, findFileInCollection, ensureShortLivedUrl } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, loadFileCollection, findFileInCollection, getSignedFileUrl } from '../../../../lib/fileUtils.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
 import { getEntityStore } from '../../../../lib/MongoEntityStore.js';
-import { config } from '../../../../config.js';
-
-const MEDIA_API_URL = config.get('whisperMediaApiUrl');
 
 export default {
     prompt: [],
@@ -74,13 +71,13 @@ export default {
                 // Get base avatar image from entity record
                 const baseAvatar = entityConfig.avatar?.image;
                 if (baseAvatar && baseAvatar.url) {
-                    // Refresh SAS token for external service consumption
-                    if (baseAvatar.hash && MEDIA_API_URL) {
-                        const refreshed = await ensureShortLivedUrl(baseAvatar, MEDIA_API_URL, baseAvatar.contextId || null);
-                        resolvedBaseAvatarImage = refreshed.url;
-                    } else {
-                        resolvedBaseAvatarImage = baseAvatar.url;
+                    // Get a signed URL if the avatar URL is a gs:// URL
+                    let avatarUrl = baseAvatar.url;
+                    if (avatarUrl.startsWith('gs://')) {
+                        const signedUrl = await getSignedFileUrl(avatarUrl);
+                        if (signedUrl) avatarUrl = signedUrl;
                     }
+                    resolvedBaseAvatarImage = avatarUrl;
                 } else {
                     // No base avatar exists - will generate from scratch
                     needsBaseAvatarSet = true;

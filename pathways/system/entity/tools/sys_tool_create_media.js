@@ -3,12 +3,10 @@
 // Replaces: GenerateImage, ModifyImage, CreateAvatarVariant, GenerateVideo
 
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { uploadFileToCloud, uploadImageToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, ensureShortLivedUrl } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, uploadImageToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, getSignedFileUrl } from '../../../../lib/fileUtils.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
 import { config } from '../../../../config.js';
 import axios from 'axios';
-
-const MEDIA_API_URL = config.get('whisperMediaApiUrl');
 
 /**
  * Download a file from GCS using authenticated request
@@ -162,13 +160,13 @@ Videos are 8-second clips with AI audio. Use sparingly - video is slow and expen
 
                 const baseAvatar = entityConfig.avatar?.image;
                 if (baseAvatar?.url) {
-                    // Refresh SAS token for external service consumption
-                    if (baseAvatar.hash && MEDIA_API_URL) {
-                        const refreshed = await ensureShortLivedUrl(baseAvatar, MEDIA_API_URL, baseAvatar.contextId || null);
-                        resolvedReferenceImages.push(refreshed.url);
-                    } else {
-                        resolvedReferenceImages.push(baseAvatar.url);
+                    // Get a signed URL if the avatar URL is a gs:// URL
+                    let avatarUrl = baseAvatar.url;
+                    if (avatarUrl.startsWith('gs://')) {
+                        const signedUrl = await getSignedFileUrl(avatarUrl);
+                        if (signedUrl) avatarUrl = signedUrl;
                     }
+                    resolvedReferenceImages.push(avatarUrl);
                 }
                 // If no base avatar, we'll generate from scratch but they'll look generic
             }

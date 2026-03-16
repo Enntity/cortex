@@ -80,13 +80,12 @@ test("GET without params returns 400", async (t) => {
   t.truthy(data.error);
 });
 
-// ─── GET: checkHash without hash returns 400 ────────────────────────────────
+// ─── GET: signUrl without url returns 400 ────────────────────────────────────
 
-test("GET checkHash without hash returns 400", async (t) => {
-  const { status, data } = await request("GET", "/api/CortexFileHandler?checkHash=true");
+test("GET signUrl without url returns 400", async (t) => {
+  const { status, data } = await request("GET", "/api/CortexFileHandler?operation=signUrl");
   t.is(status, 400);
   t.truthy(data.error);
-  t.regex(data.error, /hash/i);
 });
 
 // ─── DELETE: missing params returns 400 ──────────────────────────────────────
@@ -143,26 +142,15 @@ test("PATCH returns 405", async (t) => {
   t.truthy(data.error);
 });
 
-// ─── GET: checkHash with nonexistent hash ────────────────────────────────────
+// ─── GET: signUrl with invalid URL returns 400 ──────────────────────────────
 
-test.serial("GET checkHash with nonexistent hash returns 404 or error", async (t) => {
-  // This will fail if GCS is not configured, which is expected in CI
-  const origBucket = process.env.GCS_BUCKETNAME;
-  process.env.GCS_BUCKETNAME = "test-bucket-nonexistent";
-
-  const { status } = await request(
+test("GET signUrl with non-gs:// URL returns error", async (t) => {
+  const { status, data } = await request(
     "GET",
-    "/api/CortexFileHandler?checkHash=true&hash=nonexistent123"
+    "/api/CortexFileHandler?operation=signUrl&url=https://example.com/file.txt"
   );
-
-  // Either 404 (not found) or 500 (no GCS creds) — both are valid in test
-  t.true(status === 404 || status === 500);
-
-  if (origBucket !== undefined) {
-    process.env.GCS_BUCKETNAME = origBucket;
-  } else {
-    delete process.env.GCS_BUCKETNAME;
-  }
+  // Should return 400 (invalid URL) or 500
+  t.true(status >= 400);
 });
 
 // ─── DELETE: with hash but no GCS ────────────────────────────────────────────

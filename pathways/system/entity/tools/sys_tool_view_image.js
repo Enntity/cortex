@@ -1,8 +1,7 @@
 // sys_tool_view_image.js
 // Tool pathway that allows agents to view image files from the file collection
 import logger from '../../../../lib/logger.js';
-import { loadFileCollection, findFileInCollection, ensureShortLivedUrl } from '../../../../lib/fileUtils.js';
-import { config } from '../../../../config.js';
+import { loadFileCollection, findFileInCollection, getSignedFileUrl } from '../../../../lib/fileUtils.js';
 
 export default {
     prompt: [],
@@ -73,17 +72,20 @@ export default {
                     continue;
                 }
 
-                // Resolve to short-lived URL if possible
-                const fileHandlerUrl = config.get('whisperMediaApiUrl');
-                const fileWithShortLivedUrl = await ensureShortLivedUrl(foundFile, fileHandlerUrl, args.contextId || null);
+                // Resolve to signed URL if the URL is a gs:// URL
+                let resolvedUrl = foundFile.url;
+                if (resolvedUrl && resolvedUrl.startsWith('gs://')) {
+                    const signedUrl = await getSignedFileUrl(resolvedUrl);
+                    if (signedUrl) resolvedUrl = signedUrl;
+                }
 
                 // Add to imageUrls array
                 imageUrls.push({
                     type: "image_url",
-                    url: fileWithShortLivedUrl.url,
-                    gcs: fileWithShortLivedUrl.gcs,
-                    image_url: { url: fileWithShortLivedUrl.url },
-                    hash: fileWithShortLivedUrl.hash
+                    url: resolvedUrl,
+                    gcs: foundFile.gcs,
+                    image_url: { url: resolvedUrl },
+                    hash: foundFile.hash
                 });
 
                 foundFilenames.push(foundFile.filename || file);

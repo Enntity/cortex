@@ -285,14 +285,9 @@ async function handleGet(req, res) {
     return await handleListFolder(params, res);
   }
 
-  // checkHash
-  if (params.checkHash === "true" || params.checkHash === true) {
-    return await handleCheckHash(params, res);
-  }
-
-  // Generate signed URL for existing file by hash
-  if (params.shortLivedMinutes && params.hash) {
-    return await handleGenerateSignedUrl(params, res);
+  // signUrl — generate a signed URL for a gs:// URL
+  if (operation === "signUrl") {
+    return await handleSignUrl(params, res);
   }
 
   // Fetch/load/restore remote URL
@@ -315,76 +310,23 @@ async function handleListFolder(params, res) {
   res.status(200).json(files);
 }
 
-async function handleCheckHash(params, res) {
-  const hash = params.hash;
-  if (!hash) {
-    return res.status(400).json({ error: "Missing hash parameter" });
+async function handleSignUrl(params, res) {
+  const gcsUrlParam = params.url;
+  if (!gcsUrlParam || !gcsUrlParam.startsWith("gs://")) {
+    return res.status(400).json({ error: "Missing or invalid url parameter (must be a gs:// URL)" });
   }
 
-  const userId = params.contextId || params.userId || null;
-  const chatId = params.chatId || null;
-  const fileScope = params.fileScope || null;
-  const minutes = parseInt(params.shortLivedMinutes) || DEFAULT_SIGNED_MINUTES;
+  const minutes = parseInt(params.minutes) || DEFAULT_SIGNED_MINUTES;
 
-  const folderPath = constructFolderPath({ userId, chatId, fileScope });
-
-  // Search for file with this hash prefix in the folder
-  let blobName = await findByHash(hash, folderPath);
-
-  // If not found in scoped folder, try root as fallback
-  if (!blobName && folderPath) {
-    blobName = await findByHash(hash, "");
-  }
-
-  if (!blobName) {
-    return res.status(404).json({ error: `Hash ${hash} not found` });
-  }
-
-  const url = gcsUrl(blobName);
-  const exists = await fileExists(url);
+  const exists = await fileExists(gcsUrlParam);
   if (!exists) {
-    return res.status(404).json({ error: `Hash ${hash} not found in storage` });
+    return res.status(404).json({ error: `File not found: ${gcsUrlParam}` });
   }
 
-  const shortLivedUrl = await getSignedUrl(url, minutes);
-  const basename = path.basename(blobName);
-  const underscoreIdx = basename.indexOf("_");
-  const filename = underscoreIdx >= 0 ? basename.slice(underscoreIdx + 1) : basename;
+  const shortLivedUrl = await getSignedUrl(gcsUrlParam, minutes);
 
   res.status(200).json({
-    message: `File '${filename}' uploaded successfully.`,
-    filename,
-    url,
-    hash,
-    shortLivedUrl,
-    expiresInMinutes: minutes,
-    timestamp: new Date().toISOString(),
-  });
-}
-
-async function handleGenerateSignedUrl(params, res) {
-  const hash = params.hash;
-  const minutes = parseInt(params.shortLivedMinutes) || DEFAULT_SIGNED_MINUTES;
-  const userId = params.contextId || params.userId || null;
-  const chatId = params.chatId || null;
-  const fileScope = params.fileScope || null;
-
-  const folderPath = constructFolderPath({ userId, chatId, fileScope });
-  let blobName = await findByHash(hash, folderPath);
-  if (!blobName && folderPath) {
-    blobName = await findByHash(hash, "");
-  }
-
-  if (!blobName) {
-    return res.status(404).json({ error: `Hash ${hash} not found` });
-  }
-
-  const url = gcsUrl(blobName);
-  const shortLivedUrl = await getSignedUrl(url, minutes);
-
-  res.status(200).json({
-    url,
-    hash,
+    url: gcsUrlParam,
     shortLivedUrl,
     expiresInMinutes: minutes,
   });
