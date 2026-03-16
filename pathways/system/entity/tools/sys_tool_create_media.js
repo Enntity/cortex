@@ -451,6 +451,7 @@ async function processImageArtifacts(result, args, pathwayResolver, chatId, acti
                 uploadResult = await uploadImageToCloud(
                     artifact.data,
                     mimeType,
+                    null,
                     pathwayResolver,
                     args.contextId
                 );

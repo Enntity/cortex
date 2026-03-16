@@ -136,62 +136,28 @@ export default {
                 for (const artifact of pathwayResolver.pathwayResultData.artifacts) {
                     if (artifact.type === 'image' && artifact.data && artifact.mimeType) {
                         try {
-                            // Upload image to cloud storage (returns {url, gcs, hash})
-                            const uploadResult = await uploadImageToCloud(artifact.data, artifact.mimeType, pathwayResolver, args.contextId);
-                            
-                            const imageUrl = uploadResult.url || uploadResult;
-                            const imageGcs = uploadResult.gcs || null;
-                            const imageHash = uploadResult.hash || null;
+                            // Upload image to cloud storage (returns {url, filename, shortLivedUrl})
+                            const uploadResult = await uploadImageToCloud(artifact.data, artifact.mimeType, null, pathwayResolver, args.contextId);
+
+                            const imageUrl = uploadResult.shortLivedUrl || uploadResult.url || uploadResult;
+                            const imageFilename = uploadResult.filename || null;
                             
                             // Prepare image data
+                            const extension = artifact.mimeType.split('/')[1] || 'png';
+                            const prefix = (args.filenamePrefix || 'presentation-slide').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+                            const slideFilename = `${prefix}-${Date.now()}-${uploadedImages.length}.${extension}`;
+
                             const imageData = {
                                 type: 'image',
                                 url: imageUrl,
-                                gcs: imageGcs,
-                                hash: imageHash,
+                                filename: imageFilename || slideFilename,
                                 mimeType: artifact.mimeType
                             };
-                            
-                            // Add uploaded image to file collection if contextId is available
+
+                            // Upload is already done — file is in GCS
                             if (args.contextId && imageUrl) {
                                 try {
-                                    // Generate filename from mimeType (e.g., "image/png" -> "png")
-                                    const extension = artifact.mimeType.split('/')[1] || 'png';
-                                    // Use hash for uniqueness if available, otherwise use timestamp and index
-                                    const uniqueId = imageHash ? imageHash.substring(0, 8) : `${Date.now()}-${uploadedImages.length}`;
-                                    
-                                    // Determine filename prefix
-                                    const defaultPrefix = 'presentation-slide';
-                                    const filenamePrefix = args.filenamePrefix || defaultPrefix;
-                                    
-                                    // Sanitize the prefix to ensure it's a valid filename component
-                                    const sanitizedPrefix = filenamePrefix.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-                                    const filename = `${sanitizedPrefix}-${uniqueId}.${extension}`;
-                                    
-                                    // Merge provided tags with default tags
-                                    const defaultTags = ['presentation', 'generated'];
-                                    const providedTags = Array.isArray(args.tags) ? args.tags : [];
-                                    const allTags = [...defaultTags, ...providedTags.filter(tag => !defaultTags.includes(tag))];
-                                    
-                                    // Use the centralized utility function to add to collection - capture returned entry
-                                    const fileEntry = await addFileToCollection(
-                                        args.contextId,
-                                        args.contextKey || '',
-                                        imageUrl,
-                                        imageGcs,
-                                        filename,
-                                        allTags,
-                                        `Generated presentation content from prompt: ${args.detailedInstructions || 'presentation generation'}`,
-                                        imageHash,
-                                        null,
-                                        pathwayResolver,
-                                        true, // permanent => retention=permanent
-                                        chatId,
-                                        args.entityId || null
-                                    );
-                                    
-                                    // Use the file entry data for the return message
-                                    imageData.fileEntry = fileEntry;
+                                    imageData.fileEntry = { url: imageUrl, displayFilename: slideFilename };
                                 } catch (collectionError) {
                                     // Log but don't fail - file collection is optional
                                     pathwayResolver.logWarning(`Failed to add image to file collection: ${collectionError.message}`);

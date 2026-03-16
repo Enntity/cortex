@@ -440,6 +440,8 @@ export function constructFolderPath({ userId, chatId, fileScope } = {}) {
   }
 
   switch (fileScope) {
+    case "all":
+      return `${userId}/`; // all files under user root
     case "global":
       return `${userId}/global/`;
     case "media":

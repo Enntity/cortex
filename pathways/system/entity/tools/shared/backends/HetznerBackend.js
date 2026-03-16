@@ -12,7 +12,6 @@
 // When a host has 0 containers and others have capacity, it's auto-removed.
 
 import http from 'node:http';
-import net from 'node:net';
 import { config } from '../../../../../../config.js';
 import logger from '../../../../../../lib/logger.js';
 import ContainerBackend from './ContainerBackend.js';

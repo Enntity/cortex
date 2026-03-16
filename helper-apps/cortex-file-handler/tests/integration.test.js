@@ -42,7 +42,7 @@ test.before(async (t) => {
   );
 
   handlerProcess = spawn("node", ["src/start.js"], {
-    cwd: "/Users/jmac/software/ml/enntity/cortex/helper-apps/cortex-file-handler",
+    cwd: new URL("../", import.meta.url).pathname,
     env: {
       ...process.env,
       PORT: String(FILE_HANDLER_PORT),

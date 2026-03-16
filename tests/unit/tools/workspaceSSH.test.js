@@ -2,7 +2,7 @@
 // Tests for WorkspaceSSH tokenizer, command routing, and tool migrations
 
 import test from 'ava';
-import { tokenize, toAbsWorkspacePath, globToRegex } from '../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js';
+import { tokenize, toAbsWorkspacePath } from '../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js';
 import { migrateToolList, needsMigration, TOOL_MIGRATIONS } from '../../../pathways/system/entity/tools/shared/tool_migrations.js';
 
 // ─── Tokenizer tests ───
@@ -62,56 +62,6 @@ test('toAbsWorkspacePath: relative path gets /workspace/ prefix', t => {
     t.is(toAbsWorkspacePath('curiosity_cabinet/artifacts/photo.jpg'), '/workspace/curiosity_cabinet/artifacts/photo.jpg');
 });
 
-// ─── globToRegex tests ───
-
-test('globToRegex: *.jpg matches .jpg files', t => {
-    const re = globToRegex('*.jpg');
-    t.true(re.test('photo.jpg'));
-    t.true(re.test('my-file.jpg'));
-    t.false(re.test('photo.png'));
-    t.false(re.test('photo.jpg.bak'));
-});
-
-test('globToRegex: * matches everything', t => {
-    const re = globToRegex('*');
-    t.true(re.test('anything'));
-    t.true(re.test('file.txt'));
-    t.true(re.test(''));
-});
-
-test('globToRegex: ? matches single character', t => {
-    const re = globToRegex('file?.txt');
-    t.true(re.test('file1.txt'));
-    t.true(re.test('fileA.txt'));
-    t.false(re.test('file12.txt'));
-    t.false(re.test('file.txt'));
-});
-
-test('globToRegex: case-insensitive', t => {
-    const re = globToRegex('*.JPG');
-    t.true(re.test('photo.jpg'));
-    t.true(re.test('photo.JPG'));
-    t.true(re.test('photo.Jpg'));
-});
-
-test('globToRegex: escapes regex special chars', t => {
-    const re = globToRegex('file(1).txt');
-    t.true(re.test('file(1).txt'));
-    t.false(re.test('file1.txt'));
-});
-
-test('globToRegex: character class [abc]', t => {
-    const re = globToRegex('file[12].txt');
-    t.true(re.test('file1.txt'));
-    t.true(re.test('file2.txt'));
-    t.false(re.test('file3.txt'));
-});
-
-test('globToRegex: does not match across path separators', t => {
-    const re = globToRegex('*.jpg');
-    t.false(re.test('dir/photo.jpg'));
-});
-
 // ─── Command routing tests (via dynamic import to access routeCommand indirectly) ───
 // We test routing indirectly through the exported executePathway
 
@@ -135,7 +85,7 @@ test('routing: plain shell commands pass through', async t => {
     t.is(JSON.parse(resolver.tool).toolUsed, 'WorkspaceSSH');
 });
 
-test('routing: files push requires workspacePath', async t => {
+test('routing: files push falls through to shell (no longer a built-in)', async t => {
     const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
     const tool = mod.default;
 
@@ -145,11 +95,14 @@ test('routing: files push requires workspacePath', async t => {
     const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
     const parsed = JSON.parse(result);
 
+    // Should have attempted shell execution (fails because no workspace)
     t.is(parsed.success, false);
-    t.regex(parsed.error, /Usage.*files push/i);
+    // The error should be from workspaceRequest, not from a usage message
+    t.truthy(parsed.error);
+    t.notRegex(parsed.error, /Usage/);
 });
 
-test('routing: files pull requires fileRef', async t => {
+test('routing: files pull falls through to shell (no longer a built-in)', async t => {
     const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
     const tool = mod.default;
 
@@ -159,8 +112,11 @@ test('routing: files pull requires fileRef', async t => {
     const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
     const parsed = JSON.parse(result);
 
+    // Should have attempted shell execution (fails because no workspace)
     t.is(parsed.success, false);
-    t.regex(parsed.error, /Usage.*files pull/i);
+    // The error should be from workspaceRequest, not from a usage message
+    t.truthy(parsed.error);
+    t.notRegex(parsed.error, /Usage/);
 });
 
 test('routing: files restore requires fileRef', async t => {
@@ -194,7 +150,7 @@ test('routing: scp user@host:/path falls through to shell', async t => {
     t.notRegex(parsed.error, /Usage/);
 });
 
-test('routing: scp push still works as backward-compatible alias', async t => {
+test('routing: scp push falls through to shell (push no longer a built-in)', async t => {
     const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
     const tool = mod.default;
 
@@ -204,9 +160,10 @@ test('routing: scp push still works as backward-compatible alias', async t => {
     const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
     const parsed = JSON.parse(result);
 
-    // Should route to handleFilesPush and return the usage error (not a shell error)
+    // Should have attempted shell execution (fails because no workspace)
     t.is(parsed.success, false);
-    t.regex(parsed.error, /Usage.*files push/i);
+    t.truthy(parsed.error);
+    t.notRegex(parsed.error, /Usage/);
 });
 
 test('routing: empty command returns error', async t => {
@@ -237,7 +194,7 @@ test('routing: null command returns error', async t => {
     t.regex(parsed.error, /command is required/);
 });
 
-test('routing: files pull needs agentContext', async t => {
+test('routing: files pull falls through to shell (no agentContext test)', async t => {
     const mod = await import('../../../pathways/system/entity/tools/sys_tool_workspace_ssh.js');
     const tool = mod.default;
 
@@ -247,8 +204,10 @@ test('routing: files pull needs agentContext', async t => {
     const result = await tool.executePathway({ args, runAllPrompts: () => {}, resolver });
     const parsed = JSON.parse(result);
 
+    // files pull is no longer a built-in — should fall through to shell
     t.is(parsed.success, false);
-    t.regex(parsed.error, /agentContext.*required/i);
+    t.truthy(parsed.error);
+    t.notRegex(parsed.error, /agentContext/i);
 });
 
 test('routing: files restore needs agentContext', async t => {
