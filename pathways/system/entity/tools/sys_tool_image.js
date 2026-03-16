@@ -256,7 +256,7 @@ export default {
                             result = buildFileCreationResponse(successfulImages, {
                                 mediaType: 'image',
                                 action: action,
-                                legacyUrls: imageUrls
+                                imageUrls
                             });
                         }
                     }

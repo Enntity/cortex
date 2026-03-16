@@ -467,7 +467,7 @@ async function processImageArtifacts(result, args, pathwayResolver, chatId, acti
             const response = buildFileCreationResponse(successfulImages, {
                 mediaType: 'image',
                 action: actionText,
-                legacyUrls: imageUrls
+                imageUrls
             });
 
             // Parse and add display reminder

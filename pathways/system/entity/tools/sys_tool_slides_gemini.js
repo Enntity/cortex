@@ -192,7 +192,7 @@ export default {
                     return buildFileCreationResponse(successfulImages, {
                         mediaType: 'image',
                         action: 'Slide/infographic generation',
-                        legacyUrls: imageUrls
+                        imageUrls
                     });
                 } else {
                     throw new Error('Slide generation failed: Content was generated but could not be uploaded to storage');
