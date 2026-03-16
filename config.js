@@ -121,6 +121,11 @@ var config = convict({
         format: Object,
         default: {},
     },
+    gcsBucketName: {
+        format: String,
+        default: '',
+        env: 'GCS_BUCKET_NAME'
+    },
     gcpServiceAccountKey: {
         format: String,
         default: null,

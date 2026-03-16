@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync as shellExecSync } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { requireAuth, setSecret } from './lib/auth.js';
 import { execSync, execBackground, getResult, listBackgroundJobs } from './lib/shell.js';
@@ -237,7 +238,53 @@ app.post('/reconfigure', wrap(async (req, res) => {
         }
     }
 
-    // 2. Rotate secret (done LAST so caller can retry with old secret if step 1 fails)
+    // 2. Mount GCS bucket via gcsfuse (optional)
+    if (req.body.gcsMount) {
+        const { bucket, serviceAccountKey, onlyDir } = req.body.gcsMount;
+
+        if (!bucket || !serviceAccountKey) {
+            return res.status(400).json({ error: 'gcsMount requires bucket and serviceAccountKey' });
+        }
+
+        // Write service account key to temp file (NOT in /workspace — excluded from backups)
+        const keyPath = '/tmp/gcs-sa-key.json';
+        fs.writeFileSync(keyPath, typeof serviceAccountKey === 'string'
+            ? serviceAccountKey
+            : JSON.stringify(serviceAccountKey));
+
+        // Ensure cache and mount directories exist
+        fs.mkdirSync('/tmp/gcsfuse-cache', { recursive: true });
+        fs.mkdirSync('/workspace/files', { recursive: true });
+
+        // Unmount any existing gcsfuse mount (idempotent reconfigure)
+        try {
+            shellExecSync('fusermount -u /workspace/files 2>/dev/null || true', { timeout: 10000 });
+        } catch {
+            // Not mounted, that's fine
+        }
+
+        // Build gcsfuse command
+        const args = [
+            '--implicit-dirs',
+            '--stat-cache-ttl', '60s',
+            '--type-cache-ttl', '60s',
+            '--file-cache-max-size-mb', '512',
+            '--cache-dir', '/tmp/gcsfuse-cache',
+            '--key-file', keyPath,
+        ];
+        if (onlyDir) {
+            args.push('--only-dir', onlyDir);
+        }
+        args.push(bucket, '/workspace/files');
+
+        try {
+            shellExecSync(`gcsfuse ${args.join(' ')}`, { stdio: 'pipe', timeout: 30000 });
+        } catch (e) {
+            return res.status(500).json({ error: `gcsfuse mount failed: ${e.stderr?.toString() || e.message}` });
+        }
+    }
+
+    // 3. Rotate secret (done LAST so caller can retry with old secret if step 1 fails)
     if (secret && typeof secret === 'string') {
         setSecret(secret);
     }

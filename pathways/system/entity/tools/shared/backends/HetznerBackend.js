@@ -47,6 +47,17 @@ runcmd:
     DEOF
   - systemctl daemon-reload
   - systemctl restart docker
+  # Auto-mount any attached Hetzner Volumes
+  - |
+    for dev in /dev/disk/by-id/scsi-0HC_Volume_*; do
+      if [ -b "$dev" ]; then
+        vol_name=$(basename "$dev" | sed 's/scsi-0HC_Volume_//')
+        mkdir -p "/mnt/volumes/\${vol_name}"
+        # Format only if no filesystem exists
+        blkid "$dev" >/dev/null 2>&1 || mkfs.ext4 -q "$dev"
+        mount "$dev" "/mnt/volumes/\${vol_name}" 2>/dev/null || true
+      fi
+    done
   # Pull workspace image so first container starts fast
   - docker pull ${workspaceImage} || true
   # Signal readiness
@@ -285,9 +296,9 @@ export default class HetznerBackend extends ContainerBackend {
         return await this._provisionHost();
     }
 
-    async createAndStart({ containerName, image, env, cpus, memoryMB, diskSize, shareName }) {
+    async createAndStart({ containerName, image, env, cpus, memoryMB, diskSize, shareName, hetznerVolumeId }) {
         const host = await this._resolveHost();
-        const volumeName = `${shareName || containerName}-data`;
+        const volumeSize = parseInt(config.get('workspaceDiskSize')) || 10;
 
         logger.info(`[HetznerBackend] Creating ${containerName} on host ${host.id} (${host.ip})`);
 
@@ -297,6 +308,71 @@ export default class HetznerBackend extends ContainerBackend {
         } catch {
             // Doesn't exist, fine
         }
+
+        // --- Hetzner Volume: create or reuse persistent block storage ---
+        let volumeId = hetznerVolumeId || null;
+        let volumeMountPath = null;
+
+        try {
+            if (!volumeId) {
+                // Create a new Hetzner Volume
+                const vol = await this._hetzner.createVolume({
+                    name: `ws-${shareName || containerName}`,
+                    size: volumeSize,
+                    location: config.get('hetznerLocation'),
+                    serverId: host.hetznerServerId,
+                });
+                volumeId = vol.id;
+                logger.info(`[HetznerBackend] Created Hetzner Volume ${volumeId} for ${containerName}`);
+                // Wait for attachment
+                await new Promise(r => setTimeout(r, 5000));
+            } else {
+                // Reuse existing volume — may need to detach from old host and reattach
+                try {
+                    await this._hetzner.detachVolume(volumeId);
+                    await new Promise(r => setTimeout(r, 3000));
+                } catch {
+                    // May not be attached, that's fine
+                }
+                await this._hetzner.attachVolume(volumeId, host.hetznerServerId);
+                await new Promise(r => setTimeout(r, 5000));
+                logger.info(`[HetznerBackend] Reattached Hetzner Volume ${volumeId} to host ${host.id}`);
+            }
+
+            // Mount the volume on the host via a privileged helper container.
+            // Hetzner Volumes appear as /dev/disk/by-id/scsi-0HC_Volume_{id}
+            volumeMountPath = `/mnt/volumes/${volumeId}`;
+            const mountScript = [
+                `mkdir -p ${volumeMountPath}`,
+                `DEV=/dev/disk/by-id/scsi-0HC_Volume_${volumeId}`,
+                // Format only if no filesystem exists
+                `blkid $DEV >/dev/null 2>&1 || mkfs.ext4 -q $DEV`,
+                `mount $DEV ${volumeMountPath} 2>/dev/null || true`,
+            ].join(' && ');
+
+            await this._dockerApi(host, 'POST', '/containers/create?name=vol-mount-helper', {
+                Image: 'alpine:latest',
+                Cmd: ['sh', '-c', mountScript],
+                HostConfig: {
+                    Privileged: true,
+                    Binds: ['/dev:/dev', '/mnt:/mnt'],
+                    AutoRemove: true,
+                },
+            });
+            await this._dockerApi(host, 'POST', '/containers/vol-mount-helper/start');
+            // Wait for mount to complete
+            await new Promise(r => setTimeout(r, 3000));
+            try {
+                await this._dockerApi(host, 'DELETE', '/containers/vol-mount-helper?force=true');
+            } catch { /* auto-removed */ }
+        } catch (e) {
+            logger.warn(`[HetznerBackend] Volume setup failed for ${containerName}, falling back to Docker named volume: ${e.message}`);
+            volumeId = null;
+            volumeMountPath = null;
+        }
+
+        // Determine the bind mount: Hetzner Volume path if available, else Docker named volume
+        const bindSource = volumeMountPath || `${shareName || containerName}-data`;
 
         const memoryBytes = memoryMB * 1024 * 1024;
         const nanoCpus = Math.round(cpus * 1e9);
@@ -310,8 +386,8 @@ export default class HetznerBackend extends ContainerBackend {
                 NanoCpus: nanoCpus,
                 Memory: memoryBytes,
                 RestartPolicy: { Name: 'unless-stopped' },
-                Binds: [`${volumeName}:/workspace`],
-                PortBindings: { '3100/tcp': [{ HostPort: '0' }] }, // random port
+                Binds: [`${bindSource}:/workspace`],
+                PortBindings: { '3100/tcp': [{ HostPort: '0' }] },
             },
         };
 
@@ -337,7 +413,7 @@ export default class HetznerBackend extends ContainerBackend {
         // Check if we should pre-scale (background, don't block)
         this._checkScaleUp().catch(e => logger.warn(`[HetznerBackend] Scale-up check failed: ${e.message}`));
 
-        return { containerId, url };
+        return { containerId, url, hetznerVolumeId: volumeId };
     }
 
     async start(containerId, containerName) {
@@ -371,9 +447,25 @@ export default class HetznerBackend extends ContainerBackend {
         this._checkScaleDown(host.id).catch(e => logger.warn(`[HetznerBackend] Scale-down check failed: ${e.message}`));
     }
 
-    async destroyVolume(shareName) {
-        // Docker named volumes live on the host — find which host
-        // For now, iterate all hosts and try to delete (volume name is unique)
+    async destroyVolume(shareName, hetznerVolumeId) {
+        // If we have a Hetzner Volume ID, detach and delete it
+        if (hetznerVolumeId) {
+            try {
+                await this._hetzner.detachVolume(hetznerVolumeId);
+                await new Promise(r => setTimeout(r, 3000));
+            } catch {
+                // May not be attached
+            }
+            try {
+                await this._hetzner.deleteVolume(hetznerVolumeId);
+                logger.info(`[HetznerBackend] Deleted Hetzner Volume ${hetznerVolumeId}`);
+            } catch (e) {
+                logger.warn(`[HetznerBackend] Failed to delete Hetzner Volume ${hetznerVolumeId}: ${e.message}`);
+            }
+            return;
+        }
+
+        // Fallback: try to delete Docker named volumes across hosts
         const hosts = await this._registry.getAllHosts();
         const volumeName = `${shareName}-data`;
 
@@ -381,7 +473,7 @@ export default class HetznerBackend extends ContainerBackend {
             if (host.status === 'offline') continue;
             try {
                 await this._dockerApi(host, 'DELETE', `/volumes/${volumeName}`);
-                return; // Found and deleted
+                return;
             } catch {
                 // Volume not on this host, try next
             }

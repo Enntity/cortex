@@ -376,8 +376,12 @@ async function _doProvision(entityId, entityConfig) {
             },
         });
 
-        // Create a generic container (with existing share if any)
-        const container = await createGenericContainer(entityId, backend, { shareName: existingShareName });
+        // Create a generic container (with existing share and volume if any)
+        const existingVolumeId = entityConfig?.workspace?.hetznerVolumeId || null;
+        const container = await createGenericContainer(entityId, backend, {
+            shareName: existingShareName,
+            hetznerVolumeId: existingVolumeId,
+        });
 
         // Reconfigure with entity-specific secrets
         await reconfigureForEntity(entityId, entityConfig, container, backend);
@@ -412,7 +416,8 @@ async function _doProvision(entityId, entityConfig) {
  * @param {Object} backend - Container backend instance
  * @param {Object} [options]
  * @param {string} [options.shareName] - Existing share to mount (preserves data across reprovisions)
- * @returns {Promise<{containerName: string, shareName: string, url: string, bootstrapSecret: string, containerId: string}>}
+ * @param {string} [options.hetznerVolumeId] - Existing Hetzner Volume ID (for persistent block storage)
+ * @returns {Promise<{containerName: string, shareName: string, url: string, bootstrapSecret: string, containerId: string, hetznerVolumeId?: string}>}
  */
 async function createGenericContainer(entityId, backend, options = {}) {
     // Sanitize entityId to prevent injection in container/volume names
@@ -435,7 +440,7 @@ async function createGenericContainer(entityId, backend, options = {}) {
 
     logger.info(`Creating generic container ${containerName} [${backend.backendName}]${shareName !== containerName ? ` (share: ${shareName})` : ''}`);
 
-    const { containerId, url } = await backend.createAndStart({
+    const createResult = await backend.createAndStart({
         containerName,
         image,
         env,
@@ -443,14 +448,40 @@ async function createGenericContainer(entityId, backend, options = {}) {
         memoryMB,
         diskSize,
         shareName,
+        hetznerVolumeId: options.hetznerVolumeId,
     });
+
+    const { containerId, url, hetznerVolumeId } = createResult;
 
     const healthOk = await waitForHealth(url, backend.healthTimeoutMs);
     if (!healthOk) {
         throw new Error('Container failed to become healthy');
     }
 
-    return { containerName, shareName, url, bootstrapSecret, containerId };
+    return { containerName, shareName, url, bootstrapSecret, containerId, hetznerVolumeId };
+}
+
+/**
+ * Build a gcsfuse mount payload for an entity's workspace.
+ * Returns null if GCS is not configured or the entity has no associated user.
+ *
+ * @param {Object} entityConfig - Entity configuration
+ * @returns {{ bucket: string, serviceAccountKey: string, onlyDir: string } | null}
+ */
+function buildGcsMountPayload(entityConfig) {
+    const bucket = config.get('gcsBucketName');
+    const saKey = config.get('gcpServiceAccountKey');
+    if (!bucket || !saKey) return null;
+
+    // Scope to the entity's associated user (single-user entities only)
+    const userId = entityConfig?.assocUserIds?.[0];
+    if (!userId) return null;
+
+    return {
+        bucket,
+        serviceAccountKey: saKey,
+        onlyDir: `${userId}/`,
+    };
 }
 
 /**
@@ -464,7 +495,7 @@ async function createGenericContainer(entityId, backend, options = {}) {
  * @param {Object} backend - Container backend instance
  */
 async function reconfigureForEntity(entityId, entityConfig, container, backend) {
-    const { containerName, shareName, url, bootstrapSecret, containerId } = container;
+    const { containerName, shareName, url, bootstrapSecret, containerId, hetznerVolumeId } = container;
     const newSecret = crypto.randomBytes(32).toString('hex');
 
     try {
@@ -484,6 +515,12 @@ async function reconfigureForEntity(entityId, entityConfig, container, backend) 
         }
         if (Object.keys(plainSecrets).length > 0) {
             reconfigPayload.env = plainSecrets;
+        }
+
+        // Add GCS mount payload if configured
+        const gcsMount = buildGcsMountPayload(entityConfig);
+        if (gcsMount) {
+            reconfigPayload.gcsMount = gcsMount;
         }
 
         // Call /reconfigure using the bootstrap secret
@@ -517,6 +554,7 @@ async function reconfigureForEntity(entityId, entityConfig, container, backend) 
                 status: 'running',
                 provisionedAt: new Date(),
                 imageVersion: config.get('workspaceImageVersion') || null,
+                ...(hetznerVolumeId ? { hetznerVolumeId } : {}),
             },
         });
     } catch (e) {
@@ -548,8 +586,10 @@ export async function destroyWorkspace(entityId, entityConfig, options = {}) {
 
         await backend.remove(containerName, containerName);
 
+        const hetznerVolumeId = workspace?.hetznerVolumeId || null;
+
         if (shouldDestroyVolume) {
-            await backend.destroyVolume(shareName);
+            await backend.destroyVolume(shareName, hetznerVolumeId);
         }
 
         // Update entity workspace config
@@ -561,11 +601,14 @@ export async function destroyWorkspace(entityId, entityConfig, options = {}) {
                 workspace: null,
             });
         } else {
-            // Volume preserved — keep only the shareName so the next provision
-            // can remount it and recover all workspace data.
+            // Volume preserved — keep shareName and hetznerVolumeId so the next
+            // provision can remount and recover all workspace data.
             await entityStore.upsertEntity({
                 ...entityConfig,
-                workspace: { shareName },
+                workspace: {
+                    shareName,
+                    ...(hetznerVolumeId ? { hetznerVolumeId } : {}),
+                },
             });
         }
 

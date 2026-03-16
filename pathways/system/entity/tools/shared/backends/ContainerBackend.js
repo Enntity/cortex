@@ -18,7 +18,8 @@ export default class ContainerBackend {
      * @param {string} [opts.shareName] - Persistent volume/share name (decoupled from containerName).
      *   If provided, the backend mounts this share instead of deriving one from containerName.
      *   Used to preserve workspace data across reprovisions.
-     * @returns {Promise<{containerId: string, url: string}>}
+     * @param {number} [opts.hetznerVolumeId] - Existing Hetzner Volume ID to reattach (Hetzner backend only).
+     * @returns {Promise<{containerId: string, url: string, hetznerVolumeId?: number}>}
      */
     async createAndStart(opts) {
         throw new Error('createAndStart() not implemented');
@@ -57,9 +58,10 @@ export default class ContainerBackend {
     /**
      * Destroy persistent storage associated with a container.
      * @param {string} shareName - Volume/share name to destroy (may differ from containerName)
+     * @param {number} [hetznerVolumeId] - Hetzner Volume ID to delete (Hetzner backend only)
      * @returns {Promise<void>}
      */
-    async destroyVolume(shareName) {
+    async destroyVolume(shareName, hetznerVolumeId) {
         throw new Error('destroyVolume() not implemented');
     }
 
