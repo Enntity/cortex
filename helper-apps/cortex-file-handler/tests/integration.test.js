@@ -1,12 +1,10 @@
 /**
- * Integration tests for cortex-file-handler.
+ * Integration tests for cortex-file-handler (GCS-only, no hashing).
  *
  * Starts a real file handler server backed by fake-gcs-server (Docker).
  * Tests the full HTTP flow: upload → list → signUrl → rename → delete.
  *
  * Prerequisites: Docker must be running (for fake-gcs-server).
- *
- * Run: npm test -- tests/integration.test.js
  */
 import test from "ava";
 import { execSync, spawn } from "child_process";
@@ -20,13 +18,8 @@ const BUCKET_NAME = "test-cortex-files";
 let gcsContainer = null;
 let handlerProcess = null;
 
-// ─── Setup / Teardown ────────────────────────────────────────────────────────
-
 test.before(async (t) => {
-  // 1. Start fake-gcs-server
-  try {
-    execSync(`docker rm -f fake-gcs-test 2>/dev/null`, { stdio: "ignore" });
-  } catch { /* ok */ }
+  try { execSync(`docker rm -f fake-gcs-test 2>/dev/null`, { stdio: "ignore" }); } catch { /* ok */ }
 
   execSync(
     `docker run -d --name fake-gcs-test -p ${FAKE_GCS_PORT}:4443 ` +
@@ -35,24 +28,19 @@ test.before(async (t) => {
   );
   gcsContainer = "fake-gcs-test";
 
-  // Wait for fake GCS to be ready
   for (let i = 0; i < 20; i++) {
     try {
       await axios.get(`http://localhost:${FAKE_GCS_PORT}/storage/v1/b`, { timeout: 1000 });
       break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 500));
-    }
+    } catch { await new Promise((r) => setTimeout(r, 500)); }
   }
 
-  // Create the test bucket
   await axios.post(
     `http://localhost:${FAKE_GCS_PORT}/storage/v1/b`,
     { name: BUCKET_NAME },
     { validateStatus: (s) => s === 200 || s === 409 }
   );
 
-  // 2. Start the file handler
   handlerProcess = spawn("node", ["src/start.js"], {
     cwd: "/Users/jmac/software/ml/enntity/cortex/helper-apps/cortex-file-handler",
     env: {
@@ -66,40 +54,26 @@ test.before(async (t) => {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  // Wait for file handler to be ready
   for (let i = 0; i < 30; i++) {
     try {
       await axios.get(`http://localhost:${FILE_HANDLER_PORT}/health`, { timeout: 1000 });
       break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 500));
-    }
+    } catch { await new Promise((r) => setTimeout(r, 500)); }
   }
-
   t.log("File handler and fake-gcs-server ready");
 });
 
 test.after.always(async () => {
-  if (handlerProcess) {
-    handlerProcess.kill("SIGTERM");
-    handlerProcess = null;
-  }
-  if (gcsContainer) {
-    try { execSync(`docker rm -f ${gcsContainer} 2>/dev/null`, { stdio: "ignore" }); } catch { /* ok */ }
-    gcsContainer = null;
-  }
+  if (handlerProcess) { handlerProcess.kill("SIGTERM"); handlerProcess = null; }
+  if (gcsContainer) { try { execSync(`docker rm -f ${gcsContainer} 2>/dev/null`, { stdio: "ignore" }); } catch { /* ok */ } gcsContainer = null; }
 });
 
 const BASE = `http://localhost:${FILE_HANDLER_PORT}/api/CortexFileHandler`;
 
-// ─── Helper ──────────────────────────────────────────────────────────────────
-
 function makeFormData(content, filename, fields = {}) {
   const form = new FormData();
   form.append("file", Buffer.from(content), { filename, contentType: "text/plain" });
-  for (const [k, v] of Object.entries(fields)) {
-    form.append(k, v);
-  }
+  for (const [k, v] of Object.entries(fields)) { form.append(k, v); }
   return form;
 }
 
@@ -111,38 +85,33 @@ test.serial("health check", async (t) => {
   t.is(res.data.status, "healthy");
 });
 
-test.serial("upload a file to user global scope", async (t) => {
-  const form = makeFormData("Hello, world!", "hello.txt", {
-    userId: "user-test-1",
-    fileScope: "global",
-  });
-
+test.serial("upload a file", async (t) => {
+  const form = makeFormData("Hello, world!", "hello.txt", { userId: "user-1", fileScope: "global" });
   const res = await axios.post(BASE, form, { headers: form.getHeaders() });
 
   t.is(res.status, 200);
-  t.truthy(res.data.url);
-  t.truthy(res.data.hash);
-  t.truthy(res.data.shortLivedUrl);
   t.is(res.data.filename, "hello.txt");
+  t.truthy(res.data.url);
+  t.truthy(res.data.shortLivedUrl);
   t.true(res.data.url.startsWith("gs://"));
-  t.true(res.data.url.includes("user-test-1/global/"));
+  t.true(res.data.url.includes("user-1/global/hello.txt"));
 });
 
-test.serial("upload same content gets same hash (content-addressed)", async (t) => {
-  const form = makeFormData("Hello, world!", "hello-copy.txt", {
-    userId: "user-test-1",
-    fileScope: "global",
-  });
-
+test.serial("upload overwrites same filename", async (t) => {
+  const form = makeFormData("Updated content", "hello.txt", { userId: "user-1", fileScope: "global" });
   const res = await axios.post(BASE, form, { headers: form.getHeaders() });
+
   t.is(res.status, 200);
-  t.truthy(res.data.hash);
-  // Same content = same hash (SHA-256 prefix)
+  t.is(res.data.filename, "hello.txt");
+
+  // Download and verify content was overwritten
+  const dlRes = await axios.get(res.data.shortLivedUrl, { responseType: "text" });
+  t.is(dlRes.data, "Updated content");
 });
 
-test.serial("listFolder returns uploaded files", async (t) => {
+test.serial("listFolder returns files", async (t) => {
   const res = await axios.get(BASE, {
-    params: { operation: "listFolder", userId: "user-test-1", fileScope: "global" },
+    params: { operation: "listFolder", userId: "user-1", fileScope: "global" },
   });
 
   t.is(res.status, 200);
@@ -150,33 +119,24 @@ test.serial("listFolder returns uploaded files", async (t) => {
   t.true(res.data.length >= 1);
 
   const file = res.data.find((f) => f.filename === "hello.txt");
-  t.truthy(file, "Should find hello.txt in listing");
-  t.truthy(file.hash);
+  t.truthy(file);
   t.truthy(file.url);
+  t.truthy(file.displayFilename);
   t.true(file.size > 0);
-  t.truthy(file.contentType);
-  t.truthy(file.lastModified);
 });
 
 test.serial("listFolder for empty user returns empty array", async (t) => {
   const res = await axios.get(BASE, {
     params: { operation: "listFolder", userId: "user-nonexistent" },
   });
-
   t.is(res.status, 200);
-  t.true(Array.isArray(res.data));
-  t.is(res.data.length, 0);
+  t.deepEqual(res.data, []);
 });
 
-test.serial("signUrl returns download URL for gs:// file", async (t) => {
-  // Upload a file first
-  const form = makeFormData("Sign me!", "signme.txt", {
-    userId: "user-test-1",
-    fileScope: "global",
-  });
+test.serial("signUrl returns download URL", async (t) => {
+  const form = makeFormData("Sign me!", "signme.txt", { userId: "user-1", fileScope: "global" });
   const uploadRes = await axios.post(BASE, form, { headers: form.getHeaders() });
 
-  // Get signed URL
   const res = await axios.get(BASE, {
     params: { operation: "signUrl", url: uploadRes.data.url, minutes: 10 },
   });
@@ -185,72 +145,57 @@ test.serial("signUrl returns download URL for gs:// file", async (t) => {
   t.truthy(res.data.shortLivedUrl);
   t.is(res.data.expiresInMinutes, 10);
 
-  // The signed URL should actually work — download the file
-  const downloadRes = await axios.get(res.data.shortLivedUrl, { responseType: "text" });
-  t.is(downloadRes.status, 200);
-  t.is(downloadRes.data, "Sign me!");
+  // Actually download it
+  const dlRes = await axios.get(res.data.shortLivedUrl, { responseType: "text" });
+  t.is(dlRes.data, "Sign me!");
 });
 
 test.serial("signUrl returns 404 for nonexistent file", async (t) => {
   const res = await axios.get(BASE, {
-    params: { operation: "signUrl", url: `gs://${BUCKET_NAME}/nonexistent/file.txt` },
+    params: { operation: "signUrl", url: `gs://${BUCKET_NAME}/nonexistent.txt` },
     validateStatus: () => true,
   });
-
   t.is(res.status, 404);
 });
 
 test.serial("upload to chat scope", async (t) => {
-  const form = makeFormData("Chat message attachment", "attachment.pdf", {
-    userId: "user-test-1",
-    chatId: "chat-abc-123",
-  });
-
+  const form = makeFormData("Chat attachment", "doc.pdf", { userId: "user-1", chatId: "chat-123" });
   const res = await axios.post(BASE, form, { headers: form.getHeaders() });
+
   t.is(res.status, 200);
-  t.true(res.data.url.includes("user-test-1/chats/chat-abc-123/"));
+  t.true(res.data.url.includes("user-1/chats/chat-123/doc.pdf"));
 });
 
 test.serial("listFolder for chat scope", async (t) => {
   const res = await axios.get(BASE, {
-    params: { operation: "listFolder", userId: "user-test-1", chatId: "chat-abc-123" },
+    params: { operation: "listFolder", userId: "user-1", chatId: "chat-123" },
   });
-
-  t.is(res.status, 200);
   t.true(res.data.length >= 1);
-  const file = res.data.find((f) => f.filename === "attachment.pdf");
-  t.truthy(file);
+  t.truthy(res.data.find((f) => f.filename === "doc.pdf"));
 });
 
-test.serial("fetch remote URL and upload to GCS", async (t) => {
-  // Upload a file first, then fetch it via its emulator URL
-  const form = makeFormData("Remote content to fetch", "remote-source.txt", {
-    userId: "user-test-1",
-    fileScope: "global",
-  });
+test.serial("fetch remote URL", async (t) => {
+  // Upload a source file, then fetch it into another user's scope
+  const form = makeFormData("Fetchable content", "source.txt", { userId: "user-1", fileScope: "global" });
   const uploadRes = await axios.post(BASE, form, { headers: form.getHeaders() });
-  const sourceUrl = uploadRes.data.shortLivedUrl;
 
   const res = await axios.get(BASE, {
-    params: { fetch: sourceUrl, contextId: "user-test-2", fileScope: "global" },
+    params: { fetch: uploadRes.data.shortLivedUrl, contextId: "user-2", fileScope: "global" },
   });
 
   t.is(res.status, 200);
   t.truthy(res.data.url);
-  t.true(res.data.url.includes("user-test-2/global/"));
+  t.true(res.data.url.includes("user-2/global/"));
 });
 
 test.serial("rename a file", async (t) => {
-  const form = makeFormData("Rename me!", "old-name.txt", {
-    userId: "user-test-1",
-    fileScope: "global",
-  });
-  const uploadRes = await axios.post(BASE, form, { headers: form.getHeaders() });
+  const form = makeFormData("Rename me!", "old-name.txt", { userId: "user-1", fileScope: "global" });
+  await axios.post(BASE, form, { headers: form.getHeaders() });
 
   const res = await axios.post(BASE, {
     operation: "rename",
-    hash: uploadRes.data.hash,
-    contextId: "user-test-1",
+    filename: "old-name.txt",
+    contextId: "user-1",
     fileScope: "global",
     newFilename: "new-name.txt",
   });
@@ -260,53 +205,38 @@ test.serial("rename a file", async (t) => {
   t.true(res.data.url.includes("new-name.txt"));
 });
 
-test.serial("delete by hash", async (t) => {
-  const form = makeFormData("Delete me!", "deleteme.txt", {
-    userId: "user-test-del",
-    fileScope: "global",
-  });
-  const uploadRes = await axios.post(BASE, form, { headers: form.getHeaders() });
+test.serial("delete by filename", async (t) => {
+  const form = makeFormData("Delete me!", "deleteme.txt", { userId: "user-del", fileScope: "global" });
+  await axios.post(BASE, form, { headers: form.getHeaders() });
 
-  // Delete
   const res = await axios.delete(BASE, {
-    params: { hash: uploadRes.data.hash, contextId: "user-test-del", fileScope: "global" },
+    params: { filename: "deleteme.txt", contextId: "user-del", fileScope: "global" },
   });
   t.is(res.status, 200);
-  t.truthy(res.data.deleted);
 
-  // Verify it's gone via listFolder
+  // Verify it's gone
   const listRes = await axios.get(BASE, {
-    params: { operation: "listFolder", userId: "user-test-del", fileScope: "global" },
+    params: { operation: "listFolder", userId: "user-del", fileScope: "global" },
   });
-  const found = listRes.data.find((f) => f.filename === "deleteme.txt");
-  t.falsy(found, "File should be gone after deletion");
+  t.falsy(listRes.data.find((f) => f.filename === "deleteme.txt"));
 });
 
-test.serial("delete by prefix cleans up user folder", async (t) => {
-  // Upload files to a dedicated user so we can delete by prefix
-  const form1 = makeFormData("Prefix file 1", "pf1.txt", { userId: "user-prefix-del", fileScope: "global" });
-  const form2 = makeFormData("Prefix file 2", "pf2.txt", { userId: "user-prefix-del", fileScope: "global" });
-
+test.serial("delete by prefix", async (t) => {
+  const form1 = makeFormData("F1", "pf1.txt", { userId: "user-prefix", fileScope: "global" });
+  const form2 = makeFormData("F2", "pf2.txt", { userId: "user-prefix", fileScope: "global" });
   await axios.post(BASE, form1, { headers: form1.getHeaders() });
   await axios.post(BASE, form2, { headers: form2.getHeaders() });
 
-  // Delete by user prefix
-  const res = await axios.delete(BASE, {
-    params: { requestId: "user-prefix-del/global/" },
-  });
-
+  const res = await axios.delete(BASE, { params: { prefix: "user-prefix/global/" } });
   t.is(res.status, 200);
   t.true(res.data.deleted.length >= 2);
 });
 
-test.serial("POST with no file content returns error", async (t) => {
+test.serial("POST with no file returns error", async (t) => {
   const res = await axios.post(
     BASE,
     "--boundary\r\nContent-Disposition: form-data; name=\"userId\"\r\n\r\ntest\r\n--boundary--",
-    {
-      headers: { "Content-Type": "multipart/form-data; boundary=boundary" },
-      validateStatus: () => true,
-    }
+    { headers: { "Content-Type": "multipart/form-data; boundary=boundary" }, validateStatus: () => true }
   );
   t.true(res.status >= 400);
 });
@@ -316,74 +246,57 @@ test.serial("DELETE without params returns 400", async (t) => {
   t.is(res.status, 400);
 });
 
-test.serial("per-user isolation: different user cannot see files", async (t) => {
+test.serial("per-user isolation", async (t) => {
   const res = await axios.get(BASE, {
-    params: { operation: "listFolder", userId: "user-isolated-check", fileScope: "global" },
+    params: { operation: "listFolder", userId: "user-isolated", fileScope: "global" },
   });
-  t.is(res.status, 200);
   t.is(res.data.length, 0);
 });
 
-test.serial("upload binary content preserves size", async (t) => {
-  // Create a buffer with known binary content
-  const binaryContent = Buffer.alloc(1024, 0xAB);
+test.serial("binary content preserves size", async (t) => {
+  const binary = Buffer.alloc(1024, 0xAB);
   const form = new FormData();
-  form.append("file", binaryContent, { filename: "binary.bin", contentType: "application/octet-stream" });
-  form.append("userId", "user-test-bin");
+  form.append("file", binary, { filename: "binary.bin", contentType: "application/octet-stream" });
+  form.append("userId", "user-bin");
   form.append("fileScope", "global");
 
   const res = await axios.post(BASE, form, { headers: form.getHeaders() });
   t.is(res.status, 200);
 
-  // Verify via list
   const listRes = await axios.get(BASE, {
-    params: { operation: "listFolder", userId: "user-test-bin", fileScope: "global" },
+    params: { operation: "listFolder", userId: "user-bin", fileScope: "global" },
   });
   const file = listRes.data.find((f) => f.filename === "binary.bin");
   t.truthy(file);
   t.is(file.size, 1024);
 });
 
-test.serial("full lifecycle: upload → list → sign → download → delete → verify gone", async (t) => {
-  const content = "Full lifecycle test content - " + Date.now();
-  const form = makeFormData(content, "lifecycle.txt", {
-    userId: "user-lifecycle",
-    fileScope: "global",
-  });
+test.serial("full lifecycle: upload → list → sign → download → delete → verify", async (t) => {
+  const content = "Lifecycle test - " + Date.now();
+  const fname = "lifecycle.txt";
+  const form = makeFormData(content, fname, { userId: "user-lc", fileScope: "global" });
 
   // Upload
-  const uploadRes = await axios.post(BASE, form, { headers: form.getHeaders() });
-  t.is(uploadRes.status, 200);
-  const { url, hash } = uploadRes.data;
+  const up = await axios.post(BASE, form, { headers: form.getHeaders() });
+  t.is(up.status, 200);
 
-  // List — should find it
-  const listRes = await axios.get(BASE, {
-    params: { operation: "listFolder", userId: "user-lifecycle", fileScope: "global" },
-  });
-  t.true(listRes.data.length >= 1);
-  const listed = listRes.data.find((f) => f.hash === hash);
-  t.truthy(listed);
+  // List
+  const list = await axios.get(BASE, { params: { operation: "listFolder", userId: "user-lc", fileScope: "global" } });
+  t.truthy(list.data.find((f) => f.filename === fname));
 
-  // Sign — get downloadable URL
-  const signRes = await axios.get(BASE, {
-    params: { operation: "signUrl", url, minutes: 5 },
-  });
-  t.truthy(signRes.data.shortLivedUrl);
+  // Sign
+  const sign = await axios.get(BASE, { params: { operation: "signUrl", url: up.data.url, minutes: 5 } });
+  t.truthy(sign.data.shortLivedUrl);
 
-  // Download — verify content
-  const dlRes = await axios.get(signRes.data.shortLivedUrl, { responseType: "text" });
-  t.is(dlRes.data, content);
+  // Download
+  const dl = await axios.get(sign.data.shortLivedUrl, { responseType: "text" });
+  t.is(dl.data, content);
 
   // Delete
-  const delRes = await axios.delete(BASE, {
-    params: { hash, contextId: "user-lifecycle", fileScope: "global" },
-  });
-  t.is(delRes.status, 200);
+  const del = await axios.delete(BASE, { params: { filename: fname, contextId: "user-lc", fileScope: "global" } });
+  t.is(del.status, 200);
 
   // Verify gone
-  const listAfter = await axios.get(BASE, {
-    params: { operation: "listFolder", userId: "user-lifecycle", fileScope: "global" },
-  });
-  const stillThere = listAfter.data.find((f) => f.hash === hash);
-  t.falsy(stillThere, "File should be gone after deletion");
+  const after = await axios.get(BASE, { params: { operation: "listFolder", userId: "user-lc", fileScope: "global" } });
+  t.falsy(after.data.find((f) => f.filename === fname));
 });

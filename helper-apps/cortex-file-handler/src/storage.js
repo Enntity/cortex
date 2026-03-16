@@ -373,13 +373,12 @@ export async function listFolder(prefix) {
     );
     if (listResp.status === 200 && Array.isArray(listResp.data.items)) {
       for (const item of listResp.data.items) {
-        const basename = path.basename(item.name);
-        const { hash, filename } = parseHashFilename(basename);
+        const filename = path.basename(item.name);
         const signedUrl = `${emulatorHost()}/storage/v1/b/${bucketName}/o/${encodeURIComponent(item.name)}?alt=media`;
         results.push({
           name: item.name,
           filename,
-          hash,
+          displayFilename: filename,
           size: parseInt(item.size || "0", 10),
           contentType: item.contentType || "application/octet-stream",
           lastModified: item.updated || item.timeCreated || new Date().toISOString(),
@@ -394,13 +393,12 @@ export async function listFolder(prefix) {
   const [files] = await bucket.getFiles({ prefix });
 
   for (const file of files) {
-    const basename = path.basename(file.name);
-    const { hash, filename } = parseHashFilename(basename);
+    const filename = path.basename(file.name);
 
     let signedUrl;
     try {
-      const gcsUrl = `gs://${bucketName}/${file.name}`;
-      signedUrl = await getSignedUrl(gcsUrl, 60);
+      const gcsUrlStr = `gs://${bucketName}/${file.name}`;
+      signedUrl = await getSignedUrl(gcsUrlStr, 60);
     } catch {
       signedUrl = `gs://${bucketName}/${file.name}`;
     }
@@ -409,7 +407,7 @@ export async function listFolder(prefix) {
     results.push({
       name: file.name,
       filename,
-      hash,
+      displayFilename: filename,
       size: parseInt(metadata.size || "0", 10),
       contentType: metadata.contentType || "application/octet-stream",
       lastModified: metadata.updated || metadata.timeCreated || new Date().toISOString(),
@@ -472,22 +470,6 @@ function parseGcsUrl(url) {
   return {
     bucket: withoutProtocol.slice(0, slashIndex),
     filePath: withoutProtocol.slice(slashIndex + 1),
-  };
-}
-
-/**
- * Parse a filename of the form `{hash}_{filename}` into components.
- * @param {string} name - e.g. "abc123def_photo.jpg"
- * @returns {{hash: string, filename: string}}
- */
-function parseHashFilename(name) {
-  const underscoreIndex = name.indexOf("_");
-  if (underscoreIndex === -1) {
-    return { hash: "", filename: name };
-  }
-  return {
-    hash: name.slice(0, underscoreIndex),
-    filename: name.slice(underscoreIndex + 1),
   };
 }
 

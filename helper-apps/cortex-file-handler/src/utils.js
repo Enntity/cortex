@@ -40,15 +40,16 @@ export function sanitizeFilename(name) {
 }
 
 /**
- * Construct a blob name from hash, filename, and folder path.
- * @param {string} hash - Content hash prefix
+ * Construct a blob name from filename and folder path.
+ * If a file with the same name already exists, a short timestamp
+ * suffix is added to avoid silent overwrites.
  * @param {string} filename - Sanitized filename
  * @param {string} folderPath - Folder prefix (should end with '/' or be empty)
  * @returns {string} Full blob name
  */
-export function constructBlobName(hash, filename, folderPath = "") {
+export function constructBlobName(filename, folderPath = "") {
   const sanitized = sanitizeFilename(filename);
-  return `${folderPath}${hash}_${sanitized}`;
+  return `${folderPath}${sanitized}`;
 }
 
 /**

@@ -1,8 +1,8 @@
 // sys_tool_file_collection.js
 // Tool pathway that manages user file collections via GCS (list, search, add, remove).
-// GCS is the source of truth — no Redis, no reference counting, no metadata updates.
+// GCS is the source of truth — files are just files in a bucket, no hashing or metadata.
 import logger from '../../../../lib/logger.js';
-import { uploadFileToCloud, loadFileCollection, findFileInCollection, deleteFileByHash, listFilesForContext } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, findFileInCollection, deleteFileByName, listFilesForContext } from '../../../../lib/fileUtils.js';
 
 export default {
     prompt: [],
@@ -18,7 +18,7 @@ export default {
 • ADD: Provide fileUrl (to upload) + filename
 • SEARCH: Provide query to search by filename
 • LIST: No query/fileUrl/fileIds → lists all files
-• REMOVE: Provide fileIds array to delete files`,
+• REMOVE: Provide fileIds array to delete files by filename`,
                 parameters: {
                     type: "object",
                     properties: {
@@ -37,7 +37,7 @@ export default {
                         fileIds: {
                             type: "array",
                             items: { type: "string" },
-                            description: "REMOVE: Array of files to delete (hash, filename, or URL)"
+                            description: "REMOVE: Array of filenames to delete"
                         },
                         sortBy: {
                             type: "string",
@@ -71,34 +71,23 @@ export default {
 
         try {
             if (isAdd) {
-                // Add file — upload to GCS
                 const { fileUrl, filename } = args;
-
-                if (!filename) {
-                    throw new Error("filename is required");
-                }
-                if (!fileUrl) {
-                    throw new Error("fileUrl is required");
-                }
+                if (!filename) throw new Error("filename is required");
+                if (!fileUrl) throw new Error("fileUrl is required");
 
                 const result = await uploadFileToCloud(fileUrl, null, filename, resolver, contextId);
 
                 resolver.tool = JSON.stringify({ toolUsed: "FileCollection", action: "add" });
                 return JSON.stringify({
                     success: true,
-                    hash: result.hash,
-                    filename,
+                    filename: result.filename || filename,
                     url: result.shortLivedUrl || result.url,
                     message: `File "${filename}" uploaded successfully`
                 });
 
             } else if (isSearch) {
-                // Search — list files and filter by query
                 const { query, limit = 20 } = args;
-
-                if (!query || typeof query !== 'string') {
-                    throw new Error("query is required and must be a string");
-                }
+                if (!query || typeof query !== 'string') throw new Error("query is required");
 
                 const files = await listFilesForContext(contextId, { fileScope: 'all' });
                 const queryLower = query.toLowerCase().replace(/[-_\s]+/g, ' ').trim();
@@ -106,9 +95,7 @@ export default {
                 let results = files.filter(f => {
                     const name = (f.displayFilename || f.filename || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
                     return name.includes(queryLower);
-                });
-
-                results = results.slice(0, limit);
+                }).slice(0, limit);
 
                 resolver.tool = JSON.stringify({ toolUsed: "FileCollection", action: "search" });
                 return JSON.stringify({
@@ -118,8 +105,7 @@ export default {
                         ? `No files found matching "${query}".`
                         : `Found ${results.length} file(s) matching "${query}".`,
                     files: results.map(f => ({
-                        hash: f.hash,
-                        displayFilename: f.displayFilename || f.filename,
+                        filename: f.displayFilename || f.filename,
                         url: f.url,
                         size: f.size,
                         contentType: f.contentType,
@@ -128,28 +114,23 @@ export default {
                 });
 
             } else if (isRemove) {
-                // Remove — delete files from GCS
                 const { fileIds, fileId } = args;
                 const targets = Array.isArray(fileIds) ? fileIds : (fileId ? [fileId] : []);
+                if (targets.length === 0) throw new Error("fileIds array is required");
 
-                if (targets.length === 0) {
-                    throw new Error("fileIds array is required and must not be empty");
-                }
-
-                // Load current files to resolve references
                 const files = await listFilesForContext(contextId, { fileScope: 'all' });
                 const removed = [];
                 const notFound = [];
 
                 for (const target of targets) {
                     const found = findFileInCollection(target, files);
-                    if (found?.hash) {
+                    if (found?.filename) {
                         try {
-                            await deleteFileByHash(found.hash, resolver, contextId);
-                            removed.push({ displayFilename: found.displayFilename || found.filename, hash: found.hash });
+                            await deleteFileByName(found.filename, resolver, contextId);
+                            removed.push({ filename: found.displayFilename || found.filename });
                         } catch (e) {
-                            logger.warn(`Failed to delete file ${found.hash}: ${e.message}`);
-                            removed.push({ displayFilename: found.displayFilename || found.filename, hash: found.hash, error: e.message });
+                            logger.warn(`Failed to delete file ${found.filename}: ${e.message}`);
+                            removed.push({ filename: found.displayFilename || found.filename, error: e.message });
                         }
                     } else {
                         notFound.push(target);
@@ -166,9 +147,7 @@ export default {
                 });
 
             } else {
-                // List — show all files
                 const { sortBy = 'date', limit = 50 } = args;
-
                 const files = await listFilesForContext(contextId, { fileScope: 'all' });
                 let results = [...files];
 
@@ -177,7 +156,6 @@ export default {
                 } else {
                     results.sort((a, b) => new Date(b.lastModified || 0) - new Date(a.lastModified || 0));
                 }
-
                 results = results.slice(0, limit);
 
                 resolver.tool = JSON.stringify({ toolUsed: "FileCollection", action: "list" });
@@ -187,10 +165,9 @@ export default {
                     totalFiles: files.length,
                     message: results.length === 0
                         ? 'No files in collection.'
-                        : `Showing ${results.length} of ${files.length} file(s). Use hash or displayFilename to reference files.`,
+                        : `Showing ${results.length} of ${files.length} file(s). Use filename to reference files.`,
                     files: results.map(f => ({
-                        hash: f.hash,
-                        displayFilename: f.displayFilename || f.filename,
+                        filename: f.displayFilename || f.filename,
                         url: f.url,
                         size: f.size,
                         contentType: f.contentType,
@@ -202,10 +179,7 @@ export default {
         } catch (e) {
             logger.error(`Error in file collection operation: ${e.message}`);
             resolver.tool = JSON.stringify({ toolUsed: "FileCollection" });
-            return JSON.stringify({
-                success: false,
-                error: e.message || "Unknown error occurred"
-            });
+            return JSON.stringify({ success: false, error: e.message || "Unknown error occurred" });
         }
     }
 };

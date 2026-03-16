@@ -54,45 +54,39 @@ test('isTextMimeType: binary types', t => {
 // ─── findFileInCollection ────────────────────────────────────────────────────
 
 const mockFiles = [
-    { hash: 'abc123', filename: 'report.pdf', displayFilename: 'Q4 Report', url: 'gs://bucket/abc123_report.pdf', contentType: 'application/pdf' },
-    { hash: 'def456', filename: 'photo.jpg', displayFilename: 'Vacation Photo', url: 'gs://bucket/def456_photo.jpg', contentType: 'image/jpeg' },
-    { hash: 'ghi789', filename: 'data.csv', displayFilename: 'Sales Data', url: 'gs://bucket/ghi789_data.csv', contentType: 'text/csv' },
+    { filename: 'report.pdf', displayFilename: 'Q4 Report', url: 'gs://bucket/user1/global/report.pdf', contentType: 'application/pdf' },
+    { filename: 'photo.jpg', displayFilename: 'Vacation Photo', url: 'gs://bucket/user1/global/photo.jpg', contentType: 'image/jpeg' },
+    { filename: 'data.csv', displayFilename: 'Sales Data', url: 'gs://bucket/user1/global/data.csv', contentType: 'text/csv' },
 ];
-
-test('findFileInCollection: by exact hash', t => {
-    const found = fileUtils.findFileInCollection('abc123', mockFiles);
-    t.truthy(found);
-    t.is(found.hash, 'abc123');
-});
 
 test('findFileInCollection: by filename', t => {
     const found = fileUtils.findFileInCollection('report.pdf', mockFiles);
     t.truthy(found);
-    t.is(found.hash, 'abc123');
+    t.is(found.filename, 'report.pdf');
 });
 
 test('findFileInCollection: by displayFilename', t => {
     const found = fileUtils.findFileInCollection('Q4 Report', mockFiles);
     t.truthy(found);
-    t.is(found.hash, 'abc123');
+    t.is(found.filename, 'report.pdf');
 });
 
 test('findFileInCollection: case insensitive', t => {
     const found = fileUtils.findFileInCollection('REPORT.PDF', mockFiles);
     t.truthy(found);
-    t.is(found.hash, 'abc123');
+    t.is(found.filename, 'report.pdf');
 });
 
 test('findFileInCollection: partial match', t => {
     const found = fileUtils.findFileInCollection('report', mockFiles);
     t.truthy(found);
-    t.is(found.hash, 'abc123');
+    t.is(found.filename, 'report.pdf');
 });
 
 test('findFileInCollection: by URL', t => {
-    const found = fileUtils.findFileInCollection('gs://bucket/def456_photo.jpg', mockFiles);
+    const found = fileUtils.findFileInCollection('gs://bucket/user1/global/photo.jpg', mockFiles);
     t.truthy(found);
-    t.is(found.hash, 'def456');
+    t.is(found.filename, 'photo.jpg');
 });
 
 test('findFileInCollection: not found returns null', t => {

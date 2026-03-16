@@ -108,18 +108,18 @@ test("POST with json but no operation returns 400", async (t) => {
 
 // ─── POST: rename without required params ────────────────────────────────────
 
-test("POST rename without hash returns 400", async (t) => {
+test("POST rename without filename returns 400", async (t) => {
   const { status, data } = await request("POST", "/api/CortexFileHandler?operation=rename", {
     body: { newFilename: "test.txt" },
   });
   t.is(status, 400);
   t.truthy(data.error);
-  t.regex(data.error, /hash/i);
+  t.regex(data.error, /filename/i);
 });
 
 test("POST rename without newFilename returns 400", async (t) => {
   const { status, data } = await request("POST", "/api/CortexFileHandler?operation=rename", {
-    body: { hash: "abc123" },
+    body: { filename: "old.txt" },
   });
   t.is(status, 400);
   t.truthy(data.error);
@@ -155,13 +155,13 @@ test("GET signUrl with non-gs:// URL returns error", async (t) => {
 
 // ─── DELETE: with hash but no GCS ────────────────────────────────────────────
 
-test.serial("DELETE with hash but no GCS configured returns error", async (t) => {
+test.serial("DELETE with filename but no GCS configured returns error", async (t) => {
   const origBucket = process.env.GCS_BUCKETNAME;
   process.env.GCS_BUCKETNAME = "test-bucket-nonexistent";
 
   const { status } = await request(
     "DELETE",
-    "/api/CortexFileHandler?hash=abc123"
+    "/api/CortexFileHandler?filename=abc.txt&contextId=user1&fileScope=global"
   );
 
   // Should be 404 or 500 depending on GCS availability
@@ -176,12 +176,12 @@ test.serial("DELETE with hash but no GCS configured returns error", async (t) =>
 
 // ─── DELETE with JSON body ───────────────────────────────────────────────────
 
-test.serial("DELETE with hash in JSON body", async (t) => {
+test.serial("DELETE with filename in JSON body", async (t) => {
   const origBucket = process.env.GCS_BUCKETNAME;
   process.env.GCS_BUCKETNAME = "test-bucket-nonexistent";
 
   const { status } = await request("DELETE", "/api/CortexFileHandler", {
-    body: { hash: "abc123", contextId: "user1" },
+    body: { filename: "abc.txt", contextId: "user1", fileScope: "global" },
   });
 
   t.true(status === 404 || status === 500);

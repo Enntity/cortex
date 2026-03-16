@@ -119,23 +119,20 @@ test("sanitizeFilename: handles windows-style backslash paths", (t) => {
 // ─── constructBlobName ───────────────────────────────────────────────────────
 
 test("constructBlobName: basic construction", (t) => {
-  t.is(constructBlobName("abc123", "photo.jpg", ""), "abc123_photo.jpg");
+  t.is(constructBlobName("photo.jpg", ""), "photo.jpg");
 });
 
 test("constructBlobName: with folder path", (t) => {
-  t.is(
-    constructBlobName("abc123", "photo.jpg", "user1/global/"),
-    "user1/global/abc123_photo.jpg"
-  );
+  t.is(constructBlobName("photo.jpg", "user1/global/"), "user1/global/photo.jpg");
 });
 
 test("constructBlobName: sanitizes filename", (t) => {
-  const result = constructBlobName("abc123", "../../bad.txt", "user1/");
-  t.is(result, "user1/abc123_bad.txt");
+  const result = constructBlobName("../../bad.txt", "user1/");
+  t.is(result, "user1/bad.txt");
 });
 
 test("constructBlobName: empty folder path", (t) => {
-  t.is(constructBlobName("hash", "file.txt"), "hash_file.txt");
+  t.is(constructBlobName("file.txt"), "file.txt");
 });
 
 // ─── isTextMimeType ──────────────────────────────────────────────────────────

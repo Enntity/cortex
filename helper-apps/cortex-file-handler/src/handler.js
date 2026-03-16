@@ -1,4 +1,3 @@
-import crypto from "crypto";
 import path from "path";
 import Busboy from "busboy";
 import axios from "axios";
@@ -20,13 +19,6 @@ import { sanitizeFilename, constructBlobName } from "./utils.js";
 const DEFAULT_SIGNED_MINUTES = 5;
 
 /**
- * Compute a short hash (first 16 hex chars of SHA-256) from a buffer.
- */
-function computeHash(buffer) {
-  return crypto.createHash("sha256").update(buffer).digest("hex").slice(0, 16);
-}
-
-/**
  * Build a canonical gs:// URL.
  */
 function gcsUrl(blobName) {
@@ -34,39 +26,20 @@ function gcsUrl(blobName) {
 }
 
 /**
- * Search for a file by hash prefix within a folder in GCS.
+ * Find a file by filename within a folder in GCS.
  * Returns the first matching blob name, or null.
  */
-async function findByHash(hash, folderPath = "") {
-  const prefix = `${folderPath}${hash}_`;
-  const bucketName = getGCSBucketName();
-
-  if (process.env.STORAGE_EMULATOR_HOST) {
-    const host = process.env.STORAGE_EMULATOR_HOST.replace(/\/$/, "");
-    const resp = await axios.get(
-      `${host}/storage/v1/b/${bucketName}/o`,
-      {
-        params: { prefix, maxResults: 1 },
-        validateStatus: (s) => s === 200 || s === 404,
-      }
-    );
-    if (resp.status === 200 && Array.isArray(resp.data.items) && resp.data.items.length > 0) {
-      return resp.data.items[0].name;
-    }
-    return null;
-  }
-
-  const bucket = getBucket();
-  const [files] = await bucket.getFiles({ prefix, maxResults: 1 });
-  return files.length > 0 ? files[0].name : null;
+async function findByName(filename, folderPath = "") {
+  const files = await listFolder(folderPath);
+  const match = files.find(
+    (f) => f.filename === filename || f.name === `${folderPath}${filename}`
+  );
+  return match ? match.name : null;
 }
 
 /**
  * Parse multipart upload via Busboy.
- * Buffers the file content for hashing, then uploads to GCS.
- *
- * @param {import('express').Request} req
- * @returns {Promise<Object>} Upload result
+ * Buffers the file content, then uploads to GCS.
  */
 function parseMultipart(req) {
   return new Promise((resolve, reject) => {
@@ -107,7 +80,6 @@ function parseMultipart(req) {
 
 /**
  * Main request handler for the file service.
- * Exported as an async function that receives (req, res).
  */
 export default async function handler(req, res) {
   const method = req.method.toUpperCase();
@@ -133,23 +105,18 @@ export default async function handler(req, res) {
 
 async function handlePost(req, res) {
   const contentType = req.headers["content-type"] || "";
-
-  // Check for rename operation in query params
   const operation = req.query?.operation || req.body?.operation;
+
   if (operation === "rename") {
     return await handleRename(req, res);
   }
 
-  // Multipart upload
   if (contentType.includes("multipart/form-data")) {
     return await handleMultipartUpload(req, res);
   }
 
-  // JSON body — check for rename or other operations
-  if (contentType.includes("application/json")) {
-    if (operation === "rename") {
-      return await handleRename(req, res);
-    }
+  if (contentType.includes("application/json") && operation === "rename") {
+    return await handleRename(req, res);
   }
 
   res.status(400).json({ error: "Expected multipart/form-data for upload or JSON for operations" });
@@ -162,74 +129,64 @@ async function handleMultipartUpload(req, res) {
     return res.status(400).json({ error: "No file content received" });
   }
 
-  // Merge query params and form fields — form fields take priority
   const params = { ...req.query, ...fields };
   const userId = params.contextId || params.userId || null;
   const chatId = params.chatId || null;
   const fileScope = params.fileScope || null;
-  const providedHash = params.hash || null;
   const filename = params.filename || uploadFilename;
 
-  // Compute hash from file content
-  const hash = providedHash || computeHash(fileBuffer);
-
-  // Determine folder path and blob name
   const folderPath = constructFolderPath({ userId, chatId, fileScope });
   const sanitized = sanitizeFilename(filename);
-  const blobName = constructBlobName(hash, sanitized, folderPath);
+  const blobName = constructBlobName(sanitized, folderPath);
 
-  // Resolve content type — prefer Busboy-detected, fall back to mime-types lookup
+  // Resolve content type
   let resolvedMimeType = uploadMimeType;
   if (resolvedMimeType === "application/octet-stream") {
     const looked = mime.lookup(sanitized);
     if (looked) resolvedMimeType = looked;
   }
 
-  // Upload to GCS
   const result = await uploadBuffer(fileBuffer, blobName, resolvedMimeType);
   const shortLivedUrl = await getSignedUrl(result.url, DEFAULT_SIGNED_MINUTES);
 
   res.status(200).json({
     url: result.url,
-    hash,
     filename: sanitized,
     shortLivedUrl,
+    size: fileBuffer.length,
+    contentType: resolvedMimeType,
     message: `File '${sanitized}' uploaded successfully.`,
   });
 }
 
 async function handleRename(req, res) {
   const params = { ...req.query, ...(req.body || {}) };
-  const hash = params.hash;
+  const oldFilename = params.filename || params.oldFilename;
+  const newFilename = params.newFilename;
   const userId = params.contextId || params.userId || null;
   const chatId = params.chatId || null;
   const fileScope = params.fileScope || null;
-  const newFilename = params.newFilename;
 
-  if (!hash) {
-    return res.status(400).json({ error: "Missing hash parameter" });
+  if (!oldFilename) {
+    return res.status(400).json({ error: "Missing filename (current filename to rename)" });
   }
   if (!newFilename) {
     return res.status(400).json({ error: "Missing newFilename parameter" });
   }
 
   const folderPath = constructFolderPath({ userId, chatId, fileScope });
-
-  // Find existing file by hash
-  const existingBlobName = await findByHash(hash, folderPath);
+  const existingBlobName = await findByName(oldFilename, folderPath);
   if (!existingBlobName) {
-    return res.status(404).json({ error: `File with hash ${hash} not found` });
+    return res.status(404).json({ error: `File '${oldFilename}' not found` });
   }
 
-  // Construct new blob name
   const sanitized = sanitizeFilename(newFilename);
-  const newBlobName = constructBlobName(hash, sanitized, folderPath);
+  const newBlobName = constructBlobName(sanitized, folderPath);
 
   if (existingBlobName === newBlobName) {
     const signedUrl = await getSignedUrl(gcsUrl(newBlobName), DEFAULT_SIGNED_MINUTES);
     return res.status(200).json({
       url: gcsUrl(newBlobName),
-      hash,
       filename: sanitized,
       shortLivedUrl: signedUrl,
       message: "File already has this name.",
@@ -239,7 +196,6 @@ async function handleRename(req, res) {
   const bucketName = getGCSBucketName();
 
   if (process.env.STORAGE_EMULATOR_HOST) {
-    // Emulator: download then re-upload with new name
     const host = process.env.STORAGE_EMULATOR_HOST.replace(/\/$/, "");
     const downloadResp = await axios.get(
       `${host}/storage/v1/b/${bucketName}/o/${encodeURIComponent(existingBlobName)}?alt=media`,
@@ -255,7 +211,6 @@ async function handleRename(req, res) {
       { validateStatus: (s) => s === 200 || s === 204 || s === 404 }
     );
   } else {
-    // Real GCS: copy then delete
     const bucket = getBucket();
     const srcFile = bucket.file(existingBlobName);
     await srcFile.copy(bucket.file(newBlobName));
@@ -267,7 +222,6 @@ async function handleRename(req, res) {
 
   res.status(200).json({
     url: newUrl,
-    hash,
     filename: sanitized,
     shortLivedUrl: signedUrl,
     message: `File renamed to '${sanitized}'.`,
@@ -280,17 +234,14 @@ async function handleGet(req, res) {
   const params = { ...req.query, ...(req.body || {}) };
   const operation = params.operation;
 
-  // listFolder
   if (operation === "listFolder") {
     return await handleListFolder(params, res);
   }
 
-  // signUrl — generate a signed URL for a gs:// URL
   if (operation === "signUrl") {
     return await handleSignUrl(params, res);
   }
 
-  // Fetch/load/restore remote URL
   const remoteUrl = params.fetch || params.load || params.restore;
   if (remoteUrl) {
     return await handleFetchRemote(params, remoteUrl, res);
@@ -336,20 +287,17 @@ async function handleFetchRemote(params, remoteUrl, res) {
   const userId = params.contextId || params.userId || null;
   const chatId = params.chatId || null;
   const fileScope = params.fileScope || null;
-  const providedHash = params.hash || null;
 
   try {
-    // Determine filename from URL
     const urlObj = new URL(remoteUrl);
     let remoteFilename = path.basename(urlObj.pathname) || "download";
 
-    // Download
     const response = await axios({
       method: "GET",
       url: remoteUrl,
       responseType: "arraybuffer",
       timeout: 30000,
-      maxContentLength: 500 * 1024 * 1024, // 500MB
+      maxContentLength: 500 * 1024 * 1024,
     });
 
     const buffer = Buffer.from(response.data);
@@ -363,19 +311,14 @@ async function handleFetchRemote(params, remoteUrl, res) {
       }
     }
 
-    // Truncate long filenames
     if (remoteFilename.length > 200) {
       const ext = path.extname(remoteFilename);
       remoteFilename = remoteFilename.slice(0, 200 - ext.length) + ext;
     }
 
-    // Compute hash
-    const hash = providedHash || computeHash(buffer);
-
-    // Upload to GCS
     const folderPath = constructFolderPath({ userId, chatId, fileScope });
     const sanitized = sanitizeFilename(remoteFilename);
-    const blobName = constructBlobName(hash, sanitized, folderPath);
+    const blobName = constructBlobName(sanitized, folderPath);
     const resolvedMime = contentTypeHeader?.split(";")[0].trim() || mime.lookup(sanitized) || "application/octet-stream";
 
     const result = await uploadBuffer(buffer, blobName, resolvedMime);
@@ -383,9 +326,9 @@ async function handleFetchRemote(params, remoteUrl, res) {
 
     res.status(200).json({
       url: result.url,
-      hash,
       filename: sanitized,
       shortLivedUrl,
+      size: buffer.length,
       message: `File '${sanitized}' uploaded successfully.`,
     });
   } catch (err) {
@@ -401,42 +344,36 @@ async function handleFetchRemote(params, remoteUrl, res) {
 
 async function handleDelete(req, res) {
   const params = { ...req.query, ...(req.body || {}) };
-  const hash = params.hash;
-  const requestId = params.requestId;
+  const filename = params.filename;
+  const prefix = params.prefix || params.requestId;
   const userId = params.contextId || params.userId || null;
   const chatId = params.chatId || null;
   const fileScope = params.fileScope || null;
 
-  // Delete by hash
-  if (hash) {
+  // Delete by filename within a folder
+  if (filename) {
     const folderPath = constructFolderPath({ userId, chatId, fileScope });
-    const blobName = await findByHash(hash, folderPath);
+    const blobName = await findByName(filename, folderPath);
 
-    // Also try root if not found in scoped path
-    let resolvedBlobName = blobName;
-    if (!resolvedBlobName && folderPath) {
-      resolvedBlobName = await findByHash(hash, "");
+    if (!blobName) {
+      return res.status(404).json({ error: `File '${filename}' not found` });
     }
 
-    if (!resolvedBlobName) {
-      return res.status(404).json({ error: `File with hash ${hash} not found` });
-    }
-
-    await deleteFile(gcsUrl(resolvedBlobName));
+    await deleteFile(gcsUrl(blobName));
     return res.status(200).json({
-      message: `File with hash ${hash} deleted successfully`,
-      deleted: { hash, blobName: resolvedBlobName },
+      message: `File '${filename}' deleted successfully`,
+      deleted: { filename, blobName },
     });
   }
 
-  // Delete by requestId (prefix)
-  if (requestId) {
-    const deleted = await deleteByPrefix(requestId);
+  // Delete by prefix (folder cleanup)
+  if (prefix) {
+    const deleted = await deleteByPrefix(prefix);
     return res.status(200).json({
-      message: `Deleted ${deleted.length} file(s) for requestId ${requestId}`,
+      message: `Deleted ${deleted.length} file(s)`,
       deleted,
     });
   }
 
-  res.status(400).json({ error: "Please provide either hash or requestId" });
+  res.status(400).json({ error: "Please provide filename or prefix" });
 }
