@@ -1,3 +1,5 @@
+// File type extension constants
+
 export const DOC_EXTENSIONS = [
   ".txt",
   ".json",
@@ -47,18 +49,10 @@ export const ACCEPTED_MIME_TYPES = {
   "text/javascript": [".js"],
   "text/html": [".html"],
   "text/css": [".css"],
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [
-    ".docx",
-  ],
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
-    ".xlsx",
-  ],
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
   "application/msword": [".doc"],
   "application/vnd.ms-excel": [".xls"],
-  "application/vnd.ms-word.document.macroEnabled.12": [".docm"],
-  "application/vnd.ms-excel.sheet.macroEnabled.12": [".xlsm"],
-  "application/vnd.ms-word.template.macroEnabled.12": [".dotm"],
-  "application/vnd.ms-excel.template.macroEnabled.12": [".xltm"],
 
   // Image types
   "image/jpeg": [".jpg", ".jpeg"],
@@ -66,14 +60,7 @@ export const ACCEPTED_MIME_TYPES = {
   "image/webp": [".webp"],
   "image/heic": [".heic"],
   "image/heif": [".heif"],
-  "application/octet-stream": [
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp",
-    ".heic",
-    ".heif",
-  ],
+  "application/octet-stream": [".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"],
   "application/pdf": [".pdf"],
 
   // Audio types
@@ -98,117 +85,18 @@ export const ACCEPTED_MIME_TYPES = {
   "video/webm": [".webm"],
   "video/wmv": [".wmv"],
   "video/3gpp": [".3gp"],
-  "video/m4v": [".m4v"],
 };
 
-// Helper function to check if a mime type is accepted
-export function isAcceptedMimeType(mimeType) {
-  return mimeType in ACCEPTED_MIME_TYPES;
+/**
+ * Get the GCS bucket name from environment.
+ * Throws if GCS_BUCKETNAME is not set.
+ */
+export function getGCSBucketName() {
+  const bucketName = process.env.GCS_BUCKETNAME;
+  if (!bucketName || bucketName.trim() === "") {
+    throw new Error(
+      "GCS_BUCKETNAME environment variable is required but not set."
+    );
+  }
+  return bucketName.trim();
 }
-
-// Helper function to get accepted extensions for a mime type
-export function getExtensionsForMimeType(mimeType) {
-  return ACCEPTED_MIME_TYPES[mimeType] || [];
-}
-
-// Helper function to check if an extension is accepted
-export function isAcceptedExtension(extension) {
-  return (
-    DOC_EXTENSIONS.includes(extension) ||
-    IMAGE_EXTENSIONS.includes(extension) ||
-    VIDEO_EXTENSIONS.includes(extension) ||
-    AUDIO_EXTENSIONS.includes(extension)
-  );
-}
-
-export const CONVERTED_EXTENSIONS = [
-  ".doc",
-  ".docx",
-  ".xls",
-  ".xlsx",
-  ".ppt",
-  ".pptx",
-];
-
-// Azure Storage constants
-export const AZURITE_ACCOUNT_NAME = "devstoreaccount1";
-
-// Get single container name from environment variable
-// CFH operates on a single Azure container and single GCS bucket
-export const getContainerName = () => {
-  const envValue = process.env.AZURE_STORAGE_CONTAINER_NAME;
-  
-  // Default to cortextempfiles if not set, empty, or the string "undefined"
-  if (!envValue || (typeof envValue === 'string' && envValue.trim() === "") || envValue === "undefined") {
-    return "cortextempfiles";
-  }
-  
-  // Handle legacy comma-separated values (take the last one)
-  if (envValue.includes(",")) {
-    const containers = envValue.split(",").map(c => c.trim()).filter(c => c.length > 0);
-    if (containers.length > 0) {
-      const containerName = containers[containers.length - 1];
-      console.warn(
-        `[WARNING] AZURE_STORAGE_CONTAINER_NAME contains comma-separated values (legacy format). ` +
-        `Using last container: "${containerName}". ` +
-        `Full value: "${envValue}". ` +
-        `Please update to use a single container name.`
-      );
-      return containerName;
-    }
-    // If all containers were empty after splitting, fall back to default
-    return "cortextempfiles";
-  }
-  
-  return envValue;
-};
-
-// Helper function to get current container name at runtime
-export const getDefaultContainerName = () => {
-  return getContainerName();
-};
-
-// Export constant - evaluated at module load time, but getContainerName() handles defaults
-export const AZURE_STORAGE_CONTAINER_NAME = getContainerName();
-
-// GCS bucket name must be explicitly set - no default to prevent accidental bucket usage
-// Using lazy evaluation - only throws error when accessed, not at module load time
-// This allows tests to import the module without GCS_BUCKETNAME set
-let _GCS_BUCKETNAME_CACHE = null;
-const getGCSBucketNameValue = () => {
-  if (_GCS_BUCKETNAME_CACHE === null) {
-    const bucketName = process.env.GCS_BUCKETNAME;
-    if (!bucketName || bucketName.trim() === "") {
-      throw new Error(
-        "GCS_BUCKETNAME environment variable is required but not set. " +
-        "Please set GCS_BUCKETNAME in your environment or .env file."
-      );
-    }
-    _GCS_BUCKETNAME_CACHE = bucketName.trim();
-  }
-  return _GCS_BUCKETNAME_CACHE;
-};
-
-// Export function for explicit access
-export const getGCSBucketName = getGCSBucketNameValue;
-
-// Export as a getter-like constant using a class with valueOf/toString
-// This allows it to work as a string in most contexts (function calls, template literals, etc.)
-class LazyGCSBucketName {
-  valueOf() {
-    return getGCSBucketNameValue();
-  }
-  toString() {
-    return getGCSBucketNameValue();
-  }
-  [Symbol.toPrimitive](hint) {
-    // Handle 'default', 'string', and 'number' hints
-    return getGCSBucketNameValue();
-  }
-}
-
-// Create instance that will convert to string when used
-const lazyBucketName = new LazyGCSBucketName();
-
-// Export as constant - will be converted to string when used in most contexts
-export const GCS_BUCKETNAME = lazyBucketName;
