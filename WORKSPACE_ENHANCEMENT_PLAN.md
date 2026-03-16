@@ -1,82 +1,61 @@
-# Workspace Enhancement Plan
+# Workspace Enhancement Plan — COMPLETED
 
-## Completed
+## All Phases Complete
 
-### Phase 1: Port Workspace Stability Enhancements (committed: e02fbc6)
-- Backend abstraction layer (ContainerBackend, DockerBackend, factory)
-- workspace_client.js hardening (image versioning, stale state recovery, stopped container wake, persistent shareName, safe secrets, enhanced error detection, 401 auth recovery, idle reaper)
-- Container enhancements (/reconfigure, /shell/jobs, mutable secrets, .env sourcing, path traversal protection)
-- SSH tool improvements (filtered errors, bg/poll hints, timeoutSeconds, jobs command)
+### Phase 1: Port Workspace Stability Enhancements (e02fbc6)
+Backend abstraction layer, workspace_client.js hardening, container enhancements, SSH tool improvements.
 
-### Phase 2: Hetzner Multi-Tenant Docker Host Pool (committed: 8553537)
-- HetznerClient (Hetzner Cloud API wrapper)
-- HostRegistry (Redis-backed host tracking)
-- HetznerBackend (multi-tenant Docker hosts, auto-scale up/down, health monitoring)
-- Admin REST API (pool status, add/remove hosts, health check)
-- 36 unit tests
+### Phase 2: Hetzner Multi-Tenant Docker Host Pool (8553537)
+HetznerClient, HostRegistry, HetznerBackend, admin REST API, 36 tests.
 
-### Phase 3: Security Fixes (committed: 2384f1e)
-- Path traversal protection on all workspace file endpoints
-- Container/volume name sanitization
+### Phase 3: Security Fixes (2384f1e)
+Path traversal protection, container/volume name sanitization.
 
-### Phase 4: Tests, Admin API, Deployment (committed: f2a586b)
-- HetznerClient, HostRegistry, HetznerBackend, workspace server tests
-- Admin REST endpoints mounted in graphql.js
-- Deploy workflow workspace image SHA tagging
+### Phase 4: Tests, Admin API, Deployment (f2a586b)
+Full test suite, admin endpoints, deploy workflow updates.
 
----
+### Phase 5: GCS-Only File Handler (89bf1ba)
+Complete rewrite — 5000 → 1200 lines. Azure/Redis/local removed.
 
-## In Progress
+### Phase 6: fileUtils.js + Tool Updates (daa5632)
+2700 → 890 lines. Redis collections removed, GCS source of truth.
 
-### Phase 5: GCS-Only File Handler
-- Replace cortex-file-handler with aj-cortex version
-- Strip Azure Blob Storage, local storage, dual-write
-- Strip Redis hash/dedup/permanent flags — GCS is source of truth
-- Per-user file isolation via GCS path prefixes (`/{userId}/`)
-- Folder structure: `{userId}/global/`, `{userId}/chats/{chatId}/`, etc.
-- Signed URLs for time-limited file access (replaces SAS tokens)
-- Pare down tests to GCS-only
+### Phase 7: Remove checkHash, Add signUrl (f3eb222)
+Files found via listFolder, signed URLs via signUrl endpoint. 18 integration tests.
+
+### Phase 8: Remove Hash Dedup (11e24c2)
+Files stored at natural paths ({userId}/scope/{filename}), no content hashing.
+
+### Phase 9: Hetzner Volumes + gcsfuse + SSH Simplification (c91d293)
+Persistent block storage, GCS FUSE mount at /workspace/files/, push/pull removed.
+
+### Phase 10: Production Config (current)
+docker-compose.prod.yml, .env.sample, deployment docs.
 
 ---
 
-## Remaining Work
+## Architecture Summary
 
-### Phase 6: Hetzner Volumes for Workspace Persistence (~200 lines)
-- HetznerBackend creates/attaches Hetzner Volume (block storage) per workspace
-- Volume follows workspace across host migrations (detach from old host, attach to new)
-- Cloud-init mounts volume at `/mnt/workspace`, Docker binds container `/workspace` to it
-- Entity config stores `hetznerVolumeId` alongside `shareName`
-- On workspace destroy with --destroy-volume: detach + delete Hetzner Volume
-- On normal destroy/reprovision: volume preserved, reattached to new container
+**File Storage**: GCS only. Per-user path prefixes. Signed URLs for all access.
+**Workspace Storage**: Hetzner Volumes (persistent block storage) + gcsfuse for user files.
+**Workspace Backend**: Docker (single host) or Hetzner (multi-host pool, auto-scaling).
+**No Redis** for file metadata. GCS is sole source of truth.
+**No hashing**. Files stored at natural paths. No dedup.
 
-### Phase 7: gcsfuse in Workspace Containers (~150 lines)
-- Add gcsfuse to workspace Dockerfile (Google apt repo)
-- Update entrypoint.sh to mount GCS on startup if credentials provided
-- Wire `buildGcsMountPayload()` into workspace provisioning (workspace_client.js)
-- `/reconfigure` endpoint: accept gcsBucket + serviceAccountKey + onlyDir params
-- Mount with `--only-dir {userId}/` for per-user isolation
-- Service account key written to /tmp (outside /workspace, excluded from backups)
-- gcsfuse cache config for latency mitigation from Hetzner
+## Environment Variables
 
-### Phase 8: Update lib/fileUtils.js for GCS-Only (~significant refactor)
-- Add `listFilesForContext(contextId, { chatId, fileScope })` — calls file handler `listFolder`
-- Add `buildFileLocation(contextId, { chatId, workspaceId, fileScope })` — constructs routing params
-- Update `uploadFileToCloud()` to pass routing fields (userId, chatId, fileScope)
-- Remove Azure-specific URL generation
-- Signed URL generation via file handler (replaces SAS tokens)
-- Cloud listing as source of truth (Redis collection becomes optional metadata layer)
+### Required
+- `GCS_BUCKET_NAME` — GCS bucket for user files
+- `GCP_SERVICE_ACCOUNT_KEY` — Service account JSON for GCS access + gcsfuse
 
-### Phase 9: Simplify Workspace SSH Tool (~remove ~150 lines)
-- Remove `files push` / `files pull` handlers (FUSE mount handles file persistence)
-- Keep `files backup` / `files restore` (workspace snapshots, not user files)
-- Add auto-detect of files written to `/workspace/files/` (port from aj-cortex)
-- Return display markdown with signed URLs for detected files
-- Update tool description to explain /workspace/files/ auto-sync
+### Workspace (Docker backend, default)
+- `WORKSPACE_BACKEND=docker`
+- `WORKSPACE_IMAGE=cortex-workspace:latest`
 
-### Phase 10: Integration & Production Config
-- Update docker-compose.prod.yml for GCS-only file handler config
-- Update deploy workflow for new file handler image
-- GCS service account provisioning (create bucket, service account, grant roles)
-- Environment variable documentation (.env.sample updates)
-- Integration tests: workspace provision → FUSE mount → file write → signed URL → file read
-- End-to-end test: entity chat → workspace command creates file → file visible in UI
+### Workspace (Hetzner backend)
+- `WORKSPACE_BACKEND=hetzner`
+- `HETZNER_API_TOKEN` — Hetzner Cloud API token
+- `HETZNER_LOCATION=fsn1`
+- `HETZNER_SERVER_TYPE=cx42`
+- `HETZNER_FIREWALL_ID` — Firewall allowing private network access
+- `HETZNER_PRIVATE_NETWORK_ID` — Private network for Docker host communication

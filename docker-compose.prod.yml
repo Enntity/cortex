@@ -125,7 +125,7 @@ services:
       retries: 3
       start_period: 5s
 
-  # Cortex File Handler - File processing service (internal + private network)
+  # Cortex File Handler - GCS-only file processing service
   file-handler:
     image: ghcr.io/${GITHUB_REPOSITORY_CORTEX}-file-handler:${IMAGE_TAG:-latest}
     container_name: cortex-file-handler
@@ -133,16 +133,13 @@ services:
     env_file:
       - .env
     environment:
-      # Override/ensure these critical values
       - NODE_ENV=production
       - PORT=7071
-      - REDIS_CONNECTION_STRING=redis://default:${REDIS_PASSWORD}@redis:6379
+      - GCS_BUCKETNAME=${GCS_BUCKET_NAME}
+      - GCP_SERVICE_ACCOUNT_KEY=${GCP_SERVICE_ACCOUNT_KEY}
     ports:
       # Expose on private network for Concierge to access
       - "10.0.0.2:7071:7071"
-    depends_on:
-      redis:
-        condition: service_healthy
     networks:
       - internal
 
