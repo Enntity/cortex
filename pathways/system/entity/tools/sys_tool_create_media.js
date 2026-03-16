@@ -3,7 +3,7 @@
 // Replaces: GenerateImage, ModifyImage, CreateAvatarVariant, GenerateVideo
 
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { uploadFileToCloud, uploadImageToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, getSignedFileUrl } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, uploadImageToCloud, resolveFileParameter, buildFileCreationResponse, getSignedFileUrl } from '../../../../lib/fileUtils.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
 import { config } from '../../../../config.js';
 import axios from 'axios';
@@ -357,44 +357,12 @@ async function generateVideo(args, resolvedReferenceImages, pathwayResolver, cha
                     );
 
                     const uploadedUrl = uploadResult.url || uploadResult;
-                    const uploadedGcs = uploadResult.gcs || null;
-                    const uploadedHash = uploadResult.hash || null;
 
-                    // Add to file collection
                     if (args.contextId && uploadedUrl) {
-                        const extension = videoInfo.mimeType.split('/')[1] || 'mp4';
-                        const uniqueId = uploadedHash ? uploadedHash.substring(0, 8) : Date.now();
-                        const filenamePrefix = args.filenamePrefix || 'generated-video';
-                        const sanitizedPrefix = filenamePrefix.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-                        const filename = `${sanitizedPrefix}-${uniqueId}.${extension}`;
-
-                        const defaultTags = ['video', 'generated'];
-                        const providedTags = Array.isArray(args.tags) ? args.tags : [];
-                        const allTags = [...defaultTags, ...providedTags.filter(t => !defaultTags.includes(t))];
-
-                        const fileEntry = await addFileToCollection(
-                            args.contextId,
-                            args.contextKey || '',
-                            uploadedUrl,
-                            uploadedGcs,
-                            filename,
-                            allTags,
-                            `Generated video: ${args.prompt?.substring(0, 100) || 'video generation'}`,
-                            uploadedHash,
-                            null,
-                            pathwayResolver,
-                            true,
-                            chatId,
-                            args.entityId || null
-                        );
-
                         uploadedVideos.push({
                             type: 'video',
                             url: uploadedUrl,
-                            gcs: uploadedGcs,
-                            hash: uploadedHash,
                             mimeType: videoInfo.mimeType,
-                            fileEntry
                         });
                     }
                 }
@@ -467,49 +435,12 @@ async function processImageArtifacts(result, args, pathwayResolver, chatId, acti
             }
 
             const uploadedUrl = uploadResult.url || uploadResult;
-            const uploadedGcs = uploadResult.gcs || null;
-            const uploadedHash = uploadResult.hash || null;
 
             const imageData = {
                 type: 'image',
                 url: uploadedUrl,
-                gcs: uploadedGcs,
-                hash: uploadedHash,
                 mimeType
             };
-
-            // Add to file collection
-            if (args.contextId && uploadedUrl) {
-                const extension = mimeType.split('/')[1] || 'png';
-                const uniqueId = uploadedHash ? uploadedHash.substring(0, 8) : Date.now();
-                const defaultPrefix = actionLabel === 'avatar' ? 'avatar-image' :
-                                     actionLabel === 'modified' ? 'modified-image' : 'generated-image';
-                const filenamePrefix = args.filenamePrefix || defaultPrefix;
-                const sanitizedPrefix = filenamePrefix.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-                const filename = `${sanitizedPrefix}-${uniqueId}.${extension}`;
-
-                const defaultTags = ['image', actionLabel];
-                const providedTags = Array.isArray(args.tags) ? args.tags : [];
-                const allTags = [...defaultTags, ...providedTags.filter(t => !defaultTags.includes(t))];
-
-                const fileEntry = await addFileToCollection(
-                    args.contextId,
-                    args.contextKey || '',
-                    uploadedUrl,
-                    uploadedGcs,
-                    filename,
-                    allTags,
-                    `${actionLabel} image: ${args.prompt?.substring(0, 100) || 'image'}`,
-                    uploadedHash,
-                    null,
-                    pathwayResolver,
-                    true,
-                    chatId,
-                    args.entityId || null
-                );
-
-                imageData.fileEntry = fileEntry;
-            }
 
             uploadedImages.push(imageData);
         } catch (uploadError) {
@@ -526,10 +457,8 @@ async function processImageArtifacts(result, args, pathwayResolver, chatId, acti
         if (successfulImages.length > 0) {
             const imageUrls = successfulImages.map(img => ({
                 type: "image_url",
-                url: img.fileEntry?.url || img.url,
-                gcs: img.fileEntry?.gcs || img.gcs,
-                image_url: { url: img.fileEntry?.url || img.url },
-                hash: img.fileEntry?.hash || img.hash || null
+                url: img.url,
+                image_url: { url: img.url },
             }));
 
             const actionText = actionLabel === 'avatar' ? 'Avatar generation' :

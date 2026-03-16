@@ -1,7 +1,7 @@
 // sys_tool_image.js
 // Entity tool that creates and modifies images for the entity to show to the user
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { uploadFileToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse, loadFileCollection, findFileInCollection, getSignedFileUrl } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, resolveFileParameter, buildFileCreationResponse, loadFileCollection, findFileInCollection, getSignedFileUrl } from '../../../../lib/fileUtils.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
 import { getEntityStore } from '../../../../lib/MongoEntityStore.js';
 
@@ -181,67 +181,13 @@ export default {
                                 );
                                 
                                 const uploadedUrl = uploadResult.url || uploadResult;
-                                const uploadedGcs = uploadResult.gcs || null;
-                                const uploadedHash = uploadResult.hash || null;
-                                
+
                                 const imageData = {
                                     type: 'image',
                                     url: uploadedUrl,
-                                    gcs: uploadedGcs,
-                                    hash: uploadedHash,
                                     mimeType: mimeType
                                 };
-                                
-                                // Add uploaded image to file collection if contextId is available
-                                if (args.contextId && uploadedUrl) {
-                                    try {
-                                        // Generate filename from mimeType (e.g., "image/png" -> "png")
-                                        const extension = mimeType.split('/')[1] || 'png';
-                                        // Use hash for uniqueness if available, otherwise use timestamp and index
-                                        const uniqueId = uploadedHash ? uploadedHash.substring(0, 8) : `${Date.now()}-${uploadedImages.length}`;
-                                        
-                                        // Determine filename prefix based on whether this is a modification, avatar, or generation
-                                        const isModification = args.inputImages && Array.isArray(args.inputImages) && args.inputImages.length > 0;
-                                        const isAvatar = args.toolFunction === "createavatarimage" || args.toolFunction === "CreateAvatarImage";
-                                        const defaultPrefix = isModification ? 'modified-image' : (isAvatar ? 'avatar-image' : 'generated-image');
-                                        const filenamePrefix = args.filenamePrefix || defaultPrefix;
-                                        
-                                        // Sanitize the prefix to ensure it's a valid filename component
-                                        const sanitizedPrefix = filenamePrefix.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-                                        const filename = `${sanitizedPrefix}-${uniqueId}.${extension}`;
-                                        
-                                        // Merge provided tags with default tags
-                                        const defaultTags = ['image', isModification ? 'modified' : (isAvatar ? 'avatar' : 'generated'), ...(isAvatar ? [] : [])];
-                                        const providedTags = Array.isArray(args.tags) ? args.tags : [];
-                                        const allTags = [...defaultTags, ...providedTags.filter(tag => !defaultTags.includes(tag))];
-                                        
-                                        // Use the centralized utility function to add to collection - capture returned entry
-                                        const fileEntry = await addFileToCollection(
-                                            args.contextId,
-                                            args.contextKey || '',
-                                            uploadedUrl,
-                                            uploadedGcs,
-                                            filename,
-                                            allTags,
-                                            isModification 
-                                                ? `Modified image from prompt: ${args.detailedInstructions || 'image modification'}`
-                                                : `Generated image from prompt: ${args.detailedInstructions || 'image generation'}`,
-                                            uploadedHash,
-                                            null, // fileUrl - not needed since we already uploaded
-                                            pathwayResolver,
-                                            true, // permanent => retention=permanent
-                                            chatId,
-                                            args.entityId || null
-                                        );
-                                        
-                                        // Use the file entry data for the return message
-                                        imageData.fileEntry = fileEntry;
-                                    } catch (collectionError) {
-                                        // Log but don't fail - file collection is optional
-                                        pathwayResolver.logWarning(`Failed to add image to file collection: ${collectionError.message}`);
-                                    }
-                                }
-                                
+
                                 uploadedImages.push(imageData);
                             } catch (uploadError) {
                                 pathwayResolver.logError(`Failed to upload image from Replicate: ${uploadError.message}`);
@@ -266,16 +212,10 @@ export default {
                             // Build imageUrls array in the format expected by pathwayTools.js for toolImages injection
                             // This format matches ViewImages tool so images get properly injected into chat history
                             const imageUrls = successfulImages.map((img) => {
-                                const url = img.fileEntry?.url || img.url;
-                                const gcs = img.fileEntry?.gcs || img.gcs;
-                                const hash = img.fileEntry?.hash || img.hash;
-                                
                                 return {
                                     type: "image_url",
-                                    url: url,
-                                    gcs: gcs || null,
-                                    image_url: { url: url },
-                                    hash: hash || null
+                                    url: img.url,
+                                    image_url: { url: img.url },
                                 };
                             });
                             
@@ -290,10 +230,8 @@ export default {
                                     const entityConfig = await loadEntityConfig(entityIdForAvatar);
                                     if (entityConfig) {
                                         const avatarImage = {
-                                            url: firstImage.fileEntry?.url || firstImage.url,
-                                            gcs: firstImage.fileEntry?.gcs || firstImage.gcs || null,
-                                            name: firstImage.fileEntry?.filename || firstImage.fileEntry?.displayFilename || null,
-                                            hash: firstImage.fileEntry?.hash || firstImage.hash || null,
+                                            url: firstImage.url,
+                                            name: null,
                                             contextId: args.contextId || null
                                         };
                                         
@@ -371,9 +309,7 @@ export default {
                 // Prepare avatar image data
                 const avatarImage = {
                     url: foundFile.url,
-                    gcs: foundFile.gcs || null,
                     name: foundFile.filename || foundFile.displayFilename || null,
-                    hash: foundFile.hash || null,
                     contextId: foundFile._contextId || null
                 };
                 
@@ -399,7 +335,6 @@ export default {
                     message: `Base avatar updated successfully. The new avatar image will be used as the base for generating avatar variants.`,
                     avatarImage: {
                         url: avatarImage.url,
-                        gcs: avatarImage.gcs,
                         name: avatarImage.name
                     }
                 });

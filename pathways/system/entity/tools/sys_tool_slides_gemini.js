@@ -1,7 +1,7 @@
 // sys_tool_slides_gemini.js
 // Entity tool that creates slides, infographics, and presentations using Gemini 3 Pro image generation
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { uploadImageToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse } from '../../../../lib/fileUtils.js';
+import { uploadImageToCloud, resolveFileParameter, buildFileCreationResponse } from '../../../../lib/fileUtils.js';
 
 export default {
     prompt: [],
@@ -182,16 +182,10 @@ export default {
                     // Build imageUrls array in the format expected by pathwayTools.js for toolImages injection
                     // This format matches ViewImages tool so images get properly injected into chat history
                     const imageUrls = successfulImages.map((img) => {
-                        const url = img.fileEntry?.url || img.url;
-                        const gcs = img.fileEntry?.gcs || img.gcs;
-                        const hash = img.fileEntry?.hash || img.hash;
-                        
                         return {
                             type: "image_url",
-                            url: url,
-                            gcs: gcs || null,
-                            image_url: { url: url },
-                            hash: hash || null
+                            url: img.fileEntry?.url || img.url,
+                            image_url: { url: img.fileEntry?.url || img.url },
                         };
                     });
                     

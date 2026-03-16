@@ -8,7 +8,7 @@ import path from 'node:path';
 import logger from '../../../../lib/logger.js';
 import { workspaceRequest, destroyWorkspace, workspaceDownloadToFile, workspaceUploadFile } from './shared/workspace_client.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
-import { uploadFileToCloud, addFileToCollection, listFilesForContext, findFileInCollection, getSignedFileUrl, loadFileCollection } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, listFilesForContext, findFileInCollection, getSignedFileUrl, loadFileCollection } from '../../../../lib/fileUtils.js';
 import { axios } from '../../../../lib/requestExecutor.js';
 
 /**
@@ -160,7 +160,7 @@ async function handleJobs(args) {
 
 async function handleFilesBackup(tokens, args, resolver) {
     // files backup [notes...]
-    const { entityId, contextId, contextKey, chatId } = args;
+    const { entityId, contextId } = args;
     const notes = tokens.slice(2).join(' ') || null;
 
     // 1. Create tarball inside workspace container
@@ -188,29 +188,10 @@ async function handleFilesBackup(tokens, args, resolver) {
             return JSON.stringify({ success: false, error: 'Failed to upload backup to cloud storage' });
         }
 
-        // 4. Add to file collection
-        const fileEntry = await addFileToCollection(
-            contextId,
-            contextKey || '',
-            uploadResult.url,
-            uploadResult.gcs || null,
-            filename,
-            ['workspace-backup'],
-            notes || `Workspace backup created at ${backupResult.timestamp}`,
-            uploadResult.hash || null,
-            null,
-            resolver,
-            true,
-            chatId || null,
-            entityId || null
-        );
-
         return JSON.stringify({
             success: true,
             filename,
-            fileId: fileEntry?.id || null,
             url: uploadResult.url,
-            hash: uploadResult.hash || null,
             sizeMB: backupResult.sizeMB,
             timestamp: backupResult.timestamp,
         });
