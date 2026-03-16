@@ -157,7 +157,7 @@ test('extractFilenameFromUrl: simple URL', t => {
 });
 
 test('extractFilenameFromUrl: GCS URL', t => {
-    const name = fileUtils.extractFilenameFromUrl(null, 'gs://bucket/folder/abc123_report.pdf');
+    const name = fileUtils.extractFilenameFromUrl('gs://bucket/folder/abc123_report.pdf');
     t.is(name, 'abc123_report.pdf');
 });
 

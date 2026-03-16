@@ -83,9 +83,7 @@ export default {
                 imageUrls.push({
                     type: "image_url",
                     url: resolvedUrl,
-                    gcs: foundFile.gcs,
                     image_url: { url: resolvedUrl },
-                    hash: foundFile.hash
                 });
 
                 foundFilenames.push(foundFile.filename || file);

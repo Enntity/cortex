@@ -143,8 +143,6 @@ export default {
                 overlayItems.push({
                     type,
                     url: foundFile.url,
-                    ...(foundFile.gcs && { gcs: foundFile.gcs }),
-                    ...(foundFile.hash && { hash: foundFile.hash }),
                     ...(foundFile.filename && { filename: foundFile.filename }),
                     ...(duration !== undefined && { duration }),
                     ...(label && { label })

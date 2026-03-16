@@ -9,35 +9,42 @@ const TOOL_TIMEOUT_MS = 120000;
 const MAX_TOOL_RESULT_LENGTH = 150000;
 const CONTEXT_COMPRESSION_THRESHOLD = 0.7;
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000;
-const TOOL_LOOP_MODEL = 'xai-grok-4-1-fast-non-reasoning';
-const MAX_GATE_RETRIES = 2;
-const MAX_REPLAN_SAFETY_CAP = 10;
+const TOOL_LOOP_MODEL = 'gemini-flash-31-lite-vision';
+const MAX_PRIMARY_ROUNDS = 30;
 
-const SET_GOALS_TOOL_NAME = 'setgoals';
+const DELEGATE_TASK_TOOL_NAME = 'delegatetask';
+const DELEGATE_MAX_ROUNDS = 10;
+const DELEGATE_DEFAULT_BUDGET = 100;
 
-const SET_GOALS_OPENAI_DEF = {
+const DELEGATE_TASK_OPENAI_DEF = {
     type: "function",
     function: {
-        name: "SetGoals",
-        description: "Declare everything that needs to happen before this request is done. Call this alongside your first tool calls. Not a sequential recipe — a checklist of outcomes.",
+        name: "DelegateTask",
+        description: "Delegate a scoped mechanical task to a fast subagent. Use for repetitive multi-step work like: fetching multiple URLs, running sequential workspace commands, processing a list of items. The subagent gets your entity tools but not DelegateTask itself. Returns a text summary of what the subagent accomplished.",
         parameters: {
             type: "object",
             properties: {
-                goal: { type: "string", description: "What the user needs — one sentence" },
-                steps: { type: "array", items: { type: "string" }, description: "2-5 specific things to accomplish (not how — what)" }
+                task: { type: "string", description: "Clear description of what to accomplish. Include specific URLs, commands, or items to process." },
+                context: { type: "string", description: "Relevant context from previous tool results to pass to the subagent." }
             },
-            required: ["goal", "steps"]
+            required: ["task"]
         }
     }
 };
 
 const VOICE_FALLBACKS = {
+    'SearchInternet': 'Let me look that up.',
     'GoogleSearch': 'Let me look that up.',
     'GoogleNews': 'Checking the news.',
+    'SearchXPlatform': 'Searching for that now.',
     'SearchX': 'Searching for that now.',
+    'SearchMemory': 'Let me think...',
+    'FetchWebPageContentJina': 'Reading that page.',
     'CreateMedia': 'Creating that for you.',
     'ShowOverlay': 'Showing that now.',
     'WorkspaceSSH': 'Working on that.',
+    'AnalyzePDF': 'Reading through that.',
+    'AnalyzeVideo': 'Watching that now.',
     'default': 'One moment.'
 };
 
@@ -172,26 +179,6 @@ export function insertSystemMessage(messages, text, requestId = null) {
     return filtered;
 }
 
-export function buildStepInstruction(pathwayResolver) {
-    if (!pathwayResolver.toolPlan) {
-        return "If you need more information, call tools. Otherwise respond with: SYNTHESIZE";
-    }
-    const { goal, steps } = pathwayResolver.toolPlan;
-    const stepsBlock = steps.map((s, i) => `  ${i + 1}. ${s}`).join('\n');
-    return `TODO — Goal: ${goal}
-${stepsBlock}
-
-Look at the tool results already in the conversation. If an item is satisfied by existing results, skip it — do NOT re-run tools for work already done.
-Call tools only for items with no results yet. Batch as many as possible in one response.
-Do NOT retry a tool that already failed or returned an error.
-Respond with SYNTHESIZE when all items are addressed.`;
-}
-
-export function passesGate(toolCalls) {
-    if (!toolCalls || toolCalls.length === 0) return false;
-    return toolCalls.some(tc => tc.function?.name?.toLowerCase() === SET_GOALS_TOOL_NAME);
-}
-
 // ─── Logging Helpers ─────────────────────────────────────────────────────────
 
 function summarizeUsage(usage) {
@@ -300,34 +287,30 @@ function makeErrorHandler(args, resolver) {
 
 // ─── Tool Execution ──────────────────────────────────────────────────────────
 
-function interceptSetGoals(setGoalsCalls, preToolCallMessages, resolver) {
-    const rid = getRequestId(resolver);
-    return setGoalsCalls.map(planCall => {
-        try {
-            const planArgs = safeParse(planCall.function.arguments);
-            if (planArgs?.goal && Array.isArray(planArgs.steps)) {
-                resolver.toolPlan = { goal: planArgs.goal, steps: planArgs.steps };
-                logEvent(rid, 'plan.created', { goal: planArgs.goal, steps: planArgs.steps.length, stepList: planArgs.steps });
-            }
-        } catch { /* malformed plan args — ignore */ }
-
-        const planMessages = cloneMessages(preToolCallMessages);
-        planMessages.push({ role: "assistant", content: "", tool_calls: [buildToolCallEntry(planCall, planCall.function.arguments)] });
-        planMessages.push({
-            role: "tool",
-            tool_call_id: planCall.id,
-            name: planCall.function.name,
-            content: JSON.stringify({ success: true, message: 'Plan acknowledged.' })
-        });
-        return { success: true, toolCall: planCall, toolArgs: {}, toolFunction: SET_GOALS_TOOL_NAME, messages: planMessages, skipBudget: true };
-    });
-}
-
-async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, entityTools) {
+async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, entityTools, entityToolsOpenAiFormat) {
     const toolFunction = toolCall?.function?.name?.toLowerCase() || 'unknown';
     const toolCallId = toolCall?.id;
     const toolStart = Date.now();
     const rid = getRequestId(resolver);
+
+    // DelegateTask — spawn isolated cheap-model subagent
+    if (toolFunction === DELEGATE_TASK_TOOL_NAME) {
+        try {
+            const taskArgs = JSON.parse(toolCall.function.arguments);
+            const result = await executeDelegateTask(taskArgs, args, resolver, entityTools, entityToolsOpenAiFormat);
+            const toolMessages = cloneMessages(preToolCallMessages);
+            toolMessages.push({ role: "assistant", content: "", tool_calls: [buildToolCallEntry(toolCall, taskArgs)] });
+            toolMessages.push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: result });
+            logEvent(rid, 'tool.exec', { tool: toolCall.function.name, round: (resolver.toolCallRound || 0) + 1, durationMs: Date.now() - toolStart, success: true, resultChars: result.length });
+            return { success: true, toolCall, toolArgs: taskArgs, toolFunction, messages: toolMessages };
+        } catch (error) {
+            logEvent(rid, 'delegate.error', { error: error.message });
+            const errorMessages = cloneMessages(preToolCallMessages);
+            errorMessages.push({ role: "assistant", content: "", tool_calls: [buildToolCallEntry(toolCall, toolCall.function.arguments)] });
+            errorMessages.push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: `Error: ${error.message}` });
+            return { success: false, error: error.message, toolCall, toolArgs: {}, toolFunction, messages: errorMessages };
+        }
+    }
 
     try {
         if (!toolCall?.function?.arguments) throw new Error('Invalid tool call structure: missing function arguments');
@@ -415,7 +398,7 @@ async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, 
     }
 }
 
-async function processToolCallRound(toolCalls, args, resolver, entityTools) {
+async function processToolCallRound(toolCalls, args, resolver, entityTools, entityToolsOpenAiFormat) {
     const preToolCallMessages = cloneMessages(args.chatHistory || []);
     let finalMessages = cloneMessages(preToolCallMessages);
     const rid = getRequestId(resolver);
@@ -437,12 +420,7 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     }
 
     const validToolCalls = toolCalls.filter(tc => tc && tc.function && tc.function.name);
-    const setGoalsCalls = validToolCalls.filter(tc => tc.function.name.toLowerCase() === SET_GOALS_TOOL_NAME);
-    const realToolCalls = validToolCalls.filter(tc => tc.function.name.toLowerCase() !== SET_GOALS_TOOL_NAME);
-
-    const setGoalsResults = interceptSetGoals(setGoalsCalls, preToolCallMessages, resolver);
-    const toolResults = await Promise.all(realToolCalls.map(tc => executeSingleTool(tc, preToolCallMessages, args, resolver, entityTools)));
-    const allToolResults = [...setGoalsResults, ...toolResults];
+    const allToolResults = await Promise.all(validToolCalls.map(tc => executeSingleTool(tc, preToolCallMessages, args, resolver, entityTools, entityToolsOpenAiFormat)));
 
     finalMessages.push(...mergeParallelToolResults(allToolResults, preToolCallMessages));
 
@@ -454,7 +432,6 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
             content: allToolImages.map(img => ({
                 type: "image_url",
                 url: img.url,
-                gcs: img.gcs,
                 image_url: { url: img.url },
             }))
         });
@@ -492,15 +469,13 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
             : msg
     );
 
-    // Dehydrate (single-model only)
-    if (!args.toolLoopModel) {
-        for (const msg of processedMessages) {
-            if (msg.role === 'tool' && msg.tool_call_id && msg.content && msg.content.length > COMPRESSION_THRESHOLD && !resolver.toolResultStore.has(msg.tool_call_id)) {
-                resolver.toolResultStore.set(msg.tool_call_id, { toolName: msg.name || 'unknown', fullContent: msg.content, charCount: msg.content.length, round: resolver.toolCallRound, compressed: false });
-            }
+    // Dehydrate large tool results — store full content for synthesis, compress for loop
+    for (const msg of processedMessages) {
+        if (msg.role === 'tool' && msg.tool_call_id && msg.content && msg.content.length > COMPRESSION_THRESHOLD && !resolver.toolResultStore.has(msg.tool_call_id)) {
+            resolver.toolResultStore.set(msg.tool_call_id, { toolName: msg.name || 'unknown', fullContent: msg.content, charCount: msg.content.length, round: resolver.toolCallRound, compressed: false });
         }
-        processedMessages = compressOlderToolResults(processedMessages, resolver.toolResultStore, resolver.toolCallRound, entityTools);
     }
+    processedMessages = compressOlderToolResults(processedMessages, resolver.toolResultStore, resolver.toolCallRound, entityTools);
 
     // Context compression
     try { processedMessages = await compressContextIfNeeded(processedMessages, resolver, args); }
@@ -510,7 +485,7 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     resolver.errors = [];
 
     // Signal if EndPulse was called — executor loop should stop immediately
-    const endPulseCalled = realToolCalls.some(tc => tc.function.name === 'EndPulse');
+    const endPulseCalled = validToolCalls.some(tc => tc.function.name === 'EndPulse');
 
     return { messages: processedMessages, budgetExhausted: resolver.toolBudgetUsed >= TOOL_BUDGET, endPulseCalled };
 }
@@ -706,25 +681,6 @@ async function compressContextIfNeeded(messages, resolver, args) {
     }
 }
 
-// ─── Plan Management ─────────────────────────────────────────────────────────
-
-function stripSetGoalsFromHistory(chatHistory) {
-    const ids = new Set();
-    for (const msg of chatHistory) {
-        if (msg.tool_calls) for (const tc of msg.tool_calls) if (tc.function?.name?.toLowerCase() === SET_GOALS_TOOL_NAME) ids.add(tc.id);
-    }
-    if (ids.size === 0) return chatHistory;
-    return chatHistory.map(msg => {
-        if (msg.tool_calls) {
-            const filtered = msg.tool_calls.filter(tc => !ids.has(tc.id));
-            if (filtered.length === 0 && msg.tool_calls.length > 0) return null;
-            return { ...msg, tool_calls: filtered };
-        }
-        if (msg.role === 'tool' && ids.has(msg.tool_call_id)) return null;
-        return msg;
-    }).filter(Boolean);
-}
-
 // ─── Error Handling ──────────────────────────────────────────────────────────
 
 async function generateErrorResponse(error, args, resolver) {
@@ -747,204 +703,167 @@ function preservePriorText(message, args) {
     }
 }
 
-async function runFallbackPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
-    await processToolCallRound(currentToolCalls, args, resolver, entityTools);
-    await say(getRequestId(resolver), `\n`, 1000, false, false);
+// ─── DelegateTask Subagent ───────────────────────────────────────────────────
 
-    try {
-        // Restore full tool outputs before the final model call.
-        if (resolver.toolResultStore && resolver.toolResultStore.size > 0) {
-            args.chatHistory = rehydrateAllToolResults(args.chatHistory, resolver.toolResultStore);
+async function executeDelegateTask(taskArgs, args, resolver, entityTools, entityToolsOpenAiFormat) {
+    const rid = getRequestId(resolver);
+    const { task, context } = taskArgs;
+    const subagentModel = args.toolLoopModel || TOOL_LOOP_MODEL;
+    const budgetCap = Math.min(DELEGATE_DEFAULT_BUDGET, TOOL_BUDGET - resolver.toolBudgetUsed);
+
+    // Filter DelegateTask from subagent tools (prevent recursion)
+    const subTools = entityToolsOpenAiFormat.filter(t => t.function?.name?.toLowerCase() !== DELEGATE_TASK_TOOL_NAME);
+
+    logEvent(rid, 'delegate.start', { model: subagentModel, task: task.substring(0, 200), budgetCap, toolCount: subTools.length });
+
+    let subMessages = [
+        { role: 'system', content: `You are a task executor. Complete the assigned task using the available tools. Be thorough — fetch full content, don't just summarize snippets. When done, respond with your findings as text.` },
+        { role: 'user', content: `Task: ${task}${context ? `\n\nContext:\n${context}` : ''}` }
+    ];
+
+    // Use an isolated sub-resolver so parallel delegates don't race on shared state.
+    // Each delegate tracks its own budget/rounds; the cost is charged to the parent
+    // atomically when the delegate finishes (via the DelegateTask toolCost in executeSingleTool).
+    const subResolver = {
+        ...resolver,
+        toolBudgetUsed: 0,
+        toolCallRound: 0,
+        toolResultStore: new Map(),
+        toolCallCache: new Map(),
+    };
+    // Share promptAndParse (model calling) with the real resolver
+    subResolver.promptAndParse = resolver.promptAndParse.bind(resolver);
+
+    let round = 0;
+
+    while (round < DELEGATE_MAX_ROUNDS && subResolver.toolBudgetUsed < budgetCap) {
+        const result = await callModelLogged(subResolver, {
+            ...args, chatHistory: subMessages, modelOverride: subagentModel,
+            stream: false, tools: subTools, tool_choice: "auto",
+            reasoningEffort: 'low', skipMemoryLoad: true,
+        }, 'delegate', { model: subagentModel, round });
+
+        const calls = extractToolCalls(result);
+        if (calls.length === 0) {
+            // Subagent done — extract its text response
+            const text = extractResponseText(result);
+            logEvent(rid, 'delegate.end', { rounds: round, budgetUsed: subResolver.toolBudgetUsed, resultChars: text.length });
+            return text || 'Task completed (no output).';
         }
 
-        // Dehydrate tool history onto pathwayResultData before fallback streams the final info block
-        const startIdx = resolver._preToolHistoryLength || 0;
-        const toolHistory = dehydrateToolHistory(args.chatHistory, entityTools, startIdx);
-        if (toolHistory.length > 0) {
-            resolver.pathwayResultData = { ...(resolver.pathwayResultData || {}), toolHistory };
-        }
-
-        let fallbackResult = await callModelLogged(resolver, {
-            ...args, modelOverride: args.primaryModel, stream: args.stream, tools: entityToolsOpenAiFormat,
-            tool_choice: "auto", reasoningEffort: args.configuredReasoningEffort || 'low', skipMemoryLoad: true,
-        }, 'fallback', { model: args.primaryModel });
-
-        if (!fallbackResult) return await handlePromptError(null);
-
-        const holder = { value: fallbackResult };
-        await drainStreamingCallbacks(resolver)(holder);
-        return holder.value;
-    } catch (e) {
-        return await handlePromptError(e);
+        // Execute subagent's tool calls using isolated sub-resolver
+        const subArgs = { ...args, chatHistory: subMessages };
+        await processToolCallRound(calls, subArgs, subResolver, entityTools, entityToolsOpenAiFormat);
+        subMessages = subArgs.chatHistory;
+        round++;
     }
+
+    // Ran out of rounds or budget — ask for final summary
+    subMessages.push({ role: 'user', content: `[system message: ${rid}] Summarize what you found so far.` });
+    const finalResult = await callModelLogged(subResolver, {
+        ...args, chatHistory: subMessages, modelOverride: subagentModel,
+        stream: false, tools: [], reasoningEffort: 'low', skipMemoryLoad: true,
+    }, 'delegate_final', { model: subagentModel });
+
+    const text = extractResponseText(finalResult);
+    logEvent(rid, 'delegate.end', { rounds: round, budgetUsed: subResolver.toolBudgetUsed, resultChars: text.length, reason: round >= DELEGATE_MAX_ROUNDS ? 'max_rounds' : 'budget' });
+    return text || 'Task completed (no output).';
 }
 
-async function enforceGate(currentToolCalls, args, resolver, entityToolsOpenAiFormat, callbackDepth, handlePromptError) {
-    let gateRetries = 0;
-    while (currentToolCalls.length > 0 && !passesGate(currentToolCalls)) {
-        if (gateRetries >= MAX_GATE_RETRIES) {
-            logEvent(getRequestId(resolver), 'plan.skipped', { reason: 'gate_retries_exhausted' });
-            currentToolCalls = [];
-            break;
-        }
-        gateRetries++;
-        logEvent(getRequestId(resolver), 'plan.skipped', { reason: 'missing_setgoals', gateRetry: gateRetries });
-        args.chatHistory = insertSystemMessage(args.chatHistory,
-            'Your tool calls were discarded because they did not include SetGoals. You MUST call SetGoals alongside your other tool calls to establish a plan. Try again.',
-            getRequestId(resolver)
-        );
-        try {
-            const gateResult = await callModelLogged(resolver, {
-                ...args, modelOverride: args.primaryModel, stream: false,
-                tools: [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF],
-                tool_choice: "auto", reasoningEffort: args.configuredReasoningEffort || 'medium', skipMemoryLoad: true,
-            }, 'gate_retry', { model: args.primaryModel, callbackDepth });
-            if (!gateResult) return { toolCalls: currentToolCalls, error: await handlePromptError(null) };
-            currentToolCalls = extractToolCalls(gateResult);
-        } catch (e) {
-            return { toolCalls: currentToolCalls, error: await handlePromptError(e) };
-        }
-    }
-    return { toolCalls: currentToolCalls, error: null };
-}
+// ─── Primary Tool Loop ──────────────────────────────────────────────────────
 
-async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
-    while (resolver.toolBudgetUsed < TOOL_BUDGET) {
-        const rid = getRequestId(resolver);
-        if (resolver.toolPlan) logEvent(rid, 'plan.step', { round: resolver.toolCallRound || 0, steps: resolver.toolPlan.steps.length });
-        args.chatHistory = insertSystemMessage(args.chatHistory, buildStepInstruction(resolver), rid);
+async function primaryToolLoop(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
+    // Include DelegateTask in tool loop when a cheap model is available
+    const loopTools = args.toolLoopModel
+        ? [...entityToolsOpenAiFormat, DELEGATE_TASK_OPENAI_DEF]
+        : entityToolsOpenAiFormat;
+
+    // If budget already exhausted before loop starts, inject message so synthesis knows
+    if (currentToolCalls.length > 0 && resolver.toolBudgetUsed >= TOOL_BUDGET) {
+        args.chatHistory = [...args.chatHistory, {
+            role: 'user',
+            content: 'Tool budget exhausted - no more tool calls will be executed. Provide your response based on the information gathered so far.'
+        }];
+    }
+
+    while (currentToolCalls.length > 0 && resolver.toolBudgetUsed < TOOL_BUDGET && (resolver.toolCallRound || 0) < MAX_PRIMARY_ROUNDS) {
+        const { budgetExhausted, endPulseCalled } = await processToolCallRound(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat);
+        if (budgetExhausted || endPulseCalled) break;
+
+        // Compress context if needed before next model call
+        try { args.chatHistory = await compressContextIfNeeded(args.chatHistory, resolver, args); }
+        catch (e) { logEventError(getRequestId(resolver), 'request.error', { phase: 'compression', error: e.message }); }
 
         try {
             const result = await callModelLogged(resolver, {
-                ...args, modelOverride: args.toolLoopModel, stream: false, tools: entityToolsOpenAiFormat,
-                tool_choice: "auto", reasoningEffort: 'low', skipMemoryLoad: true,
-            }, 'tool_loop', { model: args.toolLoopModel, round: resolver.toolCallRound, hasPlan: !!resolver.toolPlan });
+                ...args, modelOverride: args.primaryModel, stream: false,
+                tools: loopTools,
+                tool_choice: "auto",
+                reasoningEffort: args.configuredReasoningEffort || 'low',
+                skipMemoryLoad: true,
+            }, 'tool_loop', { model: args.primaryModel, round: resolver.toolCallRound });
 
             if (!result) return await handlePromptError(null);
-            const calls = extractToolCalls(result);
-            if (calls.length === 0) break; // SYNTHESIZE
-
-            const { budgetExhausted, endPulseCalled } = await processToolCallRound(calls, args, resolver, entityTools);
-            if (budgetExhausted || endPulseCalled) break;
+            currentToolCalls = extractToolCalls(result);
         } catch (e) {
             return await handlePromptError(e);
         }
     }
-    return null;
-}
 
-function prepareForSynthesis(args, resolver) {
-    const rid = getRequestId(resolver);
-    // Strip SYNTHESIZE hints
-    args.chatHistory = args.chatHistory.filter(msg => {
-        if (msg.role !== 'user') return true;
-        const content = typeof msg.content === 'string' ? msg.content : '';
-        return !content.startsWith(`[system message: ${rid}]`);
-    });
-    args.chatHistory = stripSetGoalsFromHistory(args.chatHistory);
-    if (resolver.toolPlan) {
-        args.chatHistory = insertSystemMessage(args.chatHistory,
-            `Review the tool results above against your todo list (Goal: ${resolver.toolPlan.goal}).\nIf results are sufficient, respond to the user.\nIf the approach failed or you need a different strategy, call SetGoals with a new todo list (and optionally other tools) — the items will be executed by the tool loop.`,
-            rid
-        );
+    // Final streaming synthesis (no tools — just respond)
+    await say(getRequestId(resolver), '\n', 1000, false, false);
+
+    // Rehydrate full tool results for synthesis
+    if (resolver.toolResultStore?.size > 0) {
+        args.chatHistory = rehydrateAllToolResults(args.chatHistory, resolver.toolResultStore);
     }
-}
 
-async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError) {
-    await say(getRequestId(resolver), `\n`, 1000, false, false);
-    const synthesisTools = [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF];
+    // Dehydrate tool history for pathwayResultData (client info panel)
+    const startIdx = resolver._preToolHistoryLength || 0;
+    const toolHistory = dehydrateToolHistory(args.chatHistory, entityTools, startIdx);
+    if (toolHistory.length > 0) {
+        resolver.pathwayResultData = { ...(resolver.pathwayResultData || {}), toolHistory };
+    }
+
+    // Mark tool loop complete — prevents late streaming callbacks from restarting tool processing
+    resolver._toolLoopComplete = true;
+
+    // Strip synthetic system messages before final response
+    args.chatHistory = args.chatHistory.filter(msg => {
+        if (msg.role === 'user') {
+            const content = typeof msg.content === 'string' ? msg.content : '';
+            return !content.startsWith(`[system message: ${getRequestId(resolver)}]`);
+        }
+        return true;
+    });
+    args.synthesisMode = true; // Hide tool/search instructions from system prompt
 
     try {
-        let synthesisResult = await callModelLogged(resolver, {
-            ...args, modelOverride: args.primaryModel, stream: args.stream, tools: synthesisTools,
-            tool_choice: "auto", reasoningEffort: args.configuredReasoningEffort || 'medium', skipMemoryLoad: true,
-        }, 'synthesis', { model: args.primaryModel, replanCount: resolver.replanCount || 0, callbackDepth });
+        const response = await callModelLogged(resolver, {
+            ...args, modelOverride: args.primaryModel, stream: args.stream,
+            tools: [], reasoningEffort: args.configuredReasoningEffort || 'medium',
+            skipMemoryLoad: true,
+        }, 'synthesis', { model: args.primaryModel });
 
-        if (!synthesisResult) return { result: await handlePromptError(null), done: true };
+        if (!response) return await handlePromptError(null);
 
-        const holder = { value: synthesisResult };
-        const hadStreamingCallback = await drainStreamingCallbacks(resolver)(holder);
-        synthesisResult = holder.value;
+        const holder = { value: response };
+        const hadSynthesisCb = await drainStreamingCallbacks(resolver)(holder);
 
-        const synthToolCalls = extractToolCalls(synthesisResult);
-        // Update model.result log with streaming info
-        if (hadStreamingCallback) {
-            logEvent(getRequestId(resolver), 'model.result', {
-                model: args.primaryModel, purpose: 'synthesis', streamingCallback: true, hasPlan: !!resolver.toolPlan, callbackDepth,
-            });
+        // When streaming, synthesis text was already delivered via SSE events.
+        // If a late callback was skipped (e.g., model returned hallucinated
+        // tool_calls during synthesis with tools=[]), holder.value may be ''
+        // even though the client already received content. Use the accumulated
+        // streamedContent so downstream code doesn't treat this as empty.
+        if (args.stream && hadSynthesisCb && !extractResponseText(holder.value).trim() && resolver.streamedContent?.trim()) {
+            holder.value = resolver.streamedContent;
         }
 
-        if (synthToolCalls.length === 0 || hadStreamingCallback) return { result: synthesisResult, done: true };
-
-        // Non-streaming tool_calls from synthesis
-        const isReplan = passesGate(synthToolCalls);
-        if (isReplan && (resolver.replanCount || 0) < MAX_REPLAN_SAFETY_CAP) {
-            resolver.replanCount = (resolver.replanCount || 0) + 1;
-            logEvent(getRequestId(resolver), 'plan.replan', { replanCount: resolver.replanCount, tools: summarizeReturnedCalls(synthToolCalls) });
-            return { result: null, done: false, toolCalls: synthToolCalls };
-        } else {
-            logEvent(getRequestId(resolver), 'plan.continuation', { tools: summarizeReturnedCalls(synthToolCalls) });
-            await processToolCallRound(synthToolCalls, args, resolver, entityTools);
-            return { result: synthesisResult, done: true };
-        }
+        logRequestEnd(resolver);
+        return holder.value;
     } catch (e) {
-        return { result: await handlePromptError(e), done: true };
+        return await handlePromptError(e);
     }
-}
-
-async function runDualModelPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError) {
-    if (typeof resolver.replanCount !== 'number') resolver.replanCount = 0;
-
-    // No depth cap: the tool budget already prevents runaway loops, and duplicate
-    // detection catches repeated calls. If the synthesis model wants to spend rounds
-    // calling tools at any nesting level, let it — as long as budget holds.
-
-    // Gate (initial call only — nested callbacks already passed the gate)
-    // Skip gate for pulse invocations — pulses are autonomous work, not user-driven.
-    // Requiring SetGoals wastes 5-10s per pulse on gate retries.
-    const isPulse = args.invocationType === 'pulse';
-    if (callbackDepth <= 1 && !isPulse) {
-        const gateResult = await enforceGate(currentToolCalls, args, resolver, entityToolsOpenAiFormat, callbackDepth, handlePromptError);
-        if (gateResult.error) return gateResult.error;
-        currentToolCalls = gateResult.toolCalls;
-    }
-
-    // Main loop: process → executor → synthesis → maybe replan
-    let synthesisResult;
-    while (true) {
-        if (currentToolCalls.length > 0) {
-            const { budgetExhausted } = await processToolCallRound(currentToolCalls, args, resolver, entityTools);
-            if (budgetExhausted) currentToolCalls = [];
-        }
-
-        // Strip SetGoals from executor context
-        for (const msg of args.chatHistory) {
-            if (msg.role === 'system' && typeof msg.content === 'string' && msg.content.includes('SetGoals')) {
-                msg.content = msg.content.replace(/IMPORTANT:.*?2-5 items\.\n\n/s, '');
-                break;
-            }
-        }
-        args.chatHistory = stripSetGoalsFromHistory(args.chatHistory);
-
-        const loopErr = await executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError);
-        if (loopErr) return loopErr;
-
-        prepareForSynthesis(args, resolver);
-
-        // Dehydrate tool history onto pathwayResultData before synthesis streams the final info block
-        const startIdx = resolver._preToolHistoryLength || 0;
-        const toolHistory = dehydrateToolHistory(args.chatHistory, entityTools, startIdx);
-        if (toolHistory.length > 0) {
-            resolver.pathwayResultData = { ...(resolver.pathwayResultData || {}), toolHistory };
-        }
-
-        const synthResult = await callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError);
-        if (synthResult.done) { synthesisResult = synthResult.result; break; }
-        currentToolCalls = synthResult.toolCalls;
-    }
-
-    logRequestEnd(resolver);
-    return synthesisResult;
 }
 
 // ─── Execute Pathway ─────────────────────────────────────────────────────────
@@ -969,7 +888,7 @@ function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstru
         ? `{{renderTemplate AI_COMMON_INSTRUCTIONS_TEXT}}`
         : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}`;
     const instructionTemplates = `${commonInstructionsTemplate}\n{{renderTemplate AI_WORKSPACE}}\n${entityDNA}{{renderTemplate AI_EXPERTISE}}\n\n`;
-    const searchRulesTemplate = `{{renderTemplate AI_SEARCH_RULES}}\n\n`;
+    const searchRulesTemplate = `{{#unless synthesisMode}}{{renderTemplate AI_SEARCH_RULES}}\n\n{{/unless}}`;
 
     const voiceInstructions = voiceResponse ? `
 ## Voice Response Guidelines
@@ -987,10 +906,8 @@ You are speaking to the user through voice. Follow these guidelines for natural 
 4. **Emotion**: Match the emotional tone to the content - be excited about good news, empathetic about problems, curious when exploring topics.
 ` : '';
 
-    const toolsTemplate = entityToolsOpenAiFormat.length > 0 ? '{{renderTemplate AI_TOOLS}}\n\n' : '';
-    const planInstruction = entityToolsOpenAiFormat.length > 0
-        ? `IMPORTANT: If you call ANY tools, you MUST include SetGoals in the same response. Tool calls without SetGoals will be discarded. SetGoals is your todo list — not sequential steps but everything that needs to happen before you're done. Each item should be a specific outcome to achieve, not a procedure to follow. 2-5 items.\n\n`
-        : '';
+    // Tool instructions and search rules are hidden during final synthesis.
+    const toolsTemplate = entityToolsOpenAiFormat.length > 0 ? '{{#unless synthesisMode}}{{renderTemplate AI_TOOLS}}\n\n{{/unless}}' : '';
 
     const pulseInstructions = isPulse ? `
 ## Pulse Wake — Autonomous Mode
@@ -1026,7 +943,7 @@ if you've completed something they'd want to know about.
 ` : '';
 
     return [
-        {"role": "system", "content": `${instructionTemplates}${toolsTemplate}${planInstruction}${searchRulesTemplate}${voiceInstructions}${pulseInstructions}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+        {"role": "system", "content": `${instructionTemplates}${toolsTemplate}${searchRulesTemplate}${voiceInstructions}${pulseInstructions}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
         "{{chatHistory}}",
     ];
 }
@@ -1150,16 +1067,17 @@ export default {
         const rid = getRequestId(resolver);
         logEvent(rid, 'callback.entry', { depth: callbackDepth, incomingToolCalls: summarizeReturnedCalls(currentToolCalls), hasPlan: !!resolver.toolPlan, budgetUsed: resolver.toolBudgetUsed });
 
+        // Once synthesis starts, no late streaming callbacks should restart the tool loop
+        if (resolver._toolLoopComplete) {
+            logEvent(rid, 'callback.skip', { depth: callbackDepth, reason: 'tool_loop_complete' });
+            return extractResponseText(message) || '';
+        }
+
         if (currentToolCalls.length > 0) preservePriorText(message, args);
 
         const handlePromptError = makeErrorHandler(args, resolver);
 
-        if (args.toolLoopModel) {
-            return await runDualModelPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError);
-        }
-
-        // Fallback: single-model path
-        return await runFallbackPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError);
+        return await primaryToolLoop(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError);
     },
 
     executePathway: async ({args, runAllPrompts, resolver}) => {
@@ -1188,7 +1106,7 @@ export default {
                 lastUserMessage.content = lastUserMessage.content ? [lastUserMessage.content] : [];
             }
             lastUserMessage.content.push(...entityResources.map(resource => ({
-                type: "image_url", gcs: resource?.gcs, url: resource?.url,
+                type: "image_url", url: resource?.url,
                 image_url: { url: resource?.url }, originalFilename: resource?.name
             })));
         }
@@ -1230,7 +1148,11 @@ export default {
 
         try {
             const hasTools = entityToolsOpenAiFormat.length > 0;
-            const firstCallTools = hasTools ? [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF] : entityToolsOpenAiFormat;
+            // Primary model gets all entity tools + DelegateTask (when a cheap model is available)
+            const delegateAvailable = hasTools && toolLoopModel;
+            const firstCallTools = hasTools
+                ? [...entityToolsOpenAiFormat, ...(delegateAvailable ? [DELEGATE_TASK_OPENAI_DEF] : [])]
+                : [];
 
             let response = await runAllPrompts({
                 ...args, modelOverride, chatHistory: cloneMessages(args.chatHistory), availableFiles,
@@ -1292,12 +1214,10 @@ export default {
                 );
             }
 
-            if (!resolver._requestEndLogged) {
-                const usage = summarizeUsage(resolver.pathwayResultData?.usage);
-                logEvent(rid, 'request.end', {
-                    durationMs: Date.now() - requestStartTime, toolRounds: resolver.toolCallRound || 0,
-                    budgetUsed: resolver.toolBudgetUsed || 0, ...(usage && { tokens: usage }),
-                });
+            // Skip if a streaming callback is still running — it owns
+            // logRequestEnd and will log the correct metrics when it finishes.
+            if (!resolver._callbackDepth) {
+                logRequestEnd(resolver);
             }
 
             // Final guarantee: close the stream. If streaming produced text normally,
