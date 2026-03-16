@@ -49,8 +49,11 @@ export default {
             model
         };
 
-        // Extract available files from chat history (syncs to collection if contextId available)
-        const availableFiles = await getAvailableFiles(args.chatHistory, args.contextId, args.contextKey);
+        // Extract available files from chat history
+        const agentContext = args.contextId
+            ? [{ contextId: args.contextId, contextKey: args.contextKey || null, default: true }]
+            : [];
+        const availableFiles = await getAvailableFiles(args.chatHistory, agentContext);
 
         // Check for both image and file content (CSV files have type 'file', not 'image_url')
         const hasImageContent = chatArgsHasImageUrl(args);
