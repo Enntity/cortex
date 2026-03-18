@@ -1,5 +1,5 @@
 """
-Labeeb GraphQL tool (sys_entity_agent) — minimal, question-first.
+Labeeb GraphQL tool (sys_entity_runtime) — minimal, question-first.
 Uses CORTEX_API_BASE_URL (converts /v1 -> /graphql) and CORTEX_API_KEY as subscription key (query param).
 Exposed param: query (text). Automatically wraps into a user message to avoid backend errors.
 """
@@ -31,13 +31,13 @@ def _subscription_key() -> str:
 
 def _build_query() -> str:
     return """
-    query SysEntityAgent(
+    query SysEntityRuntime(
       $messages: [Message]
       $text: String
       $stream: Boolean
       $async: Boolean
     ) {
-      sys_entity_agent(
+      sys_entity_runtime(
         messages: $messages
         text: $text
         stream: $stream
@@ -56,9 +56,9 @@ def _build_query() -> str:
     """
 
 
-async def labeeb_sys_entity_agent(query: str) -> str:
+async def labeeb_sys_entity_runtime(query: str) -> str:
     """
-    Call Labeeb GraphQL sys_entity_agent with a single user query.
+    Call Labeeb GraphQL sys_entity_runtime with a single user query.
     Internally wraps the query into a Message {role: user, content: query}.
     """
     url = _graphql_url()
@@ -83,7 +83,7 @@ async def labeeb_sys_entity_agent(query: str) -> str:
             timeout=30,
         )
     except Exception as e:
-        logger.error(f"labeeb sys_entity_agent request failed: {e}")
+        logger.error(f"labeeb sys_entity_runtime request failed: {e}")
         return json.dumps({"error": f"request_failed: {e}"})
 
     try:
@@ -99,9 +99,9 @@ async def labeeb_sys_entity_agent(query: str) -> str:
 
 
 labeeb_agent_tool = FunctionTool(
-    labeeb_sys_entity_agent,
+    labeeb_sys_entity_runtime,
     description=(
-        "Ask Labeeb (sys_entity_agent) anything with a single text query. "
+        "Ask Labeeb (sys_entity_runtime) anything with a single text query. "
         "Returns result, resultData, warnings, errors, contextId, tool, debug."
     ),
 )

@@ -144,7 +144,7 @@ test.serial('Non-streaming: records exactly 2 turns (user + assistant) for simpl
                 $entityId: String,
                 $useMemory: Boolean
             ) {
-                sys_entity_agent(
+                sys_entity_runtime(
                     text: $text, 
                     chatHistory: $chatHistory,
                     agentContext: $agentContext,
@@ -177,7 +177,7 @@ test.serial('Non-streaming: records exactly 2 turns (user + assistant) for simpl
     }
     t.falsy(errors, 'Should not have GraphQL errors');
     
-    const result = response.body?.singleResult?.data?.sys_entity_agent?.result;
+    const result = response.body?.singleResult?.data?.sys_entity_runtime?.result;
     t.truthy(result, 'Should have a result');
     
     // Check memory recording calls
@@ -224,7 +224,7 @@ test.serial('Streaming: records exactly 2 turns (user + assistant) for simple re
                 $entityId: String,
                 $useMemory: Boolean
             ) {
-                sys_entity_agent(
+                sys_entity_runtime(
                     text: $text, 
                     chatHistory: $chatHistory,
                     agentContext: $agentContext,
@@ -248,7 +248,7 @@ test.serial('Streaming: records exactly 2 turns (user + assistant) for simple re
         }
     });
     
-    const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+    const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
     t.truthy(requestId, 'Should have requestId');
     
     // Collect streaming events
@@ -304,7 +304,7 @@ test.serial('Streaming with tool calls: records exactly 2 turns despite multiple
                 $entityId: String,
                 $useMemory: Boolean
             ) {
-                sys_entity_agent(
+                sys_entity_runtime(
                     text: $text, 
                     chatHistory: $chatHistory,
                     agentContext: $agentContext,
@@ -328,7 +328,7 @@ test.serial('Streaming with tool calls: records exactly 2 turns despite multiple
         }
     });
     
-    const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+    const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
     t.truthy(requestId, 'Should have requestId');
     
     // Collect streaming events
@@ -417,7 +417,7 @@ test.serial('Multiple tool calls: still records exactly 2 turns', async (t) => {
                 $entityId: String,
                 $useMemory: Boolean
             ) {
-                sys_entity_agent(
+                sys_entity_runtime(
                     text: $text,
                     chatHistory: $chatHistory,
                     agentContext: $agentContext,
@@ -441,7 +441,7 @@ test.serial('Multiple tool calls: still records exactly 2 turns', async (t) => {
         }
     });
     
-    const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+    const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
     t.truthy(requestId, 'Should have requestId');
     
     // Collect streaming events with longer timeout for research
@@ -520,7 +520,7 @@ test.serial('useMemory defaults to true when not specified', async (t) => {
                 $agentContext: [AgentContextInput],
                 $entityId: String
             ) {
-                sys_entity_agent(
+                sys_entity_runtime(
                     text: $text, 
                     chatHistory: $chatHistory,
                     agentContext: $agentContext,
@@ -574,7 +574,7 @@ test.serial('useMemory: false disables memory recording', async (t) => {
                 $entityId: String,
                 $useMemory: Boolean
             ) {
-                sys_entity_agent(
+                sys_entity_runtime(
                     text: $text, 
                     chatHistory: $chatHistory,
                     agentContext: $agentContext,
@@ -604,7 +604,7 @@ test.serial('useMemory: false disables memory recording', async (t) => {
     const errors = response.body?.singleResult?.errors;
     t.falsy(errors, 'Should not have GraphQL errors');
     
-    const result = response.body?.singleResult?.data?.sys_entity_agent?.result;
+    const result = response.body?.singleResult?.data?.sys_entity_runtime?.result;
     t.truthy(result, 'Should still get a response');
     
     // Check memory recording calls - should NOT have recorded

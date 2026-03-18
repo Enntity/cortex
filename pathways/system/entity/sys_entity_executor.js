@@ -1,5 +1,5 @@
-// sys_entity_agent.js
-// Agentic extension of the entity system that uses OpenAI's tool calling API
+// sys_entity_executor.js
+// Shared execution core for the entity runtime tool loop and synthesis flow
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -10,7 +10,6 @@ const MAX_TOOL_RESULT_LENGTH = 150000;
 const CONTEXT_COMPRESSION_THRESHOLD = 0.7;
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000;
 const TOOL_LOOP_MODEL = 'xai-grok-4-1-fast-non-reasoning';
-const MAX_GATE_RETRIES = 2;
 const MAX_REPLAN_SAFETY_CAP = 10;
 
 const SET_GOALS_TOOL_NAME = 'setgoals';
@@ -55,6 +54,18 @@ import { getToolsForEntity, loadEntityConfig } from './tools/shared/sys_entity_t
 import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults, dehydrateToolHistory } from './tools/shared/tool_result_compression.js';
 import CortexResponse from '../../../lib/cortexResponse.js';
 import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
+import {
+    buildSemanticToolKey,
+    getEntityRuntime,
+    getEntityRuntimeStore,
+    isEntityRuntimeEnabled,
+    normalizeToolFamily,
+    resolveAuthorityEnvelope,
+    resolveEntityModelPolicy,
+    safeParseRuntimeValue,
+    summarizeAuthorityEnvelope,
+    summarizeOrientationPacket,
+} from '../../../lib/entityRuntime/index.js';
 
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
 
@@ -120,11 +131,21 @@ function drainStreamingCallbacks(resolver) {
 function logRequestEnd(resolver) {
     if (resolver._requestEndLogged) return;
     const usage = summarizeUsage(resolver.pathwayResultData?.usage);
+    const runtimeBudget = resolver.entityRuntimeState
+        ? {
+            searchCalls: resolver.entityRuntimeState.searchCalls,
+            fetchCalls: resolver.entityRuntimeState.fetchCalls,
+            childRuns: resolver.entityRuntimeState.childRuns,
+            evidenceItems: resolver.entityRuntimeState.evidenceItems,
+            stopReason: resolver.entityRuntimeState.stopReason || null,
+        }
+        : null;
     logEvent(getRequestId(resolver), 'request.end', {
         durationMs: Date.now() - (resolver.requestStartTime || 0),
         toolRounds: resolver.toolCallRound || 0,
         budgetUsed: resolver.toolBudgetUsed || 0,
         ...(usage && { tokens: usage }),
+        ...(runtimeBudget && { runtimeBudget }),
     });
     resolver._requestEndLogged = true;
 }
@@ -239,7 +260,7 @@ function summarizeReturnedCalls(toolCalls) {
 
 async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
     const rid = getRequestId(resolver);
-    const model = callArgs.modelOverride || overrides.model;
+    const model = callArgs.modelOverride || callArgs.model || overrides.model;
     logEvent(rid, 'model.call', {
         model,
         purpose,
@@ -298,6 +319,305 @@ function makeErrorHandler(args, resolver) {
     };
 }
 
+function getToolBudgetLimit(args, resolver) {
+    return Math.min(
+        TOOL_BUDGET,
+        resolver.entityRuntimeState?.authorityEnvelope?.maxToolBudget || TOOL_BUDGET
+    );
+}
+
+function getResearchRoundLimit(resolver) {
+    return resolver.entityRuntimeState?.authorityEnvelope?.maxResearchRounds || Number.POSITIVE_INFINITY;
+}
+
+function getRuntimeBudgetState(resolver) {
+    const state = resolver.entityRuntimeState;
+    if (!state) return null;
+    return {
+        toolBudgetUsed: resolver.toolBudgetUsed || 0,
+        researchRounds: resolver.toolCallRound || 0,
+        searchCalls: state.searchCalls || 0,
+        fetchCalls: state.fetchCalls || 0,
+        childRuns: state.childRuns || 0,
+        evidenceItems: state.evidenceItems || 0,
+    };
+}
+
+function registerRuntimeStop(resolver, reason) {
+    if (!resolver.entityRuntimeState || resolver.entityRuntimeState.stopReason) return;
+    resolver.entityRuntimeState.stopReason = reason;
+}
+
+function buildRuntimeInstructionBlock(runtimeContext) {
+    if (!runtimeContext?.enabled) return '';
+    const focus = runtimeContext.orientationSummary || 'No current focus provided.';
+    return `## Current Run
+
+You are operating inside a durable entity runtime.
+Run goal: ${runtimeContext.goal || 'No goal provided.'}
+Origin: ${runtimeContext.origin || 'chat'}
+Stage: ${runtimeContext.stage || 'plan'}
+Requested output: ${runtimeContext.requestedOutput || 'No special output constraint.'}
+Energy envelope: ${runtimeContext.envelopeSummary}
+
+You control tactics, pacing, and whether to keep researching, synthesize now, narrow the scope, or ask for more budget. Respect the visible envelope above; do not hide extra work inside repeated low-yield searches.
+
+Orientation:
+${focus}
+
+If the evidence is sufficient, synthesize. If it is not, use tools deliberately and avoid repeating the same search in slightly different wording.`;
+}
+
+function withVisibleModel(callArgs, model) {
+    return {
+        ...callArgs,
+        modelOverride: model,
+        model,
+    };
+}
+
+function getRuntimeStage(resolver, fallback = 'research_batch') {
+    return resolver.entityRuntimeState?.currentStage || fallback;
+}
+
+async function markRuntimeStage(resolver, stage, note = '', meta = {}) {
+    const state = resolver.entityRuntimeState;
+    if (!state) return;
+    state.currentStage = stage;
+    logEvent(getRequestId(resolver), 'runtime.stage', {
+        runId: state.runId,
+        stage,
+        model: meta.model || null,
+        stopReason: state.stopReason || null,
+        budgetState: getRuntimeBudgetState(resolver) || {},
+    });
+    try {
+        await getEntityRuntime().markStage(state.runId, stage, note, meta);
+    } catch (error) {
+        logEventError(getRequestId(resolver), 'runtime.stage.error', { runId: state.runId, stage, error: error.message });
+    }
+}
+
+function isToolAllowedForRuntimeStage(toolName = '', stage = '') {
+    const normalizedTool = toolName.toLowerCase();
+    if (!stage) return true;
+    if (stage === 'synthesize') return normalizedTool === SET_GOALS_TOOL_NAME;
+    if (['plan', 'research_batch', 'assess', 'delegate', 'reduce', 'verify'].includes(stage)) {
+        return normalizedTool !== 'setbaseavatar';
+    }
+    return true;
+}
+
+function describeToolIntent(toolCall) {
+    const toolName = toolCall?.function?.name || 'Tool';
+    const args = safeParse(toolCall?.function?.arguments) || {};
+    if (toolName === 'SearchInternet' || toolName === 'SearchXPlatform') {
+        const query = args.q || args.text || args.query || '';
+        return query
+            ? `Gather external evidence for "${String(query).slice(0, 140)}".`
+            : `Gather external evidence with ${toolName}.`;
+    }
+    if (toolName === 'FetchWebPageContentJina') {
+        return args.url
+            ? `Read and extract the cited source ${String(args.url).slice(0, 140)}.`
+            : 'Read the cited source material.';
+    }
+    if (toolName === 'SearchMemory') return 'Check continuity memory for relevant prior context.';
+    if (toolName === 'WorkspaceSSH') return 'Use the workspace to complete the task safely.';
+    return `Use ${toolName} to progress the request.`;
+}
+
+function synthesizeServerPlan(toolCalls, args, resolver) {
+    if (resolver.toolPlan || !toolCalls || toolCalls.length === 0) return;
+    const goal = args.runGoal || extractUserMessage(args) || 'Complete the active request.';
+    const steps = [];
+    const seen = new Set();
+    for (const toolCall of toolCalls) {
+        const step = describeToolIntent(toolCall);
+        if (!step || seen.has(step)) continue;
+        seen.add(step);
+        steps.push(step);
+        if (steps.length >= 5) break;
+    }
+    resolver.toolPlan = {
+        goal,
+        steps: steps.length > 0 ? steps : ['Finish the request using the evidence gathered so far.'],
+    };
+    logEvent(getRequestId(resolver), 'plan.created', {
+        goal: resolver.toolPlan.goal,
+        steps: resolver.toolPlan.steps.length,
+        stepList: resolver.toolPlan.steps,
+        source: 'runtime_synthesized',
+    });
+}
+
+async function finalizeRuntimeRun(args, resolver, response) {
+    const state = resolver.entityRuntimeState;
+    if (!state?.runId || state._finalized) return;
+    state._finalized = true;
+
+    const runtime = getEntityRuntime();
+    const budgetState = getRuntimeBudgetState(resolver) || {};
+    const resultText = (resolver.streamedContent || extractResponseText(response) || '').trim();
+    const stopReason = state.stopReason || 'completed';
+    const resultData = resolver.pathwayResultData || null;
+    const isPulse = args.invocationType === 'pulse';
+    const shouldPause = isPulse && stopReason !== 'completed';
+    const finalStage = shouldPause ? 'rest' : 'done';
+
+    await markRuntimeStage(
+        resolver,
+        finalStage,
+        shouldPause ? 'Runtime paused run for later continuation' : 'Runtime completed run',
+        {
+            model: finalStage === 'rest' ? args.toolLoopModel : (args.synthesisModel || args.primaryModel),
+            stopReason,
+        }
+    );
+
+    if (shouldPause) {
+        await runtime.pauseRun({
+            runId: state.runId,
+            reason: stopReason,
+            budgetState,
+            reflection: resultText.slice(0, 2000),
+            resultData,
+        });
+        return;
+    }
+
+    await runtime.completeRun({
+        runId: state.runId,
+        result: resultText,
+        stopReason,
+        budgetState,
+        resultData,
+    });
+}
+
+function applyRuntimeToolEnvelope(toolCalls, resolver) {
+    const state = resolver.entityRuntimeState;
+    if (!state) {
+        return { allowedToolCalls: toolCalls, skippedToolCalls: [], stopReason: null };
+    }
+
+    const allowedToolCalls = [];
+    const skippedToolCalls = [];
+    const perRoundLimit = state.authorityEnvelope.maxToolCallsPerRound || toolCalls.length;
+    const stage = getRuntimeStage(resolver);
+    let stopReason = null;
+
+    for (const toolCall of toolCalls) {
+        if (allowedToolCalls.length >= perRoundLimit) {
+            skippedToolCalls.push(toolCall);
+            stopReason = stopReason || 'per_round_tool_cap';
+            continue;
+        }
+
+        const toolName = toolCall?.function?.name || '';
+        if (!isToolAllowedForRuntimeStage(toolName, stage)) {
+            skippedToolCalls.push(toolCall);
+            stopReason = stopReason || 'stage_tool_block';
+            continue;
+        }
+        const toolArgs = safeParse(toolCall?.function?.arguments) || {};
+        const family = normalizeToolFamily(toolName);
+        const semanticKey = buildSemanticToolKey(toolName, toolArgs);
+        const repeatedCount = semanticKey ? (state.semanticToolCounts.get(semanticKey) || 0) : 0;
+
+        if (family === 'search' && state.searchCalls >= state.authorityEnvelope.maxSearchCalls) {
+            skippedToolCalls.push(toolCall);
+            stopReason = stopReason || 'search_cap';
+            continue;
+        }
+
+        if (family === 'fetch' && state.fetchCalls >= state.authorityEnvelope.maxFetchCalls) {
+            skippedToolCalls.push(toolCall);
+            stopReason = stopReason || 'fetch_cap';
+            continue;
+        }
+
+        if (family === 'child' && state.childRuns >= state.authorityEnvelope.maxChildRuns) {
+            skippedToolCalls.push(toolCall);
+            stopReason = stopReason || 'child_cap';
+            continue;
+        }
+
+        if (family === 'search' && semanticKey && repeatedCount >= state.authorityEnvelope.maxRepeatedSearches) {
+            skippedToolCalls.push(toolCall);
+            stopReason = stopReason || 'repeated_search_cap';
+            continue;
+        }
+
+        allowedToolCalls.push(toolCall);
+
+        if (family === 'search') state.searchCalls++;
+        if (family === 'fetch') state.fetchCalls++;
+        if (family === 'child') state.childRuns++;
+        if (semanticKey) state.semanticToolCounts.set(semanticKey, repeatedCount + 1);
+    }
+
+    return { allowedToolCalls, skippedToolCalls, stopReason };
+}
+
+async function recordRuntimeEvidence(result, resolver, args) {
+    const state = resolver.entityRuntimeState;
+    if (!state || !result?.toolCall?.function?.name) return 0;
+
+    const toolName = result.toolCall.function.name;
+    const family = normalizeToolFamily(toolName);
+    const semanticKey = buildSemanticToolKey(toolName, result.toolArgs || {});
+    const isNewEvidence = semanticKey ? !state.semanticEvidenceKeys.has(semanticKey) : true;
+
+    if (semanticKey && isNewEvidence) state.semanticEvidenceKeys.add(semanticKey);
+    if (!isNewEvidence) return 0;
+
+    state.evidenceItems++;
+
+    const content = result.error
+        ? `Error: ${result.error}`
+        : typeof result.result?.result === 'string'
+            ? result.result.result
+            : JSON.stringify(result.result?.result ?? result.result ?? '');
+
+    if (state.store?.isConfigured()) {
+        try {
+            await state.store.appendEvidence(state.runId, {
+                entityId: args.entityId,
+                toolName,
+                family,
+                semanticKey,
+                summary: content.slice(0, 1200),
+                snippet: content.slice(0, 400),
+                metadata: { toolArgs: result.toolArgs || {} },
+            });
+        } catch (error) {
+            logEventError(getRequestId(resolver), 'runtime.evidence.error', { error: error.message });
+        }
+    }
+
+    return 1;
+}
+
+function updateRuntimeNovelty(resolver, newEvidenceCount) {
+    const state = resolver.entityRuntimeState;
+    if (!state) return false;
+
+    state.noveltyHistory.push(newEvidenceCount);
+    if (state.noveltyHistory.length > state.authorityEnvelope.noveltyWindow) {
+        state.noveltyHistory.shift();
+    }
+
+    const hasEnoughRounds = state.noveltyHistory.length >= state.authorityEnvelope.noveltyWindow;
+    const noveltyTotal = state.noveltyHistory.reduce((sum, value) => sum + value, 0);
+    const lowNovelty = hasEnoughRounds && noveltyTotal < state.authorityEnvelope.minNewEvidencePerWindow;
+    const evidenceCapReached = state.evidenceItems >= state.authorityEnvelope.maxEvidenceItems;
+
+    if (lowNovelty) registerRuntimeStop(resolver, 'low_novelty');
+    if (evidenceCapReached) registerRuntimeStop(resolver, 'evidence_cap');
+    return lowNovelty || evidenceCapReached;
+}
+
 // ─── Tool Execution ──────────────────────────────────────────────────────────
 
 function interceptSetGoals(setGoalsCalls, preToolCallMessages, resolver) {
@@ -337,7 +657,11 @@ async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, 
 
         // Duplicate detection
         const cacheKey = `${toolCall.function.name}:${toolCall.function.arguments}`;
-        const cachedResult = resolver.toolCallCache?.get(cacheKey);
+        const semanticCacheKey = resolver.entityRuntimeState
+            ? buildSemanticToolKey(toolCall.function.name, toolArgs)
+            : null;
+        const cachedResult = resolver.toolCallCache?.get(cacheKey)
+            || (semanticCacheKey ? resolver.semanticToolCache?.get(semanticCacheKey) : null);
         if (cachedResult) {
             logEvent(rid, 'tool.exec', { tool: toolCall.function.name, round: (resolver.toolCallRound || 0) + 1, durationMs: 0, success: true, duplicate: true, toolArgs: summarizeReturnedCalls([toolCall])?.[0]?.args });
             toolMessages.push({ role: "assistant", content: "", tool_calls: [buildToolCallEntry(toolCall, toolArgs)] });
@@ -375,9 +699,15 @@ async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, 
 
         toolMessages.push({ role: "tool", tool_call_id: toolCall.id, name: toolName, content: toolResultContent });
         resolver.toolCallCache?.set(cacheKey, toolResultContent);
+        if (semanticCacheKey) resolver.semanticToolCache?.set(semanticCacheKey, toolResultContent);
 
         const errorMessage = detectToolError(toolResult, toolName);
         const hasError = errorMessage !== null;
+        const newEvidenceCount = await recordRuntimeEvidence(
+            { result: toolResult, error: errorMessage, toolCall, toolArgs },
+            resolver,
+            args
+        );
 
         if (!hideExecution) {
             try { await sendToolFinish(rid, toolCallId, !hasError, errorMessage, toolName); } catch { /* non-fatal */ }
@@ -390,7 +720,17 @@ async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, 
             toolArgs: summarizeReturnedCalls([toolCall])?.[0]?.args,
         });
 
-        return { success: !hasError, result: toolResult, error: errorMessage, toolCall, toolArgs, toolFunction, messages: toolMessages, toolImages: toolResult?.toolImages || [] };
+        return {
+            success: !hasError,
+            result: toolResult,
+            error: errorMessage,
+            toolCall,
+            toolArgs,
+            toolFunction,
+            messages: toolMessages,
+            toolImages: toolResult?.toolImages || [],
+            newEvidenceCount,
+        };
     } catch (error) {
         logEvent(rid, 'tool.exec', {
             tool: toolCall?.function?.name || 'unknown', round: (resolver.toolCallRound || 0) + 1,
@@ -419,10 +759,12 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     const preToolCallMessages = cloneMessages(args.chatHistory || []);
     let finalMessages = cloneMessages(preToolCallMessages);
     const rid = getRequestId(resolver);
+    const toolBudgetLimit = getToolBudgetLimit(args, resolver);
 
     if (!toolCalls || toolCalls.length === 0) return { messages: finalMessages, budgetExhausted: false };
 
-    if (resolver.toolBudgetUsed >= TOOL_BUDGET) {
+    if (resolver.toolBudgetUsed >= toolBudgetLimit) {
+        registerRuntimeStop(resolver, 'tool_budget_cap');
         finalMessages = insertSystemMessage(finalMessages, "Tool budget exhausted - no more tool calls will be executed. Provide your response based on the information gathered so far.", rid);
         args.chatHistory = finalMessages;
         return { messages: finalMessages, budgetExhausted: true };
@@ -431,20 +773,30 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     const invalidToolCalls = toolCalls.filter(tc => !tc || !tc.function || !tc.function.name);
     if (invalidToolCalls.length > 0) {
         logEvent(rid, 'tool.round', { round: (resolver.toolCallRound || 0) + 1, invalidCount: invalidToolCalls.length, budgetExhausted: true });
-        resolver.toolBudgetUsed = TOOL_BUDGET;
+        resolver.toolBudgetUsed = toolBudgetLimit;
         args.chatHistory = finalMessages;
         return { messages: finalMessages, budgetExhausted: true };
     }
 
     const validToolCalls = toolCalls.filter(tc => tc && tc.function && tc.function.name);
     const setGoalsCalls = validToolCalls.filter(tc => tc.function.name.toLowerCase() === SET_GOALS_TOOL_NAME);
-    const realToolCalls = validToolCalls.filter(tc => tc.function.name.toLowerCase() !== SET_GOALS_TOOL_NAME);
+    const proposedToolCalls = validToolCalls.filter(tc => tc.function.name.toLowerCase() !== SET_GOALS_TOOL_NAME);
+    const { allowedToolCalls, skippedToolCalls, stopReason } = applyRuntimeToolEnvelope(proposedToolCalls, resolver);
+    const realToolCalls = allowedToolCalls;
 
     const setGoalsResults = interceptSetGoals(setGoalsCalls, preToolCallMessages, resolver);
     const toolResults = await Promise.all(realToolCalls.map(tc => executeSingleTool(tc, preToolCallMessages, args, resolver, entityTools)));
     const allToolResults = [...setGoalsResults, ...toolResults];
 
     finalMessages.push(...mergeParallelToolResults(allToolResults, preToolCallMessages));
+    if (skippedToolCalls.length > 0) {
+        registerRuntimeStop(resolver, stopReason || 'tool_envelope_cap');
+        finalMessages = insertSystemMessage(
+            finalMessages,
+            `The runtime held back ${skippedToolCalls.length} tool call(s) because the current energy envelope was reached. Synthesize from the evidence you have, narrow the scope, or explicitly say you need more budget.`,
+            rid
+        );
+    }
 
     // Inject tool images into chat history so subsequent model calls can see them
     const allToolImages = allToolResults.flatMap(r => r.toolImages || []);
@@ -469,7 +821,15 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     resolver.toolBudgetUsed = (resolver.toolBudgetUsed || 0) + budgetCost;
     resolver.toolCallRound = (resolver.toolCallRound || 0) + 1;
 
-    logEvent(rid, 'tool.round', { round: resolver.toolCallRound, toolCount: validToolCalls.length, failed: allToolResults.filter(r => r && !r.success).length, budgetUsed: resolver.toolBudgetUsed, budgetTotal: TOOL_BUDGET });
+    logEvent(rid, 'tool.round', {
+        round: resolver.toolCallRound,
+        toolCount: validToolCalls.length,
+        executedToolCount: realToolCalls.length,
+        failed: allToolResults.filter(r => r && !r.success).length,
+        budgetUsed: resolver.toolBudgetUsed,
+        budgetTotal: toolBudgetLimit,
+        ...(skippedToolCalls.length > 0 && { skippedToolCalls: skippedToolCalls.length, stopReason }),
+    });
 
     // Pulse tool activity
     if (args.invocationType === 'pulse') {
@@ -511,31 +871,58 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
 
     // Signal if EndPulse was called — executor loop should stop immediately
     const endPulseCalled = realToolCalls.some(tc => tc.function.name === 'EndPulse');
+    const newEvidenceCount = allToolResults.reduce((sum, result) => sum + (result?.newEvidenceCount || 0), 0);
+    const lowNovelty = updateRuntimeNovelty(resolver, newEvidenceCount);
+    if (lowNovelty) {
+        args.chatHistory = insertSystemMessage(
+            args.chatHistory,
+            'Recent tool rounds are yielding little new evidence. Synthesize from what you have or explicitly ask for more budget if the remaining uncertainty matters.',
+            rid
+        );
+    }
 
-    return { messages: processedMessages, budgetExhausted: resolver.toolBudgetUsed >= TOOL_BUDGET, endPulseCalled };
+    if (endPulseCalled) {
+        registerRuntimeStop(resolver, 'rest');
+    }
+
+    return {
+        messages: args.chatHistory,
+        budgetExhausted: resolver.toolBudgetUsed >= toolBudgetLimit || skippedToolCalls.length > 0 || lowNovelty,
+        endPulseCalled,
+    };
 }
 
 // ─── Context Management ──────────────────────────────────────────────────────
 
 function estimateTokens(messages) {
     if (!messages || !Array.isArray(messages)) return 0;
+
+    const estimateStringTokens = (text = '') => {
+        if (!text) return 0;
+        // Full tokenization is unnecessarily expensive for very large blobs.
+        // This is a budgeting heuristic, so use a fast approximation once the
+        // string is large enough that exact precision no longer matters.
+        if (text.length > 8000) return Math.ceil(text.length / 4);
+        return encode(text).length;
+    };
+
     let total = 0;
     for (const msg of messages) {
         total += 4;
         if (typeof msg.content === 'string') {
-            total += encode(msg.content).length;
+            total += estimateStringTokens(msg.content);
         } else if (Array.isArray(msg.content)) {
             for (const part of msg.content) {
-                if (typeof part === 'string') total += encode(part).length;
-                else if (part?.text) total += encode(part.text).length;
+                if (typeof part === 'string') total += estimateStringTokens(part);
+                else if (part?.text) total += estimateStringTokens(part.text);
                 else if (part?.type === 'image_url') total += 85;
             }
         }
         if (msg.tool_calls) {
             for (const tc of msg.tool_calls) {
                 total += 10;
-                if (tc.function?.name) total += encode(tc.function.name).length;
-                if (tc.function?.arguments) total += encode(tc.function.arguments).length;
+                if (tc.function?.name) total += estimateStringTokens(tc.function.name);
+                if (tc.function?.arguments) total += estimateStringTokens(tc.function.arguments);
             }
         }
     }
@@ -748,6 +1135,9 @@ function preservePriorText(message, args) {
 }
 
 async function runFallbackPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
+    await markRuntimeStage(resolver, 'plan', 'Running fallback single-model path', {
+        model: args.planningModel || args.primaryModel,
+    });
     await processToolCallRound(currentToolCalls, args, resolver, entityTools);
     await say(getRequestId(resolver), `\n`, 1000, false, false);
 
@@ -764,10 +1154,10 @@ async function runFallbackPath(currentToolCalls, args, resolver, entityTools, en
             resolver.pathwayResultData = { ...(resolver.pathwayResultData || {}), toolHistory };
         }
 
-        let fallbackResult = await callModelLogged(resolver, {
-            ...args, modelOverride: args.primaryModel, stream: args.stream, tools: entityToolsOpenAiFormat,
+        let fallbackResult = await callModelLogged(resolver, withVisibleModel({
+            ...args, stream: args.stream, tools: entityToolsOpenAiFormat,
             tool_choice: "auto", reasoningEffort: args.configuredReasoningEffort || 'low', skipMemoryLoad: true,
-        }, 'fallback', { model: args.primaryModel });
+        }, args.planningModel || args.primaryModel), 'fallback', { model: args.planningModel || args.primaryModel });
 
         if (!fallbackResult) return await handlePromptError(null);
 
@@ -780,45 +1170,33 @@ async function runFallbackPath(currentToolCalls, args, resolver, entityTools, en
 }
 
 async function enforceGate(currentToolCalls, args, resolver, entityToolsOpenAiFormat, callbackDepth, handlePromptError) {
-    let gateRetries = 0;
-    while (currentToolCalls.length > 0 && !passesGate(currentToolCalls)) {
-        if (gateRetries >= MAX_GATE_RETRIES) {
-            logEvent(getRequestId(resolver), 'plan.skipped', { reason: 'gate_retries_exhausted' });
-            currentToolCalls = [];
-            break;
-        }
-        gateRetries++;
-        logEvent(getRequestId(resolver), 'plan.skipped', { reason: 'missing_setgoals', gateRetry: gateRetries });
-        args.chatHistory = insertSystemMessage(args.chatHistory,
-            'Your tool calls were discarded because they did not include SetGoals. You MUST call SetGoals alongside your other tool calls to establish a plan. Try again.',
-            getRequestId(resolver)
-        );
-        try {
-            const gateResult = await callModelLogged(resolver, {
-                ...args, modelOverride: args.primaryModel, stream: false,
-                tools: [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF],
-                tool_choice: "auto", reasoningEffort: args.configuredReasoningEffort || 'medium', skipMemoryLoad: true,
-            }, 'gate_retry', { model: args.primaryModel, callbackDepth });
-            if (!gateResult) return { toolCalls: currentToolCalls, error: await handlePromptError(null) };
-            currentToolCalls = extractToolCalls(gateResult);
-        } catch (e) {
-            return { toolCalls: currentToolCalls, error: await handlePromptError(e) };
-        }
+    if (currentToolCalls.length > 0 && !passesGate(currentToolCalls)) {
+        logEvent(getRequestId(resolver), 'plan.skipped', {
+            reason: 'missing_setgoals',
+            callbackDepth,
+            synthesizedServerSide: true,
+            availableTools: entityToolsOpenAiFormat.length,
+        });
+        synthesizeServerPlan(currentToolCalls, args, resolver);
     }
     return { toolCalls: currentToolCalls, error: null };
 }
 
 async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
-    while (resolver.toolBudgetUsed < TOOL_BUDGET) {
+    while (resolver.toolBudgetUsed < getToolBudgetLimit(args, resolver) && (resolver.toolCallRound || 0) < getResearchRoundLimit(resolver)) {
         const rid = getRequestId(resolver);
+        await markRuntimeStage(resolver, 'research_batch', 'Running bounded research loop', {
+            model: args.toolLoopModel,
+            round: (resolver.toolCallRound || 0) + 1,
+        });
         if (resolver.toolPlan) logEvent(rid, 'plan.step', { round: resolver.toolCallRound || 0, steps: resolver.toolPlan.steps.length });
         args.chatHistory = insertSystemMessage(args.chatHistory, buildStepInstruction(resolver), rid);
 
         try {
-            const result = await callModelLogged(resolver, {
-                ...args, modelOverride: args.toolLoopModel, stream: false, tools: entityToolsOpenAiFormat,
+            const result = await callModelLogged(resolver, withVisibleModel({
+                ...args, stream: false, tools: entityToolsOpenAiFormat,
                 tool_choice: "auto", reasoningEffort: 'low', skipMemoryLoad: true,
-            }, 'tool_loop', { model: args.toolLoopModel, round: resolver.toolCallRound, hasPlan: !!resolver.toolPlan });
+            }, args.toolLoopModel), 'tool_loop', { model: args.toolLoopModel, round: resolver.toolCallRound, hasPlan: !!resolver.toolPlan });
 
             if (!result) return await handlePromptError(null);
             const calls = extractToolCalls(result);
@@ -829,6 +1207,12 @@ async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat
         } catch (e) {
             return await handlePromptError(e);
         }
+    }
+    if ((resolver.toolCallRound || 0) >= getResearchRoundLimit(resolver)) {
+        registerRuntimeStop(resolver, 'research_round_cap');
+    }
+    if (resolver.toolBudgetUsed >= getToolBudgetLimit(args, resolver)) {
+        registerRuntimeStop(resolver, 'tool_budget_cap');
     }
     return null;
 }
@@ -852,13 +1236,18 @@ function prepareForSynthesis(args, resolver) {
 
 async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError) {
     await say(getRequestId(resolver), `\n`, 1000, false, false);
-    const synthesisTools = [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF];
+    await markRuntimeStage(resolver, 'synthesize', 'Synthesizing response from gathered evidence', {
+        model: args.synthesisModel || args.primaryModel,
+    });
+    const synthesisTools = isEntityRuntimeEnabled(args)
+        ? [SET_GOALS_OPENAI_DEF]
+        : [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF];
 
     try {
-        let synthesisResult = await callModelLogged(resolver, {
-            ...args, modelOverride: args.primaryModel, stream: args.stream, tools: synthesisTools,
+        let synthesisResult = await callModelLogged(resolver, withVisibleModel({
+            ...args, stream: args.stream, tools: synthesisTools,
             tool_choice: "auto", reasoningEffort: args.configuredReasoningEffort || 'medium', skipMemoryLoad: true,
-        }, 'synthesis', { model: args.primaryModel, replanCount: resolver.replanCount || 0, callbackDepth });
+        }, args.synthesisModel || args.primaryModel), 'synthesis', { model: args.synthesisModel || args.primaryModel, replanCount: resolver.replanCount || 0, callbackDepth });
 
         if (!synthesisResult) return { result: await handlePromptError(null), done: true };
 
@@ -870,7 +1259,7 @@ async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiForma
         // Update model.result log with streaming info
         if (hadStreamingCallback) {
             logEvent(getRequestId(resolver), 'model.result', {
-                model: args.primaryModel, purpose: 'synthesis', streamingCallback: true, hasPlan: !!resolver.toolPlan, callbackDepth,
+                model: args.synthesisModel || args.primaryModel, purpose: 'synthesis', streamingCallback: true, hasPlan: !!resolver.toolPlan, callbackDepth,
             });
         }
 
@@ -956,11 +1345,15 @@ function loadEntityContext(entityConfig, args, resolver) {
     const inputAllowsMemory = args.useMemory !== false;
     const useContinuityMemory = entityAllowsMemory && inputAllowsMemory;
     const modelOverride = entityConfig?.modelOverride ?? args.modelOverride;
-    const toolLoopModel = config.get('models')?.[TOOL_LOOP_MODEL] ? TOOL_LOOP_MODEL : null;
-    return { entityName, entityInstructions, useContinuityMemory, modelOverride, toolLoopModel };
+    const modelPolicy = resolveEntityModelPolicy({ entityConfig, args, resolver });
+    const authorityEnvelope = resolveAuthorityEnvelope({ entityConfig, args, origin: args.invocationType || args.runtimeOrigin });
+    const toolLoopModel = isEntityRuntimeEnabled(args)
+        ? modelPolicy.researchModel
+        : (config.get('models')?.[TOOL_LOOP_MODEL] ? TOOL_LOOP_MODEL : null);
+    return { entityName, entityInstructions, useContinuityMemory, modelOverride, toolLoopModel, modelPolicy, authorityEnvelope };
 }
 
-function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse) {
+function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse, runtimeContext = null) {
     const entityDNA = useContinuityMemory
         ? `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n`
         : (entityInstructions ? entityInstructions + '\n\n' : '');
@@ -1024,9 +1417,10 @@ IDENTITY memory automatically.
 You can also use SendPushNotification to proactively reach out to a user
 if you've completed something they'd want to know about.
 ` : '';
+    const runtimeInstructions = buildRuntimeInstructionBlock(runtimeContext);
 
     return [
-        {"role": "system", "content": `${instructionTemplates}${toolsTemplate}${planInstruction}${searchRulesTemplate}${voiceInstructions}${pulseInstructions}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+        {"role": "system", "content": `${instructionTemplates}${toolsTemplate}${planInstruction}${searchRulesTemplate}${voiceInstructions}${pulseInstructions}${runtimeInstructions ? `${runtimeInstructions}\n\n` : ''}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
         "{{chatHistory}}",
     ];
 }
@@ -1107,6 +1501,292 @@ async function recordConversationMemory(resolver, args, response, entityName, en
 
 // ─── Default Export ──────────────────────────────────────────────────────────
 
+export async function toolCallbackCore(args, message, resolver) {
+    if (!args || !message || !resolver) return;
+
+    const { entityTools, entityToolsOpenAiFormat } = args;
+    resolver.toolBudgetUsed = resolver.toolBudgetUsed || 0;
+    resolver.toolCallRound = resolver.toolCallRound || 0;
+    if (!resolver.toolResultStore) resolver.toolResultStore = new Map();
+    if (!resolver.toolCallCache) resolver.toolCallCache = new Map();
+    if (!resolver.semanticToolCache) resolver.semanticToolCache = new Map();
+
+    resolver._callbackDepth = (resolver._callbackDepth || 0) + 1;
+    const callbackDepth = resolver._callbackDepth;
+
+    let currentToolCalls = extractToolCalls(message);
+    const rid = getRequestId(resolver);
+    logEvent(rid, 'callback.entry', { depth: callbackDepth, incomingToolCalls: summarizeReturnedCalls(currentToolCalls), hasPlan: !!resolver.toolPlan, budgetUsed: resolver.toolBudgetUsed });
+
+    if (currentToolCalls.length > 0) preservePriorText(message, args);
+
+    const handlePromptError = makeErrorHandler(args, resolver);
+
+    if (args.toolLoopModel) {
+        return await runDualModelPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError);
+    }
+
+    return await runFallbackPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError);
+}
+
+export async function executeEntityAgentCore({ args, runAllPrompts, resolver, toolCallbackOverride = null }) {
+    const { entityId, voiceResponse, chatId, invocationType } = { ...resolver.pathway.inputParameters, ...args };
+    const isPulse = invocationType === 'pulse';
+
+    if (isPulse && (!args.agentContext || !args.agentContext.length || !args.agentContext.some(ctx => ctx?.contextId))) {
+        args.agentContext = [{ contextId: entityId, contextKey: null, default: true }];
+    }
+
+    const entityConfig = await loadEntityConfig(entityId);
+    const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig, { invocationType });
+    const {
+        entityName,
+        entityInstructions,
+        useContinuityMemory,
+        modelOverride,
+        toolLoopModel,
+        modelPolicy,
+        authorityEnvelope,
+    } = loadEntityContext(entityConfig, args, resolver);
+
+    if (!args.chatHistory || args.chatHistory.length === 0) args.chatHistory = [];
+
+    const entityResources = entityConfig?.resources || entityConfig?.files || [];
+    if (entityResources.length > 0) {
+        let lastUserMessage = args.chatHistory.filter(message => message.role === "user").slice(-1)[0];
+        if (!lastUserMessage) {
+            lastUserMessage = { role: "user", content: [] };
+            args.chatHistory.push(lastUserMessage);
+        }
+        if (!Array.isArray(lastUserMessage.content)) {
+            lastUserMessage.content = lastUserMessage.content ? [lastUserMessage.content] : [];
+        }
+        lastUserMessage.content.push(...entityResources.map(resource => ({
+            type: "image_url", gcs: resource?.gcs, url: resource?.url,
+            image_url: { url: resource?.url }, originalFilename: resource?.name
+        })));
+    }
+
+    const userInfo = args.userInfo || '';
+    args = {
+        ...args, ...config.get('entityConstants'),
+        entityId, entityTools, entityToolsOpenAiFormat, entityInstructions,
+        voiceResponse, chatId, userInfo, hasWorkspace: !!entityTools.workspacessh,
+    };
+    resolver.args = {...args};
+
+    const runtimeOrientationPacket = safeParseRuntimeValue(args.runtimeOrientationPacket);
+    const runtimeContext = isEntityRuntimeEnabled(args)
+        ? {
+            enabled: true,
+            goal: args.runGoal || args.text || '',
+            origin: args.runtimeOrigin || invocationType || 'chat',
+            stage: args.runtimeStage || 'plan',
+            requestedOutput: args.requestedOutput || '',
+            envelopeSummary: summarizeAuthorityEnvelope(authorityEnvelope),
+            orientationSummary: runtimeOrientationPacket
+                ? summarizeOrientationPacket(runtimeOrientationPacket)
+                : '',
+        }
+        : null;
+
+    const promptMessages = buildPromptTemplate(
+        entityConfig,
+        entityToolsOpenAiFormat,
+        entityInstructions,
+        useContinuityMemory,
+        voiceResponse,
+        isPulse,
+        runtimeContext
+    );
+    resolver.pathwayPrompt = [new Prompt({ messages: promptMessages })];
+
+    const reasoningEffort = entityConfig?.reasoningEffort || 'low';
+
+    args.chatHistory = sliceByTurns(args.messages && args.messages.length > 0 ? args.messages : args.chatHistory);
+
+    const { chatHistory: strippedHistory, availableFiles } = await syncAndStripFilesFromChatHistory(args.chatHistory, args.agentContext, chatId, entityId);
+    args.chatHistory = strippedHistory;
+
+    const rid = getRequestId(resolver);
+    try { args.chatHistory = await compressContextIfNeeded(args.chatHistory, resolver, args); }
+    catch (e) { logEventError(rid, 'request.error', { phase: 'compression', error: e.message }); }
+
+    args.configuredReasoningEffort = reasoningEffort;
+    args.toolLoopModel = toolLoopModel;
+    args.modelPolicyResolved = modelPolicy;
+    args.authorityEnvelopeResolved = authorityEnvelope;
+    args.primaryModel = isEntityRuntimeEnabled(args)
+        ? modelPolicy.primaryModel
+        : (modelOverride || resolver.modelName);
+    args.planningModel = isEntityRuntimeEnabled(args) ? modelPolicy.planningModel : args.primaryModel;
+    args.synthesisModel = isEntityRuntimeEnabled(args) ? modelPolicy.synthesisModel : args.primaryModel;
+    args.verificationModel = isEntityRuntimeEnabled(args) ? modelPolicy.verificationModel : args.primaryModel;
+    resolver.args = {...args};
+
+    if (isEntityRuntimeEnabled(args) && args.runtimeRunId) {
+        resolver.entityRuntimeState = {
+            runId: args.runtimeRunId,
+            authorityEnvelope,
+            modelPolicy,
+            store: getEntityRuntimeStore(),
+            searchCalls: 0,
+            fetchCalls: 0,
+            childRuns: 0,
+            evidenceItems: 0,
+            semanticToolCounts: new Map(),
+            semanticEvidenceKeys: new Set(),
+            noveltyHistory: [],
+            stopReason: null,
+            currentStage: args.runtimeStage || 'plan',
+            _finalized: false,
+        };
+    }
+
+    const requestStartTime = Date.now();
+    resolver.requestStartTime = requestStartTime;
+    logEvent(rid, 'request.start', {
+        entity: entityId, model: args.primaryModel, stream: args.stream, invocationType,
+        ...(toolLoopModel && { toolLoopModel }), reasoningEffort,
+        entityToolCount: entityToolsOpenAiFormat.length, entityToolNames: summarizeToolNames(entityToolsOpenAiFormat),
+        ...(isEntityRuntimeEnabled(args) && {
+            runtimeRunId: args.runtimeRunId,
+            runtimeStage: args.runtimeStage || 'plan',
+            modelPolicy,
+            authorityEnvelope,
+        }),
+    });
+
+    try {
+        const hasTools = entityToolsOpenAiFormat.length > 0;
+        const firstCallTools = hasTools ? [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF] : entityToolsOpenAiFormat;
+
+        await markRuntimeStage(resolver, 'plan', 'Running initial planning/model pass', {
+            model: args.planningModel || args.primaryModel,
+        });
+
+        let response = await runAllPrompts(withVisibleModel({
+            ...args, chatHistory: cloneMessages(args.chatHistory), availableFiles,
+            stream: args.stream, reasoningEffort: args.configuredReasoningEffort || 'low',
+            tools: firstCallTools, tool_choice: "auto"
+        }, args.planningModel || args.primaryModel));
+
+        if (!response) {
+            const errorDetails = resolver.errors.length > 0 ? `: ${resolver.errors.join(', ')}` : '';
+            throw new Error(`Model execution returned null - the model request likely failed${errorDetails}`);
+        }
+
+        const holder = { value: response };
+        const hadStreamingCallback = await drainStreamingCallbacks(resolver)(holder);
+        response = holder.value;
+
+        logEvent(rid, 'model.result', {
+            model: args.planningModel || args.primaryModel, purpose: 'initial',
+            returnedToolCalls: summarizeReturnedCalls(extractToolCalls(response)),
+            streamingCallback: hadStreamingCallback,
+            contentChars: (response instanceof CortexResponse ? response.output_text?.length : (typeof response === 'string' ? response.length : 0)) || 0,
+        });
+
+        const toolCallback = toolCallbackOverride || resolver.pathway.toolCallback || toolCallbackCore;
+        resolver._preToolHistoryLength = args.chatHistory.length;
+        while (response && (
+            (response instanceof CortexResponse && response.hasToolCalls()) ||
+            (typeof response === 'object' && response.tool_calls)
+        )) {
+            try {
+                response = await toolCallback(args, response, resolver);
+                if (!response) throw new Error('Tool callback returned null - a model request likely failed');
+            } catch (toolError) {
+                logEventError(rid, 'request.error', { phase: 'tool_callback', error: toolError.message, durationMs: Date.now() - requestStartTime });
+                const errorResponse = await generateErrorResponse(toolError, args, resolver);
+                resolver.errors = [];
+                await finalizeRuntimeRun(args, resolver, errorResponse);
+                return errorResponse;
+            }
+        }
+
+        if (isPulse && useContinuityMemory && resolver.continuityEntityId) {
+            await recordPulseMemory(resolver, args, response, entityName, entityInstructions);
+        } else if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
+            await recordConversationMemory(resolver, args, response, entityName, entityInstructions);
+        }
+
+        if (resolver.entityRuntimeState) {
+            resolver.pathwayResultData = {
+                ...(resolver.pathwayResultData || {}),
+                entityRuntime: {
+                    runId: resolver.entityRuntimeState.runId,
+                    stopReason: resolver.entityRuntimeState.stopReason,
+                    budgetState: getRuntimeBudgetState(resolver),
+                },
+            };
+        }
+
+        const isStreamObject = response && typeof response.on === 'function';
+        if (!isStreamObject && !extractResponseText(response).trim()) {
+            logEventError(rid, 'request.error', { phase: 'empty_response', error: 'All processing completed but no text was produced', durationMs: Date.now() - requestStartTime });
+            response = await generateErrorResponse(
+                new Error('I processed your request but wasn\'t able to generate a response. Please try again.'),
+                args, resolver
+            );
+        }
+
+        await finalizeRuntimeRun(args, resolver, response);
+
+        if (!resolver._requestEndLogged) {
+            const usage = summarizeUsage(resolver.pathwayResultData?.usage);
+            logEvent(rid, 'request.end', {
+                durationMs: Date.now() - requestStartTime, toolRounds: resolver.toolCallRound || 0,
+                budgetUsed: resolver.toolBudgetUsed || 0, ...(usage && { tokens: usage }),
+            });
+        }
+
+        if (args.stream && !(response && typeof response.on === 'function')) {
+            publishRequestProgress({
+                requestId: rid,
+                progress: 1,
+                data: JSON.stringify(extractResponseText(response)),
+                info: JSON.stringify(resolver.pathwayResultData || {}),
+                error: resolver.errors?.length > 0 ? resolver.errors.join(', ') : ''
+            });
+        }
+
+        return response;
+    } catch (e) {
+        if (e.message === 'Request canceled') {
+            registerRuntimeStop(resolver, 'canceled');
+            logEvent(rid, 'request.cancel', { durationMs: Date.now() - requestStartTime, budgetUsed: resolver.toolBudgetUsed || 0, toolRounds: resolver.toolCallRound || 0 });
+            resolver.errors = [];
+            await finalizeRuntimeRun(args, resolver, '');
+            if (args.stream) {
+                publishRequestProgress({
+                    requestId: rid, progress: 1, data: '', info: JSON.stringify(resolver.pathwayResultData || {}), error: ''
+                });
+            }
+            return '';
+        }
+
+        const usage = summarizeUsage(resolver.pathwayResultData?.usage);
+        logEventError(rid, 'request.error', { phase: 'executePathway', error: e.message, durationMs: Date.now() - requestStartTime, ...(usage && { tokens: usage }) });
+        const errorResponse = await generateErrorResponse(e, args, resolver);
+        resolver.errors = [];
+        registerRuntimeStop(resolver, resolver.entityRuntimeState?.stopReason || 'error');
+        await finalizeRuntimeRun(args, resolver, errorResponse);
+
+        if (args.stream) {
+            publishRequestProgress({
+                requestId: rid,
+                progress: 1,
+                data: JSON.stringify(errorResponse),
+                info: JSON.stringify(resolver.pathwayResultData || {}),
+                error: e.message || ''
+            });
+        }
+
+        return errorResponse;
+    }
+}
+
 export default {
     emulateOpenAIChatModel: 'cortex-agent',
     useInputChunking: false,
@@ -1131,222 +1811,18 @@ export default {
         model: 'oai-gpt41',
         useMemory: true,
         invocationType: '',
+        runtimeMode: '',
+        runtimeRunId: '',
+        runtimeStage: '',
+        runtimeOrigin: '',
+        runGoal: '',
+        requestedOutput: '',
+        modelPolicy: undefined,
+        authorityEnvelope: undefined,
+        runtimeOrientationPacket: undefined,
     },
     timeout: 600,
 
-    toolCallback: async (args, message, resolver) => {
-        if (!args || !message || !resolver) return;
-
-        const { entityTools, entityToolsOpenAiFormat } = args;
-        resolver.toolBudgetUsed = resolver.toolBudgetUsed || 0;
-        resolver.toolCallRound = resolver.toolCallRound || 0;
-        if (!resolver.toolResultStore) resolver.toolResultStore = new Map();
-        if (!resolver.toolCallCache) resolver.toolCallCache = new Map();
-
-        resolver._callbackDepth = (resolver._callbackDepth || 0) + 1;
-        const callbackDepth = resolver._callbackDepth;
-
-        let currentToolCalls = extractToolCalls(message);
-        const rid = getRequestId(resolver);
-        logEvent(rid, 'callback.entry', { depth: callbackDepth, incomingToolCalls: summarizeReturnedCalls(currentToolCalls), hasPlan: !!resolver.toolPlan, budgetUsed: resolver.toolBudgetUsed });
-
-        if (currentToolCalls.length > 0) preservePriorText(message, args);
-
-        const handlePromptError = makeErrorHandler(args, resolver);
-
-        if (args.toolLoopModel) {
-            return await runDualModelPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError);
-        }
-
-        // Fallback: single-model path
-        return await runFallbackPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError);
-    },
-
-    executePathway: async ({args, runAllPrompts, resolver}) => {
-        const { entityId, voiceResponse, chatId, invocationType } = { ...resolver.pathway.inputParameters, ...args };
-        const isPulse = invocationType === 'pulse';
-
-        if (isPulse && (!args.agentContext || !args.agentContext.length || !args.agentContext.some(ctx => ctx?.contextId))) {
-            args.agentContext = [{ contextId: entityId, contextKey: null, default: true }];
-        }
-
-        const entityConfig = await loadEntityConfig(entityId);
-        const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig, { invocationType });
-        const { entityName, entityInstructions, useContinuityMemory, modelOverride, toolLoopModel } = loadEntityContext(entityConfig, args, resolver);
-
-        if (!args.chatHistory || args.chatHistory.length === 0) args.chatHistory = [];
-
-        // Attach entity resources to last user message
-        const entityResources = entityConfig?.resources || entityConfig?.files || [];
-        if (entityResources.length > 0) {
-            let lastUserMessage = args.chatHistory.filter(message => message.role === "user").slice(-1)[0];
-            if (!lastUserMessage) {
-                lastUserMessage = { role: "user", content: [] };
-                args.chatHistory.push(lastUserMessage);
-            }
-            if (!Array.isArray(lastUserMessage.content)) {
-                lastUserMessage.content = lastUserMessage.content ? [lastUserMessage.content] : [];
-            }
-            lastUserMessage.content.push(...entityResources.map(resource => ({
-                type: "image_url", gcs: resource?.gcs, url: resource?.url,
-                image_url: { url: resource?.url }, originalFilename: resource?.name
-            })));
-        }
-
-        const userInfo = args.userInfo || '';
-        args = {
-            ...args, ...config.get('entityConstants'),
-            entityId, entityTools, entityToolsOpenAiFormat, entityInstructions,
-            voiceResponse, chatId, userInfo, hasWorkspace: !!entityTools.workspacessh,
-        };
-        resolver.args = {...args};
-
-        const promptMessages = buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse);
-        resolver.pathwayPrompt = [new Prompt({ messages: promptMessages })];
-
-        const reasoningEffort = entityConfig?.reasoningEffort || 'low';
-
-        args.chatHistory = sliceByTurns(args.messages && args.messages.length > 0 ? args.messages : args.chatHistory);
-
-        const { chatHistory: strippedHistory, availableFiles } = await syncAndStripFilesFromChatHistory(args.chatHistory, args.agentContext, chatId, entityId);
-        args.chatHistory = strippedHistory;
-
-        const rid = getRequestId(resolver);
-        try { args.chatHistory = await compressContextIfNeeded(args.chatHistory, resolver, args); }
-        catch (e) { logEventError(rid, 'request.error', { phase: 'compression', error: e.message }); }
-
-        args.configuredReasoningEffort = reasoningEffort;
-        args.toolLoopModel = toolLoopModel;
-        args.primaryModel = modelOverride || resolver.modelName;
-        resolver.args = {...args};
-
-        const requestStartTime = Date.now();
-        resolver.requestStartTime = requestStartTime;
-        logEvent(rid, 'request.start', {
-            entity: entityId, model: modelOverride || resolver.modelName, stream: args.stream, invocationType,
-            ...(toolLoopModel && { toolLoopModel }), reasoningEffort,
-            entityToolCount: entityToolsOpenAiFormat.length, entityToolNames: summarizeToolNames(entityToolsOpenAiFormat),
-        });
-
-        try {
-            const hasTools = entityToolsOpenAiFormat.length > 0;
-            const firstCallTools = hasTools ? [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF] : entityToolsOpenAiFormat;
-
-            let response = await runAllPrompts({
-                ...args, modelOverride, chatHistory: cloneMessages(args.chatHistory), availableFiles,
-                stream: args.stream, reasoningEffort: args.configuredReasoningEffort || 'low',
-                tools: firstCallTools, tool_choice: "auto"
-            });
-
-            if (!response) {
-                const errorDetails = resolver.errors.length > 0 ? `: ${resolver.errors.join(', ')}` : '';
-                throw new Error(`Model execution returned null - the model request likely failed${errorDetails}`);
-            }
-
-            // Drain streaming callbacks from initial call
-            const holder = { value: response };
-            const hadStreamingCallback = await drainStreamingCallbacks(resolver)(holder);
-            response = holder.value;
-
-            logEvent(rid, 'model.result', {
-                model: modelOverride || resolver.modelName, purpose: 'initial',
-                returnedToolCalls: summarizeReturnedCalls(extractToolCalls(response)),
-                streamingCallback: hadStreamingCallback,
-                contentChars: (response instanceof CortexResponse ? response.output_text?.length : (typeof response === 'string' ? response.length : 0)) || 0,
-            });
-
-            const toolCallback = resolver.pathway.toolCallback;
-            resolver._preToolHistoryLength = args.chatHistory.length;
-            while (response && (
-                (response instanceof CortexResponse && response.hasToolCalls()) ||
-                (typeof response === 'object' && response.tool_calls)
-            )) {
-                try {
-                    response = await toolCallback(args, response, resolver);
-                    if (!response) throw new Error('Tool callback returned null - a model request likely failed');
-                } catch (toolError) {
-                    logEventError(rid, 'request.error', { phase: 'tool_callback', error: toolError.message, durationMs: Date.now() - requestStartTime });
-                    const errorResponse = await generateErrorResponse(toolError, args, resolver);
-                    resolver.errors = [];
-                    return errorResponse;
-                }
-            }
-
-            // Continuity memory recording
-            if (isPulse && useContinuityMemory && resolver.continuityEntityId) {
-                await recordPulseMemory(resolver, args, response, entityName, entityInstructions);
-            } else if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
-                await recordConversationMemory(resolver, args, response, entityName, entityInstructions);
-            }
-
-            // Safety net: NEVER return an empty response. If every model call, tool
-            // execution, and callback produced nothing, we still owe the client a response.
-            // Without this, a streaming client hangs forever waiting for text that never arrives.
-            // Skip for stream objects — text was already delivered via SSE events.
-            const isStreamObject = response && typeof response.on === 'function';
-            if (!isStreamObject && !extractResponseText(response).trim()) {
-                logEventError(rid, 'request.error', { phase: 'empty_response', error: 'All processing completed but no text was produced', durationMs: Date.now() - requestStartTime });
-                response = await generateErrorResponse(
-                    new Error('I processed your request but wasn\'t able to generate a response. Please try again.'),
-                    args, resolver
-                );
-            }
-
-            if (!resolver._requestEndLogged) {
-                const usage = summarizeUsage(resolver.pathwayResultData?.usage);
-                logEvent(rid, 'request.end', {
-                    durationMs: Date.now() - requestStartTime, toolRounds: resolver.toolCallRound || 0,
-                    budgetUsed: resolver.toolBudgetUsed || 0, ...(usage && { tokens: usage }),
-                });
-            }
-
-            // Final guarantee: close the stream. If streaming produced text normally,
-            // the plugin already sent [DONE]. But if it didn't (e.g., model returned
-            // only tool_calls, or callbacks swallowed the content), force-close now.
-            // Skip for stream objects — asyncResolve.handleStream owns their lifecycle
-            // (including error handling and completion). Sending progress:1 here would
-            // race ahead of handleStream and mask stream errors.
-            if (args.stream && !(response && typeof response.on === 'function')) {
-                publishRequestProgress({
-                    requestId: rid,
-                    progress: 1,
-                    data: JSON.stringify(extractResponseText(response)),
-                    info: JSON.stringify(resolver.pathwayResultData || {}),
-                    error: resolver.errors?.length > 0 ? resolver.errors.join(', ') : ''
-                });
-            }
-
-            return response;
-        } catch (e) {
-            // User-initiated cancel — log cleanly and close without error response
-            if (e.message === 'Request canceled') {
-                logEvent(rid, 'request.cancel', { durationMs: Date.now() - requestStartTime, budgetUsed: resolver.toolBudgetUsed || 0, toolRounds: resolver.toolCallRound || 0 });
-                resolver.errors = [];
-                if (args.stream) {
-                    publishRequestProgress({
-                        requestId: rid, progress: 1, data: '', info: JSON.stringify(resolver.pathwayResultData || {}), error: ''
-                    });
-                }
-                return '';
-            }
-
-            const usage = summarizeUsage(resolver.pathwayResultData?.usage);
-            logEventError(rid, 'request.error', { phase: 'executePathway', error: e.message, durationMs: Date.now() - requestStartTime, ...(usage && { tokens: usage }) });
-            const errorResponse = await generateErrorResponse(e, args, resolver);
-            resolver.errors = [];
-
-            // Close the stream even on error — NEVER leave the client hanging.
-            if (args.stream) {
-                publishRequestProgress({
-                    requestId: rid,
-                    progress: 1,
-                    data: JSON.stringify(errorResponse),
-                    info: JSON.stringify(resolver.pathwayResultData || {}),
-                    error: e.message || ''
-                });
-            }
-
-            return errorResponse;
-        }
-    }
+    toolCallback: toolCallbackCore,
+    executePathway: executeEntityAgentCore,
 };

@@ -246,7 +246,7 @@ function flattenArray(arr) {
 }
 
 // Test basic single-step task
-createModelTest('sys_entity_agent handles single-step task', async (t, model) => {
+createModelTest('sys_entity_runtime handles single-step task', async (t, model) => {
   t.timeout(60000); // 60 second timeout
   const contextId = `agentic-single-${model}-${Date.now()}`;
   const response = await testServer.executeOperation({
@@ -257,7 +257,7 @@ createModelTest('sys_entity_agent handles single-step task', async (t, model) =>
         $agentContext: [AgentContextInput],
         $model: String
       ) {
-        sys_entity_agent(
+        sys_entity_runtime(
           text: $text, 
           chatHistory: $chatHistory,
           agentContext: $agentContext,
@@ -287,7 +287,7 @@ createModelTest('sys_entity_agent handles single-step task', async (t, model) =>
   
   // Check for successful response
   t.falsy(response.body?.singleResult?.errors, 'Should not have GraphQL errors');
-  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
   t.truthy(requestId, 'Should have a requestId in the result field');
 
   // Collect events
@@ -344,7 +344,7 @@ createModelTest('sys_entity_agent handles single-step task', async (t, model) =>
 });
 
 // Test multi-step task with tool usage
-createModelTest('sys_entity_agent handles multi-step task with tools', async (t, model) => {
+createModelTest('sys_entity_runtime handles multi-step task with tools', async (t, model) => {
   t.timeout(360000); // 120 second timeout for multi-step task
   const contextId = `agentic-multi-${model}-${Date.now()}`;
   const response = await testServer.executeOperation({
@@ -355,7 +355,7 @@ createModelTest('sys_entity_agent handles multi-step task with tools', async (t,
         $agentContext: [AgentContextInput],
         $model: String
       ) {
-        sys_entity_agent(
+        sys_entity_runtime(
           text: $text, 
           chatHistory: $chatHistory,
           agentContext: $agentContext,
@@ -385,7 +385,7 @@ createModelTest('sys_entity_agent handles multi-step task with tools', async (t,
   
   // Check for successful response
   t.falsy(response.body?.singleResult?.errors, 'Should not have GraphQL errors');
-  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
   t.truthy(requestId, 'Should have a requestId in the result field');
 
   // Collect events with a longer timeout since this is a multi-step operation

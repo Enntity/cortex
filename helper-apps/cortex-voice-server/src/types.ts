@@ -229,11 +229,11 @@ export type VoiceProviderFactory = (
 ) => IVoiceProvider;
 
 /**
- * Cortex bridge interface for sys_entity_agent integration
+ * Cortex bridge interface for sys_entity_runtime integration
  */
 export interface ICortexBridge {
     /**
-     * Set session context for sys_entity_agent calls
+     * Set session context for sys_entity_runtime calls
      */
     setSessionContext(config: VoiceConfig): void;
 

@@ -1,5 +1,6 @@
 import test from 'ava';
-import sysEntityAgent from '../../pathways/system/entity/sys_entity_agent.js';
+import sysEntityRuntime from '../../pathways/system/entity/sys_entity_runtime.js';
+import { toolCallbackCore as toolCallback } from '../../pathways/system/entity/sys_entity_executor.js';
 import { config } from '../../config.js';
 import { getToolsForEntity } from '../../pathways/system/entity/tools/shared/sys_entity_tools.js';
 import { withTimeout } from '../../lib/pathwayTools.js';
@@ -38,10 +39,11 @@ const buildResolver = (overrides = {}) => ({
   errors: [],
   requestId: 'req-test',
   rootRequestId: 'root-req-test',
-  pathway: sysEntityAgent,
+  pathway: sysEntityRuntime,
   modelExecutor: {
     plugin: {
       truncateMessagesToTargetLength: (messages) => messages,
+      getModelMaxPromptTokens: () => 10_000_000,
     },
   },
   promptAndParse: async () => 'final-response',
@@ -143,7 +145,7 @@ test.serial('executePathway returns sys_generator_error output on 500 base model
     throw new Error('HTTP 500 from model');
   };
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
   t.true(result.includes('ERROR_RESPONSE'));
   t.true(result.includes('HTTP 500 from model'));
 });
@@ -171,7 +173,7 @@ test.serial('executePathway falls back when sys_generator_error fails after null
   };
 
   const runAllPrompts = async () => null;
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   t.true(result.includes('I apologize, but I encountered an error while processing your request'));
   t.true(result.includes('Model execution returned null'));
@@ -199,7 +201,7 @@ test.serial('toolCallback surfaces 400 error JSON from tool result', async (t) =
   };
 
   const message = { tool_calls: [buildToolCall('ErrorJson')] };
-  const result = await sysEntityAgent.toolCallback(args, message, resolver);
+  const result = await toolCallback(args, message, resolver);
 
   t.is(result, 'tool-handled');
   const toolMessage = args.chatHistory.find((entry) => entry.role === 'tool');
@@ -233,7 +235,7 @@ test.serial('toolCallback captures 500 error thrown by tool pathway', async (t) 
   };
 
   const message = { tool_calls: [buildToolCall('Throws500')] };
-  const result = await sysEntityAgent.toolCallback(args, message, resolver);
+  const result = await toolCallback(args, message, resolver);
 
   t.is(result, 'tool-handled');
   const toolMessage = args.chatHistory.find((entry) => entry.role === 'tool');
@@ -267,7 +269,7 @@ test.serial('toolCallback captures tool null result as error', async (t) => {
   };
 
   const message = { tool_calls: [buildToolCall('NullResult')] };
-  const result = await sysEntityAgent.toolCallback(args, message, resolver);
+  const result = await toolCallback(args, message, resolver);
 
   t.is(result, 'tool-handled');
   const toolMessage = args.chatHistory.find((entry) => entry.role === 'tool');
@@ -308,7 +310,7 @@ test.serial('toolCallback reports invalid tool call arguments', async (t) => {
     }],
   };
 
-  const result = await sysEntityAgent.toolCallback(args, message, resolver);
+  const result = await toolCallback(args, message, resolver);
   t.is(result, 'tool-handled');
   const toolMessage = args.chatHistory.find((entry) => entry.role === 'tool');
   t.truthy(toolMessage);
@@ -339,7 +341,7 @@ test.serial('toolCallback returns error response when promptAndParse throws', as
   };
 
   const message = { tool_calls: [buildToolCall('ErrorJson')] };
-  const result = await sysEntityAgent.toolCallback(args, message, resolver);
+  const result = await toolCallback(args, message, resolver);
 
   t.true(result.includes('ERROR_RESPONSE'));
   t.true(result.includes('Model crashed after tool calls'));
@@ -370,7 +372,7 @@ test.serial('executePathway returns error response when tool recursion times out
     tool_calls: [buildToolCall('TimeoutTool')],
   });
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
   t.true(result.includes('ERROR_RESPONSE'));
   t.true(result.includes('Tool recursion timeout'));
 });
@@ -398,7 +400,7 @@ test.serial('toolCallback injects budget exhausted message once limit reached', 
   };
 
   const message = { tool_calls: [buildToolCall('ErrorJson')] };
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   const systemMessage = promptArgs.chatHistory.find((entry) => (
     entry.role === 'user' &&
@@ -450,7 +452,7 @@ test.serial('toolCallback charges toolCost from tool definition (cheap tool cost
   };
 
   const message = { tool_calls: [buildToolCall('CheapTool')] };
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   // Cheap tool should cost 1, not 10
   t.is(resolver.toolBudgetUsed, 1);
@@ -496,7 +498,7 @@ test.serial('toolCallback enforces minimum cost of 1 even if toolCost is 0', asy
   };
 
   const message = { tool_calls: [buildToolCall('ZeroCostTool')] };
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   // Even though toolCost is 0, the floor of 1 should be enforced
   t.is(resolver.toolBudgetUsed, 1, 'Tools with toolCost: 0 must still cost at least 1');
@@ -522,7 +524,7 @@ test.serial('toolCallback charges DEFAULT_TOOL_COST (10) for tools without toolC
 
   // ErrorJson has no toolCost defined, should default to 10
   const message = { tool_calls: [buildToolCall('ErrorJson')] };
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.is(resolver.toolBudgetUsed, 10);
   t.is(resolver.toolCallRound, 1);
@@ -566,7 +568,7 @@ test.serial('toolCallback accumulates budget across multiple rounds', async (t) 
   };
 
   // Round 1: one cheap tool (cost 1)
-  await sysEntityAgent.toolCallback(
+  await toolCallback(
     args,
     { tool_calls: [buildToolCall('CheapTool', { userMessage: 'run' }, 'call-1')] },
     resolver,
@@ -575,7 +577,7 @@ test.serial('toolCallback accumulates budget across multiple rounds', async (t) 
   t.is(resolver.toolCallRound, 1);
 
   // Round 2: one expensive tool (cost 10, default)
-  await sysEntityAgent.toolCallback(
+  await toolCallback(
     args,
     { tool_calls: [buildToolCall('ErrorJson', { userMessage: 'run' }, 'call-2')] },
     resolver,
@@ -670,7 +672,7 @@ test.serial('toolCallback truncates oversized tool results', async (t) => {
   };
 
   const message = { tool_calls: [buildToolCall('LargeResult')] };
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   // Find the tool result message in chatHistory
   const toolMessage = promptArgs.chatHistory.find((entry) => entry.role === 'tool');
@@ -812,7 +814,7 @@ test.serial('toolCallback handles tool timeout error correctly', async (t) => {
   };
 
   const message = { tool_calls: [buildToolCall('SlowTool')] };
-  const result = await sysEntityAgent.toolCallback(args, message, resolver);
+  const result = await toolCallback(args, message, resolver);
 
   t.is(result, 'tool-handled');
   
@@ -982,7 +984,7 @@ test.serial('executePathway awaits _streamingToolCallbackPromise before returnin
     return { on: () => {} };
   };
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   // The callback must have completed BEFORE executePathway returned
   t.true(events.includes('callback-completed'),
@@ -1029,7 +1031,7 @@ test.serial('executePathway handles recursive streaming callbacks (callback₁ t
     return { on: () => {} };
   };
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   t.deepEqual(events, ['callback-1-completed', 'callback-2-completed'],
     'Both recursive callbacks should be awaited in order');
@@ -1058,7 +1060,7 @@ test.serial('executePathway proceeds normally when no streaming callback is pend
     return 'direct-response';
   };
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   t.true(runAllPromptsCalled, 'runAllPrompts should have been called');
   t.falsy(resolver._streamingToolCallbackPromise,
@@ -1087,7 +1089,7 @@ test.serial('executePathway handles streaming callback rejection gracefully', as
   };
 
   // Should not throw — executePathway has try/catch that calls generateErrorResponse
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   // Error should be surfaced through the error handling path
   t.truthy(result, 'Should return an error response, not throw');
@@ -1112,7 +1114,7 @@ test.serial('executePathway updates response from streaming callback result', as
     return { on: () => {} };
   };
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   // The response from the callback should flow through to the return value
   // (unless memory recording or request.end changes it)
@@ -1143,7 +1145,7 @@ test.serial('executePathway generates error response when streaming callback ret
     return { on: () => {} };
   };
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   // Must NEVER be empty — should have generated an error response
   t.truthy(result, 'Must return a response, never empty');
@@ -1182,7 +1184,7 @@ test.serial('executePathway closes stream via publishRequestProgress on empty re
     return { on: () => {} };
   };
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   // The response must not be empty
   t.truthy(result, 'Must produce a response');
@@ -1208,7 +1210,7 @@ test.serial('executePathway closes stream on error path too', async (t) => {
     throw new Error('Model exploded catastrophically');
   };
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   // Must still return something
   t.truthy(result, 'Must return error response, not null');
@@ -1235,7 +1237,7 @@ test.serial('executePathway returns non-empty response on non-streaming empty ca
     return '';  // Model returned empty
   };
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   t.truthy(result, 'Must produce a response even for non-streaming');
   const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
@@ -1274,7 +1276,7 @@ test.serial('executePathway handles response with circular references without cr
   };
 
   // Must not throw "Converting circular structure to JSON"
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   // Stream objects are returned as-is — text was already delivered via SSE.
   // The empty_response safety net must NOT fire for stream objects.
@@ -1301,7 +1303,7 @@ test.serial('executePathway handles circular-ref response on non-streaming path'
 
   const runAllPrompts = async () => circular;
 
-  const result = await sysEntityAgent.executePathway({ args, runAllPrompts, resolver });
+  const result = await sysEntityRuntime.executePathway({ args, runAllPrompts, resolver });
 
   t.truthy(result, 'Must return a response, not crash');
   const text = typeof result === 'string' ? result : (result?.output_text || result?.content || '');
@@ -1359,7 +1361,7 @@ test.serial('toolCallback injects toolImages into chat history as user message',
   };
 
   const message = { tool_calls: [buildToolCall('ViewImages')] };
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   // Find the injected user message with image content blocks
   const imageMessage = promptArgs.chatHistory.find((entry) =>

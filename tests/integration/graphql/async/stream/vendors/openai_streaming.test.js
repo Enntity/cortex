@@ -22,7 +22,7 @@ test('OpenAI vendor streaming over subscriptions emits OAI-style deltas', async 
   const response = await testServer.executeOperation({
     query: `
       query($text: String!, $chatHistory: [MultiMessage]!, $stream: Boolean) {
-        sys_entity_agent(text: $text, chatHistory: $chatHistory, stream: $stream) {
+        sys_entity_runtime(text: $text, chatHistory: $chatHistory, stream: $stream) {
           result
         }
       }
@@ -34,7 +34,7 @@ test('OpenAI vendor streaming over subscriptions emits OAI-style deltas', async 
     }
   });
 
-  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
   if (!requestId) {
     t.pass('Skipping - OpenAI vendor model not configured');
     return;

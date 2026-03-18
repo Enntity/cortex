@@ -1,7 +1,7 @@
 /**
  * Streaming Cortex Bridge
  *
- * Handles streaming communication with the Cortex GraphQL API for sys_entity_agent.
+ * Handles streaming communication with the Cortex GraphQL API for sys_entity_runtime.
  * Uses GraphQL subscriptions to stream responses, enabling sentence-by-sentence TTS.
  * Supports tool status events, media events, and all entity features.
  */
@@ -17,8 +17,8 @@ import {
 } from '../types.js';
 
 // GraphQL queries
-const SYS_ENTITY_AGENT_QUERY = `
-query SysEntityAgent(
+const SYS_ENTITY_RUNTIME_QUERY = `
+query SysEntityRuntime(
     $text: String,
     $entityId: String,
     $chatId: String,
@@ -30,7 +30,7 @@ query SysEntityAgent(
     $userInfo: String,
     $voiceProviderInstructions: String
 ) {
-    sys_entity_agent(
+    sys_entity_runtime(
         text: $text,
         entityId: $entityId,
         chatId: $chatId,
@@ -115,7 +115,7 @@ interface StreamEvents {
 // GraphQL response types
 interface GraphQLResponse {
     data?: {
-        sys_entity_agent?: {
+        sys_entity_runtime?: {
             result: string;
             tool?: string;
             errors?: string[];
@@ -383,7 +383,7 @@ export class StreamingCortexBridge extends EventEmitter {
     }
 
     /**
-     * Query sys_entity_agent with streaming response
+     * Query sys_entity_runtime with streaming response
      * Emits 'sentence' events as complete sentences are received
      */
     async queryStreaming(
@@ -467,7 +467,7 @@ export class StreamingCortexBridge extends EventEmitter {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                query: SYS_ENTITY_AGENT_QUERY,
+                query: SYS_ENTITY_RUNTIME_QUERY,
                 variables,
             }),
             signal: controller.signal,
@@ -485,9 +485,9 @@ export class StreamingCortexBridge extends EventEmitter {
             throw new Error(data.errors[0].message);
         }
 
-        const subscriptionId = data.data?.sys_entity_agent?.result;
+        const subscriptionId = data.data?.sys_entity_runtime?.result;
         if (!subscriptionId) {
-            throw new Error('No subscription ID returned from sys_entity_agent');
+            throw new Error('No subscription ID returned from sys_entity_runtime');
         }
 
         return subscriptionId;

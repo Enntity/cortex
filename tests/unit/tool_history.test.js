@@ -1,6 +1,6 @@
 import test from 'ava';
 import { dehydrateToolHistory, defaultSummarize, COMPRESSION_THRESHOLD } from '../../pathways/system/entity/tools/shared/tool_result_compression.js';
-import { sliceByTurns } from '../../pathways/system/entity/sys_entity_agent.js';
+import { sliceByTurns } from '../../pathways/system/entity/sys_entity_executor.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

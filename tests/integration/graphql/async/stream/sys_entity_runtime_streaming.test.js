@@ -1,12 +1,36 @@
 import test from 'ava';
+import net from 'net';
 import serverFactory from '../../../../../index.js';
 import { createWsClient, ensureWsConnection, collectSubscriptionEvents, validateProgressMessage } from '../../../../helpers/subscriptions.js';
+import { config } from '../../../../../config.js';
 
 let testServer;
 let wsClient;
+let originalPortEnv;
+let originalPortConfig;
+
+const getAvailablePort = async () => {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, () => {
+      const { port } = server.address();
+      server.close((error) => {
+        if (error) return reject(error);
+        resolve(port);
+      });
+    });
+    server.on('error', reject);
+  });
+};
 
 test.before(async () => {
   process.env.CORTEX_ENABLE_REST = 'true';
+  originalPortEnv = process.env.CORTEX_PORT;
+  originalPortConfig = config.get('PORT');
+  const port = await getAvailablePort();
+  process.env.CORTEX_PORT = String(port);
+  config.set('PORT', port);
+
   const { server, startServer } = await serverFactory();
   startServer && await startServer();
   testServer = server;
@@ -18,13 +42,19 @@ test.before(async () => {
 test.after.always('cleanup', async () => {
   if (wsClient) wsClient.dispose();
   if (testServer) await testServer.stop();
+  if (originalPortEnv === undefined) {
+    delete process.env.CORTEX_PORT;
+  } else {
+    process.env.CORTEX_PORT = originalPortEnv;
+  }
+  config.set('PORT', originalPortConfig);
 });
 
-test.serial('sys_entity_agent streaming works correctly', async (t) => {
+test.serial('sys_entity_runtime streaming works correctly', async (t) => {
   const response = await testServer.executeOperation({
     query: `
       query TestQuery($text: String!, $chatHistory: [MultiMessage]!, $stream: Boolean!) {
-        sys_entity_agent(text: $text, chatHistory: $chatHistory, stream: $stream) {
+        sys_entity_runtime(text: $text, chatHistory: $chatHistory, stream: $stream) {
           result
           contextId
           tool
@@ -40,7 +70,7 @@ test.serial('sys_entity_agent streaming works correctly', async (t) => {
     }
   });
 
-  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
   t.truthy(requestId);
 
   const events = await collectSubscriptionEvents(wsClient, {

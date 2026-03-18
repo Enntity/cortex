@@ -15,14 +15,14 @@ export default {
 
     executePathway: async ({args, _runAllPrompts, resolver}) => {
         // chatHistory is always passed in complete
-        const response = await callPathway('sys_entity_agent', {  
+        const response = await callPathway('sys_entity_runtime', {
             ...args, 
             chatHistory: args.chatHistory || [],
-            stream: false, 
-            useMemory: false 
+            stream: false,
+            useMemory: false,
+            invocationType: 'system',
         }, resolver);
 
         return response;
     }
 }
-

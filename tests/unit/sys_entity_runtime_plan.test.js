@@ -1,5 +1,13 @@
 import test from 'ava';
-import sysEntityAgent, { mergeParallelToolResults, insertSystemMessage, extractToolCalls, buildStepInstruction, passesGate } from '../../pathways/system/entity/sys_entity_agent.js';
+import sysEntityRuntime from '../../pathways/system/entity/sys_entity_runtime.js';
+import {
+  toolCallbackCore as toolCallback,
+  mergeParallelToolResults,
+  insertSystemMessage,
+  extractToolCalls,
+  buildStepInstruction,
+  passesGate,
+} from '../../pathways/system/entity/sys_entity_executor.js';
 import { config } from '../../config.js';
 import { getToolsForEntity } from '../../pathways/system/entity/tools/shared/sys_entity_tools.js';
 import { getEntityStore } from '../../lib/MongoEntityStore.js';
@@ -46,7 +54,7 @@ const buildResolver = (overrides = {}) => ({
   errors: [],
   requestId: 'req-test',
   rootRequestId: 'root-req-test',
-  pathway: sysEntityAgent,
+  pathway: sysEntityRuntime,
   toolResultStore: new Map(),
   toolCallCache: new Map(),
   modelExecutor: {
@@ -148,11 +156,19 @@ test.serial('SetGoals is intercepted and stored on pathwayResolver.toolPlan', as
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.truthy(resolver.toolPlan, 'toolPlan should be set on resolver');
   t.is(resolver.toolPlan.goal, 'Research the topic');
   t.deepEqual(resolver.toolPlan.steps, ['Search for info', 'Analyze results']);
+});
+
+test('sys_entity_runtime exposes the shared tool callback for streaming tool dispatch', (t) => {
+  t.is(
+    sysEntityRuntime.toolCallback,
+    toolCallback,
+    'Runtime pathway must expose toolCallback so streaming plugins can dispatch tool_calls',
+  );
 });
 
 // === TEST 2: SetGoals alongside real tools ===
@@ -184,7 +200,7 @@ test.serial('SetGoals result and real tool results both appear in merged message
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   // Both SetGoals and SearchTool should appear in chat history
   const toolMessages = capturedArgs.chatHistory.filter(m => m.role === 'tool');
@@ -226,7 +242,7 @@ test.serial('SetGoals-only call stores plan and produces valid messages without 
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.truthy(resolver.toolPlan, 'toolPlan should be set');
   t.is(resolver.toolPlan.goal, 'Solo plan goal');
@@ -273,7 +289,7 @@ test.serial('Malformed SetGoals degrades gracefully without crash, other tools s
   };
 
   // Should not throw
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   // Plan should NOT be set (malformed)
   t.falsy(resolver.toolPlan, 'toolPlan should not be set for malformed plan');
@@ -324,7 +340,7 @@ test.serial('Plan-aware SYNTHESIZE hint shows plan goal, steps, and batching dir
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.truthy(cheapModelArgs, 'Cheap model should have been called');
 
@@ -381,7 +397,7 @@ test.serial('Generic SYNTHESIZE hint used when no plan exists', async (t) => {
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.truthy(cheapModelArgs, 'Cheap model should have been called');
 
@@ -440,7 +456,7 @@ test.serial('SetGoals tool_call and result are stripped before synthesis model c
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.truthy(synthesisArgs, 'Synthesis model should have been called');
 
@@ -504,7 +520,7 @@ test.serial('SetGoals is not in cheap model tool list', async (t) => {
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.truthy(cheapModelToolNames, 'Should have captured cheap model tools');
   t.false(
@@ -538,7 +554,7 @@ test.serial('SetGoals does not consume tool budget (skipBudget: true)', async (t
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.is(resolver.toolBudgetUsed, 0, 'SetGoals should not consume any budget');
   t.is(resolver.toolCallRound, 1, 'Should still count as a tool round');
@@ -590,7 +606,7 @@ test.serial('Plan hint includes current round number for model orientation', asy
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.true(cheapModelArgsList.length >= 1, 'Should have at least one cheap model call');
   // Both calls should show the full plan with round number
@@ -661,7 +677,7 @@ test.serial('SetGoals call from synthesis triggers replan and re-enters executor
     ],
   };
 
-  const result = await sysEntityAgent.toolCallback(args, message, resolver);
+  const result = await toolCallback(args, message, resolver);
 
   t.true(replanDetected, 'Replan should have triggered re-entry into executor loop');
   t.is(resolver.toolPlan.goal, 'New plan goal', 'Plan should be updated to new goal');
@@ -708,7 +724,7 @@ test.serial('safety cap prevents infinite SetGoals replan loop', async (t) => {
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   // Safety cap is 10 — synthesis can replan freely up to that hard limit
   t.true(synthesisCallCount <= 12, `Synthesis should be bounded by safety cap (was ${synthesisCallCount})`);
@@ -754,7 +770,7 @@ test.serial('Synthesis model receives all entity tools plus SetGoals', async (t)
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.truthy(synthesisToolNames, 'Should have captured synthesis tools');
   t.true(synthesisToolNames.includes('SetGoals'), 'Synthesis should have SetGoals tool');
@@ -833,7 +849,7 @@ test.serial('Malformed SetGoals-only passes gate, executor runs but no plan stor
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   // Gate passes (SetGoals present), but plan is not stored (malformed args)
   t.falsy(resolver.toolPlan, 'No plan should be stored for malformed args');
@@ -884,7 +900,7 @@ test.serial('replanCount accumulates on pathwayResolver across calls', async (t)
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   // replanCount should be 6 — accumulated from pre-set value
   t.is(resolver.replanCount, 6, 'replanCount should accumulate across calls');
@@ -903,7 +919,7 @@ test('passesGate returns true when SetGoals is in tool_calls', (t) => {
 });
 
 // === TEST 18: Gate discards tool_calls missing SetGoals and reprompts ===
-test.serial('Gate discards tool_calls without SetGoals and reprompts primary model', async (t) => {
+test.serial('Gate synthesizes a server-side plan when tool_calls omit SetGoals', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -943,17 +959,17 @@ test.serial('Gate discards tool_calls without SetGoals and reprompts primary mod
     configuredReasoningEffort: 'medium',
   };
 
-  // Initial tool_calls WITHOUT SetGoals — should trigger gate
+  // Initial tool_calls WITHOUT SetGoals — server-side planning should fill the gap
   const message = {
     tool_calls: [
       buildToolCall('SearchTool', { userMessage: 'search' }, 'call-gate-1'),
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
-  t.true(gateRetryCount >= 1, 'Gate should have triggered at least one retry');
-  t.truthy(resolver.toolPlan, 'Plan should be set after gate retry');
-  t.is(resolver.toolPlan.goal, 'Retry plan', 'Plan should come from gate retry');
+  t.is(gateRetryCount, 0, 'Gate should not burn an extra retry call');
+  t.truthy(resolver.toolPlan, 'Plan should be synthesized server-side');
+  t.is(resolver.toolPlan.goal, 'gate test', 'Plan should derive from the active request');
   t.true(executorCallCount >= 1, 'Executor should have been called after gate passed');
 });

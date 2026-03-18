@@ -4,7 +4,7 @@
 // for both streaming and non-streaming paths.
 
 import test from 'ava';
-import { insertSystemMessage, extractToolCalls, mergeParallelToolResults } from '../../../pathways/system/entity/sys_entity_agent.js';
+import { insertSystemMessage, extractToolCalls, mergeParallelToolResults } from '../../../pathways/system/entity/sys_entity_executor.js';
 import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults } from '../../../pathways/system/entity/tools/shared/tool_result_compression.js';
 
 // --- extractToolCalls ---
@@ -702,7 +702,7 @@ test('no depth cap on nested callbacks — only the tool budget limits recursion
     // Gate check is skipped for depth > 1 (nested calls already passed the gate).
 
     // Contract: callbackDepth has no ceiling — budget is the only limiter
-    const TOOL_BUDGET = 500; // from sys_entity_agent.js
+    const TOOL_BUDGET = 500; // from sys_entity_executor.js
     t.true(TOOL_BUDGET > 0, 'Tool budget exists as the recursion limiter');
     // depth 1, 2, 3, 10 — all should run the full loop (gate skipped for > 1)
     for (const depth of [1, 2, 3, 10]) {

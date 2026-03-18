@@ -7,6 +7,7 @@
 // - contextId: Required - User ID (must be associated with the entity or be the creator)
 // - Entity properties (all optional, only provided ones are updated):
 //   - name, description, identity, tools, useMemory, preferredModel, modelOverride, reasoningEffort
+//   - modelPolicy, authorityProfile, autonomyProfile, defaultChildPolicy
 //   - avatarText (emoji), avatarDescription (for image gen), avatarImageUrl (avatar image URL)
 //   - voice: JSON string of voice preference array [{provider, voiceId, name?, settings?}, ...]
 //
@@ -34,6 +35,10 @@ const ALLOWED_PROPERTIES = new Set([
     'preferredModel',
     'modelOverride',
     'reasoningEffort',
+    'modelPolicy',
+    'authorityProfile',
+    'autonomyProfile',
+    'defaultChildPolicy',
     // Avatar fields (these update nested avatar object)
     'avatarText',        // avatar.text (emoji)
     'avatarDescription', // avatar.description (for image generation)
@@ -64,6 +69,10 @@ const MAX_LENGTHS = {
     identity: 50000,
     preferredModel: 100,
     modelOverride: 100,
+    modelPolicy: 20000,
+    authorityProfile: 20000,
+    autonomyProfile: 20000,
+    defaultChildPolicy: 10000,
     avatarText: 10,           // Emoji - should be short
     avatarDescription: 1000,  // Description for image generation
     avatarImageUrl: 2000,     // URL
@@ -84,6 +93,10 @@ export default {
         preferredModel: undefined,
         modelOverride: undefined,
         reasoningEffort: undefined,
+        modelPolicy: undefined,
+        authorityProfile: undefined,
+        autonomyProfile: undefined,
+        defaultChildPolicy: undefined,
         // Avatar fields - update nested avatar object
         avatarText: undefined,        // avatar.text (emoji)
         avatarDescription: undefined, // avatar.description (for image generation)
@@ -221,6 +234,25 @@ export default {
                         });
                     }
                     updateData[key] = value;
+                } else if (['modelPolicy', 'authorityProfile', 'autonomyProfile', 'defaultChildPolicy'].includes(key)) {
+                    let parsedValue = value;
+                    if (typeof value === 'string') {
+                        try {
+                            parsedValue = JSON.parse(value);
+                        } catch {
+                            return JSON.stringify({
+                                success: false,
+                                error: `${key} must be valid JSON`
+                            });
+                        }
+                    }
+                    if (!parsedValue || typeof parsedValue !== 'object' || Array.isArray(parsedValue)) {
+                        return JSON.stringify({
+                            success: false,
+                            error: `${key} must be a JSON object`
+                        });
+                    }
+                    updateData[key] = parsedValue;
                 } else if (key === 'useMemory') {
                     // Ensure boolean
                     updateData[key] = value === true || value === 'true';

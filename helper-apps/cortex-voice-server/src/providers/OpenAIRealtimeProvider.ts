@@ -520,7 +520,7 @@ Speak naturally as you would in conversation.`);
                     msg => !msg.content.trim().startsWith('<INSTRUCTIONS>')
                 );
 
-                // Append the query as a user message so sys_entity_agent sees it
+                // Append the query as a user message so sys_entity_runtime sees it
                 // in chatHistory. The text parameter alone is not enough — the
                 // prompt template expands {{chatHistory}} into messages but has
                 // no {{text}} placeholder, so the query must be in the history.

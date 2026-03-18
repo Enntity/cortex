@@ -1,10 +1,15 @@
-// sys_entity_agent_pulse.test.js
-// Tests for pulse-specific agent behaviors:
+// sys_entity_runtime_pulse.test.js
+// Tests for pulse-specific runtime/executor behaviors:
 // - EndPulse tool call breaks the executor loop immediately
 // - Pulse invocations (invocationType === 'pulse') skip the SetGoals gate
 
 import test from 'ava';
-import sysEntityAgent, { extractToolCalls, passesGate } from '../../pathways/system/entity/sys_entity_agent.js';
+import sysEntityRuntime from '../../pathways/system/entity/sys_entity_runtime.js';
+import {
+  toolCallbackCore as toolCallback,
+  extractToolCalls,
+  passesGate,
+} from '../../pathways/system/entity/sys_entity_executor.js';
 import { config } from '../../config.js';
 import { getToolsForEntity } from '../../pathways/system/entity/tools/shared/sys_entity_tools.js';
 import { getEntityStore } from '../../lib/MongoEntityStore.js';
@@ -51,7 +56,7 @@ const buildResolver = (overrides = {}) => ({
   errors: [],
   requestId: 'req-test-pulse',
   rootRequestId: 'root-req-test-pulse',
-  pathway: sysEntityAgent,
+  pathway: sysEntityRuntime,
   toolResultStore: new Map(),
   toolCallCache: new Map(),
   modelExecutor: {
@@ -181,7 +186,7 @@ test.serial('EndPulse in executor loop breaks the loop — cheap model called on
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.is(cheapModelCallCount, 1, 'Cheap model should be called exactly once (EndPulse breaks loop)');
   t.is(synthesisCallCount, 1, 'Synthesis should still run once after EndPulse');
@@ -230,7 +235,7 @@ test.serial('Executor loop continues when EndPulse is not called (control test)'
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.is(cheapModelCallCount, 2, 'Without EndPulse, executor loop continues (2 cheap model calls)');
 });
@@ -286,7 +291,7 @@ test.serial('Pulse invocations skip SetGoals gate — no gate retries', async (t
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.is(gateRetryCount, 0, 'No gate retries for pulse invocations');
   t.true(cheapModelCallCount >= 1, 'Executor loop should run');
@@ -294,7 +299,7 @@ test.serial('Pulse invocations skip SetGoals gate — no gate retries', async (t
 });
 
 // === TEST 4: Non-pulse invocations still require SetGoals gate ===
-test.serial('Non-pulse invocations without SetGoals trigger gate retry (control test)', async (t) => {
+test.serial('Non-pulse invocations without SetGoals synthesize a server-side plan instead of gate retrying', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -329,16 +334,18 @@ test.serial('Non-pulse invocations without SetGoals trigger gate retry (control 
     // invocationType NOT set — defaults to non-pulse
   };
 
-  // Tool calls WITHOUT SetGoals — should trigger gate
+  // Tool calls WITHOUT SetGoals — runtime should synthesize the missing plan
   const message = {
     tool_calls: [
       buildToolCall('SearchTool', { userMessage: 'search' }, 'call-chat-1'),
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
-  t.true(gateRetryCount >= 1, 'Non-pulse invocations should trigger gate retries');
+  t.is(gateRetryCount, 0, 'Non-pulse invocations should not burn an extra gate retry');
+  t.truthy(resolver.toolPlan, 'Server-side planning should populate resolver.toolPlan');
+  t.is(resolver.toolPlan?.goal, 'user chat');
 });
 
 // === TEST 5: EndPulse alongside other tools still breaks the loop ===
@@ -384,7 +391,7 @@ test.serial('EndPulse alongside other tools still breaks executor loop', async (
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.is(cheapModelCallCount, 1, 'Loop should break after EndPulse even with other tools in same round');
 });
@@ -430,7 +437,7 @@ test.serial('EndPulse breaks executor loop even when no SetGoals plan exists', a
     ],
   };
 
-  await sysEntityAgent.toolCallback(args, message, resolver);
+  await toolCallback(args, message, resolver);
 
   t.is(cheapModelCallCount, 1, 'EndPulse should break loop even without a plan');
   t.is(synthesisCallCount, 1, 'Synthesis should still run');

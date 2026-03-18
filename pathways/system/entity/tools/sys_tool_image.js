@@ -56,7 +56,7 @@ export default {
             const toolFunctionLower = (args.toolFunction || '').toLowerCase();
             const isAvatar = toolFunctionLower === "createavatarimage" || toolFunctionLower === "createavatarvariant";
             if (isAvatar) {
-                // Get entityId from args (set by sys_entity_agent)
+                // Get entityId from args (set by the entity runtime executor)
                 entityIdForAvatar = args.entityId;
                 if (!entityIdForAvatar) {
                     throw new Error("entityId is required for CreateAvatarImage tool. This should be automatically provided by the system.");
@@ -330,7 +330,7 @@ export default {
 
             // Handle SetBaseAvatar tool call
             if (args.toolFunction === "setbaseavatar" || args.toolFunction === "SetBaseAvatar") {
-                // Get entityId from args (set by sys_entity_agent)
+                // Get entityId from args (set by the entity runtime executor)
                 const entityId = args.entityId;
                 if (!entityId) {
                     throw new Error("entityId is required for SetBaseAvatar tool. This should be automatically provided by the system.");
@@ -341,7 +341,7 @@ export default {
                     throw new Error("file parameter is required for SetBaseAvatar tool.");
                 }
                 
-                // agentContext should be provided by sys_entity_agent via args
+                // agentContext should be provided by the entity runtime executor via args
                 // It's passed from the parent pathway, not from the LLM tool call
                 if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
                     throw new Error("agentContext is required for SetBaseAvatar tool. This should be automatically provided by the system. If you see this error, it may indicate a system configuration issue.");
@@ -412,7 +412,7 @@ export default {
 
         } catch (e) {
             pathwayResolver.logError(e.message ?? e);
-            // Return a JSON error object so sys_entity_agent detects the failure
+            // Return a JSON error object so the entity runtime executor detects the failure
             return JSON.stringify({
                 error: true,
                 message: e.message ?? String(e)

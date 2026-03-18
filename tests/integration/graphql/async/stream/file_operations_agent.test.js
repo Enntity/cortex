@@ -1,7 +1,7 @@
 // file_operations_agent.test.js
-// End-to-end integration tests for file operations with sys_entity_agent
+// End-to-end integration tests for file operations with sys_entity_runtime
 // Tests scenarios where files are uploaded directly to file handler (like Enntity does)
-// and then processed by sys_entity_agent
+// and then processed by sys_entity_runtime
 
 import test from 'ava';
 import serverFactory from '../../../../../index.js';
@@ -234,7 +234,7 @@ test.after.always('cleanup', async () => {
     }
 });
 
-test('sys_entity_agent processes multiple files uploaded directly to file handler (no inCollection)', async (t) => {
+test('sys_entity_runtime processes multiple files uploaded directly to file handler (no inCollection)', async (t) => {
     t.timeout(120000); // 2 minute timeout
     
     const contextId = `test-file-ops-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -306,7 +306,7 @@ test('sys_entity_agent processes multiple files uploaded directly to file handle
             ]
         }];
 
-        // Call sys_entity_agent
+        // Call sys_entity_runtime
         const response = await testServer.executeOperation({
             query: `
                 query TestFileOperations(
@@ -315,7 +315,7 @@ test('sys_entity_agent processes multiple files uploaded directly to file handle
                     $contextId: String!,
                     $chatId: String
                 ) {
-                    sys_entity_agent(
+                    sys_entity_runtime(
                         text: $text,
                         chatHistory: $chatHistory,
                         contextId: $contextId,
@@ -339,7 +339,7 @@ test('sys_entity_agent processes multiple files uploaded directly to file handle
         });
 
         t.falsy(response.body?.singleResult?.errors, 'Should not have GraphQL errors');
-        const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+        const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
         t.truthy(requestId, 'Should have a requestId in the result field');
 
         // Collect events
@@ -448,7 +448,7 @@ test('sys_entity_agent processes multiple files uploaded directly to file handle
     }
 });
 
-test('sys_entity_agent processes files from compound context (user + workspace)', async t => {
+test('sys_entity_runtime processes files from compound context (user + workspace)', async t => {
     // Compound context: user context (encrypted) + workspace context (unencrypted)
     // This simulates a workspace being run by a user, where:
     // - User context has encrypted files (user's personal files)
@@ -649,7 +649,7 @@ test('sys_entity_agent processes files from compound context (user + workspace)'
     }
 });
 
-test('sys_entity_agent processes real files from compound context (user + workspace) - e2e with file handler', async (t) => {
+test('sys_entity_runtime processes real files from compound context (user + workspace) - e2e with file handler', async (t) => {
     t.timeout(120000); // 2 minute timeout
     
     const userContextId = `test-user-e2e-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -722,7 +722,7 @@ test('sys_entity_agent processes real files from compound context (user + worksp
             ]
         }];
         
-        // Call sys_entity_agent with compound context
+        // Call sys_entity_runtime with compound context
         const response = await testServer.executeOperation({
             query: `
                 query TestCompoundContextE2E(
@@ -731,7 +731,7 @@ test('sys_entity_agent processes real files from compound context (user + worksp
                     $agentContext: [AgentContextInput]!,
                     $chatId: String
                 ) {
-                    sys_entity_agent(
+                    sys_entity_runtime(
                         text: $text,
                         chatHistory: $chatHistory,
                         agentContext: $agentContext,
@@ -755,7 +755,7 @@ test('sys_entity_agent processes real files from compound context (user + worksp
         });
         
         t.falsy(response.body?.singleResult?.errors, 'Should not have GraphQL errors');
-        const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+        const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
         t.truthy(requestId, 'Should have a requestId in the result field');
         
         // Collect events

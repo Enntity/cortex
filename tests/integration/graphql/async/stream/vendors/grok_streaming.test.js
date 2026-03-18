@@ -22,7 +22,7 @@ test('XAI Grok vendor streaming over subscriptions emits OAI-style deltas', asyn
   const response = await testServer.executeOperation({
     query: `
       query($text: String!, $chatHistory: [MultiMessage]!, $stream: Boolean) {
-        sys_entity_agent(text: $text, chatHistory: $chatHistory, stream: $stream) {
+        sys_entity_runtime(text: $text, chatHistory: $chatHistory, stream: $stream) {
           result
         }
       }
@@ -34,7 +34,7 @@ test('XAI Grok vendor streaming over subscriptions emits OAI-style deltas', asyn
     }
   });
 
-  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
   if (!requestId) {
     t.pass('Skipping - XAI vendor model not configured');
     return;

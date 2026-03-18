@@ -2,7 +2,7 @@ import {type ChatMessage, type CortexVariables, getCortexResponse} from "./utils
 
 const SEARCH_QUERY = `
 query Search($text: String, $contextId: String, $chatHistory: [MultiMessage], $aiName: String) {
-  sys_entity_agent(text: $text, contextId: $contextId, chatHistory: $chatHistory, aiName: $aiName, voiceResponse: true) {
+  sys_entity_runtime(text: $text, contextId: $contextId, chatHistory: $chatHistory, aiName: $aiName, voiceResponse: true) {
     result
     tool
     errors
@@ -24,5 +24,5 @@ export async function search(contextId: string,
 
   const res = await getCortexResponse(variables, SEARCH_QUERY);
 
-  return res.sys_entity_agent;
+  return res.sys_entity_runtime;
 }

@@ -1,7 +1,7 @@
 /**
  * Cortex Bridge
  *
- * Handles communication with the Cortex GraphQL API for sys_entity_agent integration.
+ * Handles communication with the Cortex GraphQL API for sys_entity_runtime integration.
  * Supports continuity memory, context stuffing, and all 33+ entity tools.
  */
 
@@ -15,9 +15,9 @@ import {
     EntitySessionContext,
 } from '../types.js';
 
-const SYS_ENTITY_AGENT_QUERY = `
-query SysEntityAgent($text: String, $entityId: String, $chatId: String, $chatHistory: [MultiMessage], $aiName: String, $agentContext: [AgentContextInput], $model: String) {
-    sys_entity_agent(text: $text, entityId: $entityId, chatId: $chatId, chatHistory: $chatHistory, aiName: $aiName, agentContext: $agentContext, model: $model, voiceResponse: true) {
+const SYS_ENTITY_RUNTIME_QUERY = `
+query SysEntityRuntime($text: String, $entityId: String, $chatId: String, $chatHistory: [MultiMessage], $aiName: String, $agentContext: [AgentContextInput], $model: String) {
+    sys_entity_runtime(text: $text, entityId: $entityId, chatId: $chatId, chatHistory: $chatHistory, aiName: $aiName, agentContext: $agentContext, model: $model, voiceResponse: true) {
         result
         tool
         errors
@@ -73,7 +73,7 @@ interface SessionContext {
 // GraphQL response types
 interface GraphQLResponse {
     data?: {
-        sys_entity_agent?: {
+        sys_entity_runtime?: {
             result: string;
             tool?: string;
             errors?: string[];
@@ -123,7 +123,7 @@ export class CortexBridge implements ICortexBridge {
      */
     setSessionContext(config: VoiceConfig): void {
         // Build agentContext array for continuity memory
-        // This passes the user's contextId and contextKey to sys_entity_agent
+        // This passes the user's contextId and contextKey to sys_entity_runtime
         const agentContext: AgentContext[] = [];
         if (config.contextId) {
             agentContext.push({
@@ -193,7 +193,7 @@ export class CortexBridge implements ICortexBridge {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    query: SYS_ENTITY_AGENT_QUERY,
+                    query: SYS_ENTITY_RUNTIME_QUERY,
                     variables,
                 }),
                 signal: controller.signal,
@@ -212,10 +212,10 @@ export class CortexBridge implements ICortexBridge {
                 throw new Error(data.errors[0].message);
             }
 
-            const agentResponse = data.data?.sys_entity_agent;
+            const agentResponse = data.data?.sys_entity_runtime;
 
             if (!agentResponse) {
-                throw new Error('No response from sys_entity_agent');
+                throw new Error('No response from sys_entity_runtime');
             }
 
             // Parse response for media events

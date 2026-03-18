@@ -484,7 +484,7 @@ class PathwayResolver {
     }
 
     async executePathway(args) {
-        // Set rootRequestId from args if provided (for tool pathways called from sys_entity_agent)
+        // Set rootRequestId from args if provided for tool pathways called from the entity runtime executor
         // This ensures tool pathways inherit the rootRequestId from the parent resolver
         if (args.rootRequestId) {
             this.rootRequestId = args.rootRequestId;
@@ -735,7 +735,7 @@ class PathwayResolver {
                     }
                     continue; // Retry
                 }
-                // Note: Continuity memory recording is handled by the agent (sys_entity_agent.js)
+                // Note: Continuity memory recording is handled by the entity runtime executor
                 // after the full agentic workflow completes. This avoids recording intermediate
                 // tool-calling turns and ensures only one turn is recorded per user message.
                 return data;
@@ -749,7 +749,7 @@ class PathwayResolver {
             logger.warn(`Bad pathway result - retrying pathway. Attempt ${retries + 1} of ${MAX_RETRIES}`);
         }
 
-        // Note: Continuity memory recording is handled by the agent (sys_entity_agent.js)
+        // Note: Continuity memory recording is handled by the entity runtime executor
         // after the full agentic workflow completes.
 
         addCitationsToResolver(this, data);

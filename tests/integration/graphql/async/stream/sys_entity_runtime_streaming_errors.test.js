@@ -1,5 +1,6 @@
 import test from 'ava';
-import { EventEmitter } from 'events';
+import net from 'net';
+import { PassThrough } from 'stream';
 import serverFactory from '../../../../../index.js';
 import { createWsClient, ensureWsConnection, collectSubscriptionEvents, validateProgressMessage } from '../../../../helpers/subscriptions.js';
 import { config } from '../../../../../config.js';
@@ -98,9 +99,32 @@ const restoreConfig = (originals) => {
 let testServer;
 let wsClient;
 let originalPromptAndParse;
+let originalProcessRequest;
+let originalPortEnv;
+let originalPortConfig;
+
+const getAvailablePort = async () => {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, () => {
+      const { port } = server.address();
+      server.close((error) => {
+        if (error) return reject(error);
+        resolve(port);
+      });
+    });
+    server.on('error', reject);
+  });
+};
 
 test.before(async () => {
   process.env.CORTEX_ENABLE_REST = 'true';
+  originalPortEnv = process.env.CORTEX_PORT;
+  originalPortConfig = config.get('PORT');
+  const port = await getAvailablePort();
+  process.env.CORTEX_PORT = String(port);
+  config.set('PORT', port);
+
   const { server, startServer } = await serverFactory();
   startServer && await startServer();
   testServer = server;
@@ -109,15 +133,23 @@ test.before(async () => {
   await ensureWsConnection(wsClient);
 
   originalPromptAndParse = PathwayResolver.prototype.promptAndParse;
+  originalProcessRequest = PathwayResolver.prototype.processRequest;
 });
 
 test.after.always('cleanup', async () => {
   PathwayResolver.prototype.promptAndParse = originalPromptAndParse;
+  PathwayResolver.prototype.processRequest = originalProcessRequest;
   if (wsClient) wsClient.dispose();
   if (testServer) await testServer.stop();
+  if (originalPortEnv === undefined) {
+    delete process.env.CORTEX_PORT;
+  } else {
+    process.env.CORTEX_PORT = originalPortEnv;
+  }
+  config.set('PORT', originalPortConfig);
 });
 
-test.serial('sys_entity_agent streaming completes when model crashes after tools', async (t) => {
+test.serial('sys_entity_runtime streaming completes when model crashes after tools', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -135,7 +167,7 @@ test.serial('sys_entity_agent streaming completes when model crashes after tools
   const response = await testServer.executeOperation({
     query: `
       query TestQuery($text: String!, $chatHistory: [MultiMessage]!, $stream: Boolean!, $entityId: String!, $title: String) {
-        sys_entity_agent(text: $text, chatHistory: $chatHistory, stream: $stream, entityId: $entityId, title: $title) {
+        sys_entity_runtime(text: $text, chatHistory: $chatHistory, stream: $stream, entityId: $entityId, title: $title) {
           result
           contextId
           tool
@@ -153,7 +185,7 @@ test.serial('sys_entity_agent streaming completes when model crashes after tools
     },
   });
 
-  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
   t.truthy(requestId);
 
   const events = await collectSubscriptionEvents(wsClient, {
@@ -184,7 +216,7 @@ test.serial('sys_entity_agent streaming completes when model crashes after tools
   t.true(finalData.includes('Model crashed after tool calls'));
 });
 
-test.serial('sys_entity_agent streaming sends error to client when runAllPrompts throws 400 error', async (t) => {
+test.serial('sys_entity_runtime streaming sends error to client when runAllPrompts throws 400 error', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -202,7 +234,7 @@ test.serial('sys_entity_agent streaming sends error to client when runAllPrompts
   const response = await testServer.executeOperation({
     query: `
       query TestQuery($text: String!, $chatHistory: [MultiMessage]!, $stream: Boolean!, $entityId: String!, $title: String) {
-        sys_entity_agent(text: $text, chatHistory: $chatHistory, stream: $stream, entityId: $entityId, title: $title) {
+        sys_entity_runtime(text: $text, chatHistory: $chatHistory, stream: $stream, entityId: $entityId, title: $title) {
           result
           contextId
           tool
@@ -220,7 +252,7 @@ test.serial('sys_entity_agent streaming sends error to client when runAllPrompts
     },
   });
 
-  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
   t.truthy(requestId);
 
   const events = await collectSubscriptionEvents(wsClient, {
@@ -263,32 +295,34 @@ test.serial('sys_entity_agent streaming sends error to client when runAllPrompts
   );
 });
 
-test.serial('sys_entity_agent streaming sends error to client when stream errors with 400', async (t) => {
+test.serial('sys_entity_runtime streaming sends error to client when stream errors with 400', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
-  // Stub promptAndParse to return a stream that immediately errors
-  PathwayResolver.prototype.promptAndParse = async function promptAndParseStub(args) {
+  // Stub the lower-level request processing so promptAndParse still exercises
+  // the normal stream handling path used in production.
+  PathwayResolver.prototype.processRequest = async function processRequestStub(args) {
     if (args?.title === 'test-stream-400-error') {
-      // Create a mock stream that errors immediately with 400
-      const errorStream = new EventEmitter();
-      
-      // Simulate stream erroring immediately
-      setImmediate(() => {
-        const error = new Error('HTTP 400 Bad Request: Invalid request parameters');
-        error.statusCode = 400;
-        errorStream.emit('error', error);
+      const errorStream = new PassThrough();
+      errorStream.on('newListener', (eventName) => {
+        if (eventName !== 'error') return;
+        setImmediate(() => {
+          if (errorStream.destroyed) return;
+          errorStream.write('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+          const error = new Error('HTTP 400 Bad Request: Invalid request parameters');
+          error.statusCode = 400;
+          errorStream.destroy(error);
+        });
       });
-      
       return errorStream;
     }
-    return originalPromptAndParse.call(this, args);
+    return originalProcessRequest.call(this, args);
   };
 
   const response = await testServer.executeOperation({
     query: `
       query TestQuery($text: String!, $chatHistory: [MultiMessage]!, $stream: Boolean!, $entityId: String!, $title: String) {
-        sys_entity_agent(text: $text, chatHistory: $chatHistory, stream: $stream, entityId: $entityId, title: $title) {
+        sys_entity_runtime(text: $text, chatHistory: $chatHistory, stream: $stream, entityId: $entityId, title: $title) {
           result
           contextId
           tool
@@ -306,7 +340,7 @@ test.serial('sys_entity_agent streaming sends error to client when stream errors
     },
   });
 
-  const requestId = response.body?.singleResult?.data?.sys_entity_agent?.result;
+  const requestId = response.body?.singleResult?.data?.sys_entity_runtime?.result;
   t.truthy(requestId);
 
   const events = await collectSubscriptionEvents(wsClient, {

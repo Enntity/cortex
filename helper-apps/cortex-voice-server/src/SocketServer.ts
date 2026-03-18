@@ -289,7 +289,7 @@ export class SocketServer {
                 ? new StreamingCortexBridge(this.config.cortexApiUrl)
                 : new CortexBridge(this.config.cortexApiUrl);
 
-            // Set session context for proper sys_entity_agent calls
+            // Set session context for proper sys_entity_runtime calls
             cortexBridge.setSessionContext(config);
 
             // Get voice sample URL for non-realtime providers that need it for TTS voice cloning
