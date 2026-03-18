@@ -27,14 +27,17 @@ class GeminiVisionPlugin extends GeminiChatPlugin {
                 const convertPartToGemini = (inputPart) => {
                     try {
                         const part = typeof inputPart === 'string' ? JSON.parse(inputPart) : inputPart;
-                        const {type, text, image_url, gcs} = part;
-                        let fileUrl = gcs || image_url?.url;
+                        const {type, text, image_url, url} = part;
+                        let fileUrl = image_url?.url || url;
 
                         if (typeof part === 'string') {
                             return { text: text };
                         } else if (type === 'text') {
                             return { text: text };
                         } else if (type === 'image_url') {
+                            if (!fileUrl) {
+                                return null;
+                            }
                             if (fileUrl.startsWith('gs://')) {
                                 return {
                                     fileData: {
@@ -42,13 +45,35 @@ class GeminiVisionPlugin extends GeminiChatPlugin {
                                         fileUri: fileUrl
                                     }
                                 };
-                            } else {
+                            } else if (fileUrl.includes('base64,')) {
+                                const base64Data = fileUrl.split('base64,')[1];
+                                if (!base64Data) {
+                                    return null;
+                                }
+                                const mimeMatch = fileUrl.match(/data:([^;]+);base64,/);
+                                const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
                                 return {
                                     inlineData: {
-                                        mimeType: 'image/jpeg', // fixed for now as there's no MIME type in the request
-                                        data: fileUrl.split('base64,')[1]
+                                        mimeType,
+                                        data: base64Data
                                     }
                                 };
+                            } else if (fileUrl.includes('youtube.com/') || fileUrl.includes('youtu.be/')) {
+                                return {
+                                    fileData: {
+                                        mimeType: 'video/youtube',
+                                        fileUri: fileUrl
+                                    }
+                                };
+                            } else if (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) {
+                                return {
+                                    fileData: {
+                                        mimeType: mime.lookup(fileUrl) || 'image/jpeg',
+                                        fileUri: fileUrl
+                                    }
+                                };
+                            } else {
+                                return null;
                             }
                         }
                     } catch (e) {

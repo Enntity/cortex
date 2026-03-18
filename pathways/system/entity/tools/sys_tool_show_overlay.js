@@ -34,7 +34,7 @@ export default {
                                 },
                                 file: {
                                     type: "string",
-                                    description: "For image/video items: a file reference from FileCollection (hash, filename, URL, or GCS URL)."
+                                    description: "For image/video items: a file reference from FileCollection (filename, blob path, or URL)."
                                 },
                                 duration: {
                                     type: "number",
@@ -143,8 +143,6 @@ export default {
                 overlayItems.push({
                     type,
                     url: foundFile.url,
-                    ...(foundFile.gcs && { gcs: foundFile.gcs }),
-                    ...(foundFile.hash && { hash: foundFile.hash }),
                     ...(foundFile.filename && { filename: foundFile.filename }),
                     ...(duration !== undefined && { duration }),
                     ...(label && { label })

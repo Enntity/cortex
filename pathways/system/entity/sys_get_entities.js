@@ -17,8 +17,8 @@
 //     useMemory: true/false,       // Memory enabled
 //     avatar: {                    // Optional visual representation
 //       text: "🤖",               // Optional text/emoji
-//       image: { url, gcs, name },// Optional image file
-//       video: { url, gcs, name } // Optional video file
+//       image: { url, blobPath, filename },// Optional image file
+//       video: { url, blobPath, filename } // Optional video file
 //     },
 //     voice: {                     // Optional voice profile
 //       provider: "elevenlabs",   // TTS provider

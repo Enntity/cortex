@@ -20,19 +20,22 @@ format_event() {
 import sys, json
 
 COLORS = {
-    'request.start': '\033[1;36m',  # bold cyan
-    'request.end':   '\033[1;36m',
-    'request.error': '\033[1;31m',  # bold red
-    'model.call':    '\033[33m',    # yellow
-    'model.result':  '\033[32m',    # green
-    'tool.exec':     '\033[35m',    # magenta
-    'tool.round':    '\033[34m',    # blue
-    'plan.created':  '\033[1;33m',  # bold yellow
-    'plan.replan':   '\033[1;33m',
-    'plan.step':     '\033[33m',
-    'plan.skipped':  '\033[31m',    # red
-    'compression':   '\033[90m',    # gray
-    'memory.record': '\033[90m',
+    'request.start':  '\033[1;36m',  # bold cyan
+    'request.end':    '\033[1;36m',
+    'request.error':  '\033[1;31m',  # bold red
+    'model.call':     '\033[33m',    # yellow
+    'model.result':   '\033[32m',    # green
+    'tool.exec':      '\033[35m',    # magenta
+    'tool.round':     '\033[34m',    # blue
+    'delegate.start': '\033[1;35m',  # bold magenta
+    'delegate.end':   '\033[1;35m',
+    'delegate.error': '\033[1;31m',  # bold red
+    'plan.created':   '\033[1;33m',  # bold yellow (legacy)
+    'plan.replan':    '\033[1;33m',
+    'plan.step':      '\033[33m',
+    'plan.skipped':   '\033[31m',    # red
+    'compression':    '\033[90m',    # gray
+    'memory.record':  '\033[90m',
 }
 RESET = '\033[0m'
 
@@ -55,7 +58,7 @@ for line in sys.stdin:
         effort = d.get('reasoningEffort', '')
         tools = d.get('entityToolNames', [])
         tc = d.get('entityToolCount', 0)
-        tlm_str = f'  executor={tlm}' if tlm else ''
+        tlm_str = f'  processor={tlm}' if tlm else ''
         print(f'{color}{ts}  START        model={model}{tlm_str}  effort={effort}  tools={tc}{RESET}')
         if tools:
             print(f'               tools: {tools}')
@@ -189,6 +192,25 @@ for line in sys.stdin:
         pct = d.get('pctOfLimit', '?')
         print(f'{color}{ts}  COMPRESS     {before} -> {after} tokens  ({pct}% of limit){RESET}')
 
+    elif evt == 'delegate.start':
+        model = d.get('model', '?')
+        task = d.get('task', '?')[:80]
+        cap = d.get('budgetCap', 0)
+        tc = d.get('toolCount', 0)
+        print(f'{color}{ts}  DELEGATE     model={model}  budget_cap={cap}  tools={tc}  \"{task}\"{RESET}')
+
+    elif evt == 'delegate.end':
+        rounds = d.get('rounds', 0)
+        budget = d.get('budgetUsed', 0)
+        chars = d.get('resultChars', 0)
+        reason = d.get('reason', '')
+        reason_str = f'  reason={reason}' if reason else ''
+        print(f'{color}{ts}  DELEGATE-END rounds={rounds}  budget={budget}  result={chars}ch{reason_str}{RESET}')
+
+    elif evt == 'delegate.error':
+        err = d.get('error', '?')[:120]
+        print(f'{color}{ts}  DELEGATE-ERR {err}{RESET}')
+
     elif evt == 'memory.record':
         mtype = d.get('type', '?')
         uc = d.get('userChars', 0)
@@ -214,32 +236,26 @@ for line in sys.stdin:
     rid = d.get('rid','?')
     evt = d.get('evt','')
     if rid not in requests:
-        requests[rid] = {'tools':0,'rounds':0,'plans':0,'replans':0,'dur':0,'model':'?','synth':0,'gate_retries':0}
+        requests[rid] = {'tools':0,'rounds':0,'delegates':0,'dur':0,'model':'?','synth':0}
     r = requests[rid]
     if evt == 'request.start':
         r['model'] = d.get('model','?')
         r['ts'] = d.get('ts','')[11:23]
-        r['executor'] = d.get('toolLoopModel','')
     elif evt == 'request.end':
         r['dur'] = d.get('durationMs',0)/1000
         r['rounds'] = d.get('toolRounds',0)
         r['budget'] = d.get('budgetUsed',0)
     elif evt == 'tool.exec':
         r['tools'] += 1
-    elif evt == 'plan.created':
-        r['plans'] += 1
-    elif evt == 'plan.replan':
-        r['replans'] += 1
+    elif evt == 'delegate.start':
+        r['delegates'] += 1
     elif evt == 'model.call' and d.get('purpose') == 'synthesis':
         r['synth'] += 1
-    elif evt == 'model.call' and d.get('purpose') == 'gate_retry':
-        r['gate_retries'] += 1
 
 for rid, r in requests.items():
     ts = r.get('ts','?')
-    ex = f\"  exec={r['executor']}\" if r.get('executor') else ''
-    gate = f\"  gate_retries={r['gate_retries']}\" if r['gate_retries'] else ''
-    print(f\"{ts}  {rid[:8]}  {r['dur']:6.1f}s  model={r['model']}{ex}  rounds={r['rounds']}  tools={r['tools']}  synth={r['synth']}  plans={r['plans']}  replans={r['replans']}{gate}  budget={r.get('budget',0)}\")
+    dlg = f\"  delegates={r['delegates']}\" if r['delegates'] else ''
+    print(f\"{ts}  {rid[:8]}  {r['dur']:6.1f}s  model={r['model']}  rounds={r['rounds']}  tools={r['tools']}  synth={r['synth']}{dlg}  budget={r.get('budget',0)}\")
 "
 }
 

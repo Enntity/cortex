@@ -3,9 +3,9 @@ import crypto from 'node:crypto';
 
 const MAX_OUTPUT = 100 * 1024; // 100KB per stream
 const MAX_BACKGROUND = 20;
-const RESULT_TTL_MS = 60 * 60 * 1000; // 1 hour
+const RESULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_TIMEOUT_MS = 110_000;
-const MAX_TIMEOUT_MS = 300_000;
+const MAX_TIMEOUT_MS = 600_000;
 const DEFAULT_CWD = '/workspace';
 
 // Background process store: processId -> { proc, stdout, stderr, exitCode, startedAt, completedAt }
@@ -39,7 +39,10 @@ export function execSync(command, options = {}) {
         let stderr = '';
         let killed = false;
 
-        const proc = spawn('/bin/bash', ['-c', command], {
+        // Source /workspace/.env (injected by /reconfigure) so env vars
+        // are available in all shell commands, not just interactive shells.
+        const wrappedCommand = '[ -f /workspace/.env ] && . /workspace/.env; ' + command;
+        const proc = spawn('/bin/bash', ['-c', wrappedCommand], {
             cwd,
             env: { ...process.env, HOME: '/root' },
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -111,7 +114,6 @@ export function execBackground(command, options = {}) {
 
     const processId = crypto.randomBytes(8).toString('hex');
     const cwd = options.cwd || DEFAULT_CWD;
-    const timeoutMs = Math.min(options.timeout || MAX_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
     const entry = {
         stdout: '',
@@ -128,13 +130,6 @@ export function execBackground(command, options = {}) {
         stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    const timer = setTimeout(() => {
-        proc.kill('SIGKILL');
-        entry.exitCode = -1;
-        entry.stderr += '\n[killed: timeout]';
-        entry.completedAt = Date.now();
-    }, timeoutMs);
-
     proc.stdout.on('data', (chunk) => {
         if (entry.stdout.length < MAX_OUTPUT) {
             entry.stdout += chunk.toString();
@@ -148,7 +143,6 @@ export function execBackground(command, options = {}) {
     });
 
     proc.on('close', (code) => {
-        clearTimeout(timer);
         if (entry.exitCode === null) {
             entry.exitCode = code ?? -1;
         }
@@ -156,7 +150,6 @@ export function execBackground(command, options = {}) {
     });
 
     proc.on('error', (e) => {
-        clearTimeout(timer);
         entry.stderr += e.message;
         entry.exitCode = -1;
         entry.completedAt = Date.now();

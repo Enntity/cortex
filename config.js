@@ -121,6 +121,11 @@ var config = convict({
         format: Object,
         default: {},
     },
+    gcsBucketName: {
+        format: String,
+        default: '',
+        env: 'GCS_BUCKET_NAME'
+    },
     gcpServiceAccountKey: {
         format: String,
         default: null,
@@ -276,6 +281,72 @@ var config = convict({
         format: String,
         default: '10g',
         env: 'WORKSPACE_DISK_SIZE'
+    },
+    workspaceImageVersion: {
+        format: String,
+        default: '',
+        env: 'WORKSPACE_IMAGE_VERSION'
+    },
+    workspaceIdleTimeoutMs: {
+        format: 'nat',
+        default: 30 * 60 * 1000,
+        env: 'WORKSPACE_IDLE_TIMEOUT_MS'
+    },
+    workspaceBackend: {
+        format: String,
+        default: 'docker',
+        env: 'WORKSPACE_BACKEND'
+    },
+    dockerHost: {
+        format: String,
+        default: '',
+        env: 'DOCKER_HOST'
+    },
+    workspaceHost: {
+        format: String,
+        default: '',
+        env: 'WORKSPACE_HOST'
+    },
+    hetznerApiToken: {
+        format: String,
+        default: '',
+        env: 'HETZNER_API_TOKEN',
+        sensitive: true
+    },
+    hetznerLocation: {
+        format: String,
+        default: 'fsn1',
+        env: 'HETZNER_LOCATION'
+    },
+    hetznerServerType: {
+        format: String,
+        default: 'cx22',
+        env: 'HETZNER_SERVER_TYPE'
+    },
+    hetznerFirewallId: {
+        format: String,
+        default: '',
+        env: 'HETZNER_FIREWALL_ID'
+    },
+    hetznerSshKeyId: {
+        format: String,
+        default: '',
+        env: 'HETZNER_SSH_KEY_ID'
+    },
+    hetznerPrivateNetworkId: {
+        format: String,
+        default: '',
+        env: 'HETZNER_PRIVATE_NETWORK_ID'
+    },
+    hetznerMaxContainersPerHost: {
+        format: 'nat',
+        default: 50,
+        env: 'HETZNER_MAX_CONTAINERS_PER_HOST'
+    },
+    hetznerScaleUpThreshold: {
+        format: Number,
+        default: 0.8,
+        env: 'HETZNER_SCALE_UP_THRESHOLD'
     }
 });
 

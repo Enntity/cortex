@@ -1,5 +1,6 @@
 import test from 'ava';
 import OpenAIVisionPlugin from '../../../server/plugins/openAiVisionPlugin.js';
+import OpenAIResponsesPlugin from '../../../server/plugins/openAiResponsesPlugin.js';
 import Claude3VertexPlugin from '../../../server/plugins/claude3VertexPlugin.js';
 import ClaudeAnthropicPlugin from '../../../server/plugins/claudeAnthropicPlugin.js';
 import Gemini15VisionPlugin from '../../../server/plugins/gemini15VisionPlugin.js';
@@ -118,14 +119,19 @@ test('OpenAI to Gemini conversion', async (t) => {
     t.is(system15.parts[0].text, 'You are a helpful assistant.');
 });
 
-// Test special Cortex properties (gcs and url)
-test('Cortex special properties conversion', async (t) => {
+// Test direct URL + blobPath metadata conversion
+test('Cortex file metadata conversion', async (t) => {
     const { openai, claude, gemini, gemini15 } = createPlugins();
     
     const cortexMessages = [
         { role: 'user', content: [
             { type: 'text', text: 'Analyze this image:' },
-            { type: 'image_url', gcs: 'gs://cortex-bucket/special-image.png', url: 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg' }
+            {
+                type: 'image_url',
+                url: 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg',
+                blobPath: 'user-1/media/special-image.png',
+                filename: 'special-image.png',
+            }
         ]}
     ];
 
@@ -138,8 +144,8 @@ test('Cortex special properties conversion', async (t) => {
     t.true(claudeMessages[0].content[1].source.data.startsWith('/9j/4AAQ'));
 
     // Check Gemini conversion
-    t.is(geminiMessages[0].parts[1].fileData.fileUri, 'gs://cortex-bucket/special-image.png');
-    t.is(geminiMessages15[0].parts[1].fileData.fileUri, 'gs://cortex-bucket/special-image.png');
+    t.is(geminiMessages[0].parts[1].fileData.fileUri, 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg');
+    t.is(geminiMessages15[0].parts[1].fileData.fileUri, 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg');
 });
 
 // Test mixed content types
@@ -154,7 +160,7 @@ test('Mixed content types conversion', async (t) => {
             { type: 'text', text: 'Here\'s an image:' },
             { type: 'image_url', image_url: { url: sampleBase64Image } },
             { type: 'text', text: 'And another one:' },
-            { type: 'image_url', gcs: 'gs://cortex-bucket/another-image.jpg', url: 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg' }
+            { type: 'image_url', url: 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg', blobPath: 'user-1/media/another-image.jpg' }
         ]}
     ];
 
@@ -182,7 +188,7 @@ test('Mixed content types conversion', async (t) => {
     t.is(modifiedMessages[2].parts[0].text, 'Here\'s an image:');
     t.true('inlineData' in modifiedMessages[2].parts[1]);
     t.is(modifiedMessages[2].parts[2].text, 'And another one:');
-    t.is(modifiedMessages[2].parts[3].fileData.fileUri, 'gs://cortex-bucket/another-image.jpg');
+    t.is(modifiedMessages[2].parts[3].fileData.fileUri, 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg');
 
     // Check Gemini 1.5 conversion
     t.is(modifiedMessages15.length, 3);
@@ -190,7 +196,7 @@ test('Mixed content types conversion', async (t) => {
     t.is(modifiedMessages15[2].parts[0].text, 'Here\'s an image:');
     t.true('inlineData' in modifiedMessages15[2].parts[1]);
     t.is(modifiedMessages15[2].parts[2].text, 'And another one:');
-    t.is(modifiedMessages15[2].parts[3].fileData.fileUri, 'gs://cortex-bucket/another-image.jpg');
+    t.is(modifiedMessages15[2].parts[3].fileData.fileUri, 'https://static.toiimg.com/thumb/msid-102827471,width-1280,height-720,resizemode-4/102827471.jpg');
     t.is(system15.parts[0].text, 'You are a vision analysis AI.');
 });
 
@@ -443,7 +449,7 @@ test('Gemini 1.5 image URL type handling', t => {
     const { modifiedMessages } = gemini15.convertMessagesToGemini(messages);
 
     t.is(modifiedMessages.length, 1);
-    t.is(modifiedMessages[0].parts.length, 5); // text + gcs + base64 + http + azure
+    t.is(modifiedMessages[0].parts.length, 5); // text + signed/file URL + base64 + http + azure
     
     // Check text part
     t.is(modifiedMessages[0].parts[0].text, 'Process these images:');
@@ -517,8 +523,7 @@ test('Multiple images in single Claude message', async (t) => {
             { type: 'text', text: 'Compare these images:' },
             { type: 'image_url', image_url: { url: sampleBase64Image } },
             { type: 'text', text: 'with this one:' },
-            { type: 'image_url', image_url: { url: sampleBase64Image } },
-            { type: 'image_url', gcs: 'gs://cortex-bucket/image.jpg' }
+            { type: 'image_url', image_url: { url: sampleBase64Image } }
         ]}
     ];
 
@@ -546,7 +551,7 @@ test('Conversation history with mixed image types', async (t) => {
         { role: 'assistant', content: 'I see a landscape.' },
         { role: 'user', content: [
             { type: 'text', text: 'Compare it with this:' },
-            { type: 'image_url', gcs: 'gs://cortex-bucket/image2.jpg' }
+            { type: 'image_url', url: 'https://example.com/image2.jpg', blobPath: 'user-1/media/image2.jpg' }
         ]},
         { role: 'assistant', content: 'The second image shows a different scene.' },
         { role: 'user', content: 'Which one do you prefer?' }
@@ -569,7 +574,7 @@ test('Conversation history with mixed image types', async (t) => {
     t.true('inlineData' in geminiMessages15[0].parts[1]);
     t.is(geminiMessages15[1].parts[0].text, 'I see a landscape.');
     t.true('fileData' in geminiMessages15[2].parts[1]);
-    t.is(geminiMessages15[2].parts[1].fileData.fileUri, 'gs://cortex-bucket/image2.jpg');
+    t.is(geminiMessages15[2].parts[1].fileData.fileUri, 'https://example.com/image2.jpg');
     t.is(geminiMessages15[3].parts[0].text, 'The second image shows a different scene.');
     t.is(geminiMessages15[4].parts[0].text, 'Which one do you prefer?');
 });
@@ -636,6 +641,75 @@ test('Anthropic plugin uses base64 for data: URLs', async (t) => {
     t.is(modifiedMessages.length, 1);
     t.is(modifiedMessages[0].content[1].type, 'image');
     t.is(modifiedMessages[0].content[1].source.type, 'base64');
+});
+
+// Test OpenAI Responses API normalizes image_url content blocks to input_image with flat URL
+test('OpenAI Responses API converts image_url to input_image with flat URL string', (t) => {
+    const responsesPlugin = new OpenAIResponsesPlugin(mockPathway, mockModel);
+
+    const messages = [
+        { role: 'user', content: [
+            { type: 'text', text: 'Describe this image:' },
+            // Chat Completions format with nested image_url object
+            { type: 'image_url', image_url: { url: 'https://example.com/image.jpg' } },
+        ]},
+    ];
+
+    const input = responsesPlugin.normalizeResponsesApiInput(messages);
+
+    t.is(input.length, 1);
+    const content = input[0].content;
+    t.is(content[0].type, 'input_text');
+    t.is(content[0].text, 'Describe this image:');
+    t.is(content[1].type, 'input_image');
+    // image_url must be a plain string, not an object
+    t.is(content[1].image_url, 'https://example.com/image.jpg');
+    t.is(typeof content[1].image_url, 'string');
+});
+
+// Test OpenAI Responses API handles toolImages-injected image blocks (with extra metadata fields)
+test('OpenAI Responses API strips extra metadata from toolImages-injected blocks', (t) => {
+    const responsesPlugin = new OpenAIResponsesPlugin(mockPathway, mockModel);
+
+    // This is exactly the format injected by sys_entity_agent.js allToolImages
+    const messages = [
+        { role: 'user', content: [
+            {
+                type: 'image_url',
+                url: 'https://storage.example.com/file.webp',
+                image_url: { url: 'https://storage.example.com/file.webp' },
+                blobPath: 'user-1/media/file.webp',
+                filename: 'file.webp',
+            },
+        ]},
+    ];
+
+    const input = responsesPlugin.normalizeResponsesApiInput(messages);
+
+    const content = input[0].content;
+    t.is(content[0].type, 'input_image');
+    t.is(content[0].image_url, 'https://storage.example.com/file.webp');
+    // Must not leak internal metadata to the API
+    t.is(content[0].blobPath, undefined);
+    t.is(content[0].filename, undefined);
+    t.is(content[0].url, undefined);
+});
+
+// Test OpenAI Responses API handles image_url with flat url field (no nested object)
+test('OpenAI Responses API handles flat url field when image_url object is missing', (t) => {
+    const responsesPlugin = new OpenAIResponsesPlugin(mockPathway, mockModel);
+
+    const messages = [
+        { role: 'user', content: [
+            { type: 'image_url', url: 'https://example.com/flat.jpg' },
+        ]},
+    ];
+
+    const input = responsesPlugin.normalizeResponsesApiInput(messages);
+
+    const content = input[0].content;
+    t.is(content[0].type, 'input_image');
+    t.is(content[0].image_url, 'https://example.com/flat.jpg');
 });
 
 // Test Vertex plugin still uses base64 for HTTP URLs (no supportsUrlImages)

@@ -213,6 +213,12 @@ jobs:
 
             # Tag workspace image for local use by auto-provisioning
             docker tag ghcr.io/${REPO_NAME}-workspace:latest cortex-workspace:latest
+
+            # Tag with commit SHA for workspace image versioning
+            # This allows WORKSPACE_IMAGE_VERSION to trigger automatic reprovisions
+            COMMIT_SHA="${{ github.sha }}"
+            SHORT_SHA="${COMMIT_SHA:0:7}"
+            docker tag ghcr.io/${REPO_NAME}-workspace:latest cortex-workspace:${SHORT_SHA}
             
             # Update the stack
             export IMAGE_TAG=latest

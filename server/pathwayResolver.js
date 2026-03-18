@@ -417,7 +417,7 @@ class PathwayResolver {
                     if (validToolCalls.length > 0) {
                         const toolMessage = {
                             role: 'assistant',
-                            content: plugin.contentBuffer || '',
+                            content: '',
                             tool_calls: validToolCalls,
                         };
                         plugin.pathwayToolCallback(this.args, toolMessage, this);

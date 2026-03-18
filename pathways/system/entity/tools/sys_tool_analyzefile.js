@@ -47,7 +47,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to analyze (from FileCollection): each can be the hash, the filename, the URL, or the GCS URL. You can find available files in the availableFiles section."
+                        description: "Array of files to analyze from FileCollection. Each reference can be a filename, blob path, or URL. You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",
@@ -76,7 +76,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to analyze. Each can be: (1) A YouTube URL (youtube.com/watch?v=..., youtu.be/..., youtube.com/shorts/..., youtube.com/embed/...), (2) A direct video/audio file URL, (3) A file from the collection (hash, filename, URL, or GCS URL from FileCollection). You can find available files in the availableFiles section."
+                        description: "Array of files to analyze. Each can be: (1) A YouTube URL (youtube.com/watch?v=..., youtu.be/..., youtube.com/shorts/..., youtube.com/embed/...), (2) A direct video/audio file URL, (3) A file from the collection (filename, blob path, or URL from FileCollection). You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",

@@ -82,6 +82,14 @@ function loadConfigFile() {
  */
 function transformEntity(key, configEntity) {
     const now = new Date();
+    const toBlobPath = (value) => {
+        if (!value || typeof value !== 'string' || !value.startsWith('gs://')) {
+            return null;
+        }
+        const withoutProtocol = value.slice(5);
+        const slashIndex = withoutProtocol.indexOf('/');
+        return slashIndex === -1 ? null : withoutProtocol.slice(slashIndex + 1);
+    };
     
     // Transform avatar if present
     let avatar = null;
@@ -90,13 +98,13 @@ function transformEntity(key, configEntity) {
             text: configEntity.avatar.text || null,
             image: configEntity.avatar.image ? {
                 url: configEntity.avatar.image.url,
-                gcs: configEntity.avatar.image.gcs,
-                name: configEntity.avatar.image.name || configEntity.avatar.image.originalFilename
+                blobPath: configEntity.avatar.image.blobPath || toBlobPath(configEntity.avatar.image.gcs),
+                filename: configEntity.avatar.image.filename || configEntity.avatar.image.name || configEntity.avatar.image.originalFilename
             } : null,
             video: configEntity.avatar.video ? {
                 url: configEntity.avatar.video.url,
-                gcs: configEntity.avatar.video.gcs,
-                name: configEntity.avatar.video.name || configEntity.avatar.video.originalFilename
+                blobPath: configEntity.avatar.video.blobPath || toBlobPath(configEntity.avatar.video.gcs),
+                filename: configEntity.avatar.video.filename || configEntity.avatar.video.name || configEntity.avatar.video.originalFilename
             } : null
         };
     }
@@ -114,9 +122,9 @@ function transformEntity(key, configEntity) {
         // Rename files → resources
         resources: (configEntity.files || configEntity.resources || []).map(file => ({
             url: file.url,
-            gcs: file.gcs,
-            name: file.name || file.originalFilename,
-            type: file.type || inferResourceType(file.url || file.name)
+            blobPath: file.blobPath || toBlobPath(file.gcs),
+            filename: file.filename || file.name || file.originalFilename,
+            type: file.type || inferResourceType(file.url || file.filename || file.name)
         })),
         customTools: configEntity.customTools || {},
         createdAt: now,

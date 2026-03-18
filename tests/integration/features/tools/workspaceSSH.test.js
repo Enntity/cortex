@@ -40,16 +40,7 @@ test.after.always('cleanup', async () => {
         // Best effort cleanup
     }
 
-    // Clean up file collection data from Redis
-    try {
-        const { getRedisClient } = await import('../../../../lib/fileUtils.js');
-        const redisClient = await getRedisClient();
-        if (redisClient) {
-            await redisClient.del(`FileStoreMap:ctx:${TEST_CONTEXT_ID}`);
-        }
-    } catch {
-        // Best effort cleanup
-    }
+    // File collection cleanup not needed — GCS is source of truth (no Redis)
 
     // Remove the test entity from MongoDB
     try {

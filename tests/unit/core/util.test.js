@@ -7,7 +7,7 @@ import path from 'path';
 import os from 'os';
 import sinon from 'sinon';
 import { removeOldImageAndFileContent } from '../../../lib/util.js';
-import { computeFileHash, computeBufferHash, generateFileMessageContent, injectFileIntoChatHistory } from '../../../lib/fileUtils.js';
+import { generateFileMessageContent, injectFileIntoChatHistory } from '../../../lib/fileUtils.js';
 
 // Test removeOldImageAndFileContent function
 
@@ -150,87 +150,7 @@ test('removeOldImageAndFileContent should handle mixed content types', t => {
     t.deepEqual(result, expected);
 });
 
-// Test computeFileHash function
-test('computeFileHash should compute hash for a file', async t => {
-    // Create a temporary file
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cortex-test-'));
-    const testFile = path.join(tempDir, 'test.txt');
-    const testContent = 'Hello, World! This is a test file.';
-    fs.writeFileSync(testFile, testContent);
-    
-    try {
-        const hash = await computeFileHash(testFile);
-        t.truthy(hash);
-        t.is(typeof hash, 'string');
-        t.is(hash.length, 16); // xxhash64 produces 16 hex characters
-        
-        // Same content should produce same hash
-        const hash2 = await computeFileHash(testFile);
-        t.is(hash, hash2);
-    } finally {
-        // Cleanup
-        fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-});
-
-test('computeFileHash should handle different file contents', async t => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cortex-test-'));
-    const file1 = path.join(tempDir, 'file1.txt');
-    const file2 = path.join(tempDir, 'file2.txt');
-    
-    fs.writeFileSync(file1, 'Content 1');
-    fs.writeFileSync(file2, 'Content 2');
-    
-    try {
-        const hash1 = await computeFileHash(file1);
-        const hash2 = await computeFileHash(file2);
-        
-        t.not(hash1, hash2);
-    } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-});
-
-test('computeFileHash should reject on non-existent file', async t => {
-    const nonExistentFile = path.join(os.tmpdir(), 'non-existent-file-' + Date.now());
-    
-    await t.throwsAsync(async () => {
-        await computeFileHash(nonExistentFile);
-    });
-});
-
-// Test computeBufferHash function
-test('computeBufferHash should compute hash for a buffer', async t => {
-    const buffer = Buffer.from('Hello, World! This is a test.');
-    const hash = await computeBufferHash(buffer);
-    
-    t.truthy(hash);
-    t.is(typeof hash, 'string');
-    t.is(hash.length, 16); // xxhash64 produces 16 hex characters
-    
-    // Same buffer should produce same hash
-    const hash2 = await computeBufferHash(buffer);
-    t.is(hash, hash2);
-});
-
-test('computeBufferHash should handle different buffer contents', async t => {
-    const buffer1 = Buffer.from('Content 1');
-    const buffer2 = Buffer.from('Content 2');
-    
-    const hash1 = await computeBufferHash(buffer1);
-    const hash2 = await computeBufferHash(buffer2);
-    
-    t.not(hash1, hash2);
-});
-
-test('computeBufferHash should handle empty buffer', async t => {
-    const buffer = Buffer.from('');
-    const hash = await computeBufferHash(buffer);
-    
-    t.truthy(hash);
-    t.is(typeof hash, 'string');
-    t.is(hash.length, 16);
-});
+// computeFileHash and computeBufferHash removed — no hashing in GCS-only model
 
 // Test generateFileMessageContent function
 test('generateFileMessageContent should return null for invalid input', async t => {
@@ -260,7 +180,6 @@ test('injectFileIntoChatHistory should inject file into empty chat history', t =
         type: 'file',
         file: 'https://example.com/test.pdf',
         url: 'https://example.com/test.pdf',
-        gcs: 'gs://bucket/test.pdf',
         originalFilename: 'test.pdf'
     };
     
@@ -277,7 +196,6 @@ test('injectFileIntoChatHistory should inject file into empty chat history', t =
     t.is(injected.type, 'file');
     t.is(injected.file, 'https://example.com/test.pdf');
     t.is(injected.url, 'https://example.com/test.pdf');
-    t.is(injected.gcs, 'gs://bucket/test.pdf');
 });
 
 test('injectFileIntoChatHistory should inject file into existing chat history', t => {
@@ -310,7 +228,6 @@ test('injectFileIntoChatHistory should not inject duplicate file by URL', t => {
                 type: 'file',
                 file: 'https://example.com/test.pdf',
                 url: 'https://example.com/test.pdf',
-                gcs: 'gs://bucket/test.pdf',
                 originalFilename: 'test.pdf'
             }]
         }
@@ -319,7 +236,6 @@ test('injectFileIntoChatHistory should not inject duplicate file by URL', t => {
         type: 'file',
         file: 'https://example.com/test.pdf',
         url: 'https://example.com/test.pdf',
-        gcs: 'gs://bucket/test.pdf',
         originalFilename: 'test.pdf'
     };
     
@@ -330,7 +246,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by URL', t => {
     t.is(result[0].content.length, 1);
 });
 
-test('injectFileIntoChatHistory should not inject duplicate file by GCS URL', t => {
+test('injectFileIntoChatHistory should not inject duplicate file by blob path', t => {
     const chatHistory = [
         {
             role: 'user',
@@ -338,7 +254,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by GCS URL', t 
                 type: 'file',
                 file: 'https://example.com/test.pdf',
                 url: 'https://example.com/test.pdf',
-                gcs: 'gs://bucket/test.pdf',
+                blobPath: 'user-1/global/test.pdf',
                 originalFilename: 'test.pdf'
             }]
         }
@@ -347,7 +263,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by GCS URL', t 
         type: 'file',
         file: 'https://example.com/other.pdf',
         url: 'https://example.com/other.pdf',
-        gcs: 'gs://bucket/test.pdf', // Same GCS URL
+        blobPath: 'user-1/global/test.pdf',
         originalFilename: 'other.pdf'
     };
     
@@ -358,7 +274,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by GCS URL', t 
     t.is(result[0].content.length, 1);
 });
 
-test('injectFileIntoChatHistory should not inject duplicate file by hash', t => {
+test('injectFileIntoChatHistory should inject a different file when URL and blob path differ', t => {
     const chatHistory = [
         {
             role: 'user',
@@ -366,7 +282,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by hash', t => 
                 type: 'file',
                 file: 'https://example.com/test.pdf',
                 url: 'https://example.com/test.pdf',
-                hash: 'abc123def456',
+                blobPath: 'user-1/global/test.pdf',
                 originalFilename: 'test.pdf'
             }]
         }
@@ -375,15 +291,14 @@ test('injectFileIntoChatHistory should not inject duplicate file by hash', t => 
         type: 'file',
         file: 'https://example.com/other.pdf',
         url: 'https://example.com/other.pdf',
-        hash: 'abc123def456', // Same hash
+        blobPath: 'user-1/global/other.pdf',
         originalFilename: 'other.pdf'
     };
     
     const result = injectFileIntoChatHistory(chatHistory, fileContent);
     
-    // Should be unchanged (no duplicate added)
-    t.is(result.length, 1);
-    t.is(result[0].content.length, 1);
+    t.is(result.length, 2);
+    t.deepEqual(result[1].content, [fileContent]);
 });
 
 test('injectFileIntoChatHistory should inject different file', t => {
@@ -446,7 +361,7 @@ test('injectFileIntoChatHistory should handle image_url type', t => {
         type: 'image_url',
         image_url: { url: 'https://example.com/image.jpg' },
         url: 'https://example.com/image.jpg',
-        gcs: 'gs://bucket/image.jpg',
+        blobPath: 'user-1/media/image.jpg',
         originalFilename: 'image.jpg'
     };
     
@@ -460,5 +375,5 @@ test('injectFileIntoChatHistory should handle image_url type', t => {
     t.truthy(injected.image_url);
     t.is(injected.image_url.url, 'https://example.com/image.jpg');
     t.is(injected.url, 'https://example.com/image.jpg');
-    t.is(injected.gcs, 'gs://bucket/image.jpg');
+    t.is(injected.blobPath, 'user-1/media/image.jpg');
 });

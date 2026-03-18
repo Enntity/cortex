@@ -1,9 +1,8 @@
 // sys_read_file_collection.js
-// GraphQL pathway for reading file collections
-// File collections are stored in Redis hash maps (FileStoreMap:ctx:<contextId>
-// Returns file collection as JSON array string for backward compatibility with Enntity
+// GraphQL pathway for reading file collections from GCS
+// Returns file listing as JSON array string
 
-import { loadFileCollection } from '../../../../lib/fileUtils.js';
+import { listFilesForContext, getDefaultContext } from '../../../../lib/fileUtils.js';
 
 export default {
     inputParameters: {
@@ -33,16 +32,10 @@ export default {
         }
         
         try {
-            // Load file collection from Redis hash maps (from all agentContext contexts)
-            const collection = await loadFileCollection(agentContext);
-            
-            // Return as JSON array string for backward compatibility with Enntity
-            // Enntity expects either: [] or { version: "...", files: [...] }
-            // Since we removed versioning, we just return the array directly
-            // Strip internal _contextId before returning
-            const result = (Array.isArray(collection) ? collection : [])
-                .map(({ _contextId, ...file }) => file);
-            return JSON.stringify(result);
+            const ctx = getDefaultContext(agentContext);
+            if (!ctx) return "[]";
+            const files = await listFilesForContext(ctx.contextId, { fileScope: 'all' });
+            return JSON.stringify(files);
         } catch (e) {
             // Log error for debugging
             const logger = (await import('../../../../lib/logger.js')).default;

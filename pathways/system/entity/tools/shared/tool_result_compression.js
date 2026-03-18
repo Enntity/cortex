@@ -43,7 +43,6 @@ export function compressOlderToolResults(messages, store, currentRound, entityTo
 }
 
 const MAX_DEHYDRATED_PAIRS = 10;
-const SET_GOALS_NAME = 'setgoals';
 
 export function dehydrateToolHistory(chatHistory, entityTools, startIndex) {
     const result = [];
@@ -52,10 +51,7 @@ export function dehydrateToolHistory(chatHistory, entityTools, startIndex) {
         const msg = chatHistory[i];
         if (msg.role !== 'assistant' || !msg.tool_calls || msg.tool_calls.length === 0) continue;
 
-        // Filter out SetGoals tool_calls
-        const realCalls = msg.tool_calls.filter(
-            tc => tc.function?.name?.toLowerCase() !== SET_GOALS_NAME
-        );
+        const realCalls = msg.tool_calls;
         if (realCalls.length === 0) continue;
 
         // Build dehydrated assistant message with only real tool_calls

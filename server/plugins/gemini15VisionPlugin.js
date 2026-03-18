@@ -46,9 +46,8 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
                     try {
                         // First try to parse as JSON if it's a string
                         const part = typeof inputPart === 'string' ? JSON.parse(inputPart) : inputPart;
-                        const {type, text, image_url, gcs, url} = part;
-                        // Check for URL in multiple places: gcs, image_url.url, or direct url property
-                        let fileUrl = gcs || image_url?.url || url;
+                        const {type, text, image_url, url} = part;
+                        let fileUrl = image_url?.url || url;
 
                         if (typeof part === 'string') {
                             return { text: inputPart };
@@ -557,13 +556,14 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
 
             const pathwayResolver = requestState[this.requestId]?.pathwayResolver;
 
-            if (finishReason === 'tool_calls' && this.toolCallsBuffer.length > 0 && this.pathwayToolCallback && pathwayResolver) {
+            if (finishReason === 'tool_calls' && this.toolCallsBuffer.length > 0 && this.pathwayToolCallback && pathwayResolver
+                && !pathwayResolver._toolLoopComplete) {
                 // Filter out undefined elements from the tool calls buffer
                 const validToolCalls = this.toolCallsBuffer.filter(tc => tc && tc.function && tc.function.name);
                 // Execute tool callback and keep stream open
                 const toolMessage = {
                     role: 'assistant',
-                    content: this.contentBuffer || '',
+                    content: '',
                     tool_calls: validToolCalls,
                 };
                 // Clear buffers before invoking callback (next synthesis reuses this plugin)

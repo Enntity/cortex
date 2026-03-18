@@ -1,6 +1,6 @@
 {
   "name": "cortex-workspace",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Lightweight workspace client for entity sandboxed Docker containers",
   "main": "server.js",
   "type": "module",

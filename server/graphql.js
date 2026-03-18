@@ -24,8 +24,6 @@ import { cancelRequestResolver } from './resolver.js';
 import subscriptions from './subscriptions.js';
 import { getMessageTypeDefs } from './typeDef.js';
 import { buildRestEndpoints } from './rest.js';
-import { executeWorkspaceResolver, getExecuteWorkspaceTypeDefs } from './executeWorkspace.js';
-
 // Utility functions
 // Server plugins
 const getPlugins = (config) => {
@@ -81,8 +79,6 @@ const getTypedefs = (pathways, pathwayManager) => {
         cancelRequest(requestId: String!): Boolean
     }
 
-    ${getExecuteWorkspaceTypeDefs()}
-
     type RequestSubscription {
         requestId: String
         progress: Float
@@ -135,8 +131,6 @@ const getResolvers = (config, pathways, pathwayManager) => {
     const resolvers = {
         Query: {
             ...queryResolvers,
-            executeWorkspace: (parent, args, contextValue, info) => 
-                executeWorkspaceResolver(parent, args, contextValue, info, config, pathwayManager)
         },
         Mutation: {
             'cancelRequest': cancelRequestResolver,
@@ -217,6 +211,9 @@ const build = async (config) => {
     app.get('/healthcheck', (req, res) => {
         res.status(200).send('OK');
     });
+
+    // Workspace host pool admin endpoints (lazy-loaded, auth-gated internally)
+    app.use('/admin/workspace-hosts', (await import('./workspaceAdmin.js')).default);
 
     // If CORTEX_API_KEY is set, we roll our own auth middleware - usually not used if you're being fronted by a proxy
     const cortexApiKeys = config.get('cortexApiKeys');

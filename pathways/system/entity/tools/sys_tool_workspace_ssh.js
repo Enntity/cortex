@@ -1,13 +1,14 @@
 // sys_tool_workspace_ssh.js
 // Consolidated workspace tool — one shell interface replaces 14 individual tools.
-// Built-in pseudo-commands: files push/pull/backup/restore, bg, poll, reset.
+// Built-in pseudo-commands: files backup/restore, bg, poll, jobs, reset.
+// /workspace/files/ is auto-synced to GCS via gcsfuse — no push/pull needed.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import logger from '../../../../lib/logger.js';
 import { workspaceRequest, destroyWorkspace, workspaceDownloadToFile, workspaceUploadFile } from './shared/workspace_client.js';
 import { loadEntityConfig } from './shared/sys_entity_tools.js';
-import { uploadFileToCloud, addFileToCollection, findFileInCollection, loadFileCollection, getMimeTypeFromFilename } from '../../../../lib/fileUtils.js';
+import { uploadFileToCloud, listFilesForContext, findFileInCollection, getSignedFileUrl, loadFileCollection } from '../../../../lib/fileUtils.js';
 import { axios } from '../../../../lib/requestExecutor.js';
 
 /**
@@ -50,12 +51,65 @@ export function toAbsWorkspacePath(p) {
     return p.startsWith('/') ? p : `/workspace/${p}`;
 }
 
+/**
+ * Extract the last non-empty, non-hint line from stderr — usually the actual
+ * error message (e.g. "ModuleNotFoundError: No module named 'sympy'").
+ */
+function lastMeaningfulLine(stderr) {
+    if (!stderr) return null;
+    const lines = stderr.split('\n')
+        .map(l => l.trim())
+        .filter(l => l && !l.startsWith('hint:') && !l.startsWith('note:'));
+    return lines[lines.length - 1] || null;
+}
+
 // --- Handlers ---
 
 async function handleShell(command, args, resolver) {
-    const { entityId } = args;
-    const timeoutMs = 300000; // 5 min
+    const { entityId, timeoutSeconds } = args;
+    const timeoutMs = timeoutSeconds ? timeoutSeconds * 1000 : 300000; // default 5 min
     const result = await workspaceRequest(entityId, '/shell', { command }, { timeoutMs });
+
+    if (!result.success && !result.error) {
+        result.error = lastMeaningfulLine(result.stderr)
+            || `Command failed (exit code ${result.exitCode})`;
+    }
+
+    // Hint when a failed command looks like it tried to use bg/poll as bash commands
+    if (!result.success && /\bbg\s+|poll\s+[0-9a-f]/i.test(command)) {
+        result.hint = '`bg` and `poll` are built-in commands of this tool, not bash commands. They must be the entire command string — e.g. command: "bg python train.py", not inside scripts or chained with && or ;.';
+    }
+
+    // Auto-detect files created in /workspace/files/ and return signed URLs
+    // so the user can see/download them directly.
+    if (result.success && result.stdout) {
+        try {
+            const fileRefs = result.stdout.match(/\/workspace\/files\/\S+/g);
+            if (fileRefs && fileRefs.length > 0) {
+                const entityConfig = await loadEntityConfig(entityId);
+                const userId = entityConfig?.assocUserIds?.[0];
+                if (userId) {
+                    const collection = await listFilesForContext(userId, { limit: 100 });
+                    if (collection.length > 0) {
+                        const displayLinks = [];
+                        for (const ref of fileRefs.slice(0, 10)) { // cap at 10
+                            const basename = path.basename(ref);
+                            const match = findFileInCollection(basename, collection);
+                            if (match?.url) {
+                                displayLinks.push(`[${basename}](${match.url})`);
+                            }
+                        }
+                        if (displayLinks.length > 0) {
+                            result.displayMarkdown = displayLinks.join('\n');
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // Best-effort — don't fail the command over URL resolution
+            logger.warn(`Failed to resolve file URLs from shell output: ${e.message}`);
+        }
+    }
 
     return JSON.stringify(result);
 }
@@ -67,6 +121,11 @@ async function handleBg(rawBgCommand, args, resolver) {
         background: true,
     }, { timeoutMs: 15000 });
 
+    if (!result.success && !result.error) {
+        result.error = lastMeaningfulLine(result.stderr)
+            || `Command failed (exit code ${result.exitCode})`;
+    }
+
     return JSON.stringify(result);
 }
 
@@ -77,272 +136,27 @@ async function handlePoll(processId, args, resolver) {
         timeoutMs: 10000,
     });
 
-    return JSON.stringify(result);
-}
-
-/** Push a single file from workspace to cloud storage + file collection. (used by files push) */
-async function pushOneFile(absPath, displayName, entityId, contextId, contextKey, chatId, resolver) {
-    const readResult = await workspaceRequest(entityId, '/read', {
-        path: absPath,
-        encoding: 'base64',
-    }, { timeoutMs: 60000 });
-
-    if (!readResult.success) {
-        return { success: false, filename: displayName, error: readResult.error || 'Failed to read file' };
+    if (!result.success && !result.error) {
+        result.error = lastMeaningfulLine(result.stderr)
+            || `Command failed (exit code ${result.exitCode})`;
     }
-
-    const buffer = Buffer.from(readResult.content, 'base64');
-    const mimeType = getMimeTypeFromFilename(displayName);
-
-    const uploadResult = await uploadFileToCloud(buffer, mimeType, displayName, resolver, contextId);
-    if (!uploadResult || !uploadResult.url) {
-        return { success: false, filename: displayName, error: 'Failed to upload to cloud storage' };
-    }
-
-    const fileEntry = await addFileToCollection(
-        contextId,
-        contextKey || '',
-        uploadResult.url,
-        uploadResult.gcs || null,
-        displayName,
-        [],
-        '',
-        uploadResult.hash || null,
-        null,
-        resolver,
-        true,
-        chatId || null,
-        entityId || null
-    );
-
-    return {
-        success: true,
-        filename: displayName,
-        fileId: fileEntry?.id || null,
-        url: uploadResult.url,
-        hash: uploadResult.hash || null,
-    };
-}
-
-const GLOB_CHARS = /[*?[\]]/;
-
-/** Convert a filename glob pattern to a RegExp. Case-insensitive, anchored. */
-export function globToRegex(pattern) {
-    let re = '';
-    for (let i = 0; i < pattern.length; i++) {
-        const ch = pattern[i];
-        if (ch === '*') {
-            re += '[^/]*';
-        } else if (ch === '?') {
-            re += '.';
-        } else if (ch === '[') {
-            // Pass through character class until closing ]
-            const start = i;
-            i++;
-            if (i < pattern.length && pattern[i] === '!') { re += '[^'; i++; }
-            else { re += '['; }
-            while (i < pattern.length && pattern[i] !== ']') {
-                re += pattern[i];
-                i++;
-            }
-            if (i < pattern.length) re += ']';
-            // If unclosed, treat literally
-            if (i >= pattern.length) {
-                re = re.substring(0, re.length - (i - start));
-                re += '\\[' + pattern.substring(start + 1);
-            }
-        } else if ('.+^${}()|\\'.includes(ch)) {
-            re += '\\' + ch;
-        } else {
-            re += ch;
-        }
-    }
-    return new RegExp('^' + re + '$', 'i');
-}
-
-async function handleFilesPush(tokens, args, resolver) {
-    // files push <workspacePath|glob> [displayName]
-    const { entityId, contextId, contextKey, chatId } = args;
-    const workspacePath = tokens[2];
-    if (!workspacePath) {
-
-        return JSON.stringify({ success: false, error: 'Usage: files push <workspacePath|glob> [displayName]' });
-    }
-
-    // If path contains glob characters, expand via shell and push each match
-    if (GLOB_CHARS.test(workspacePath)) {
-        const absPattern = toAbsWorkspacePath(workspacePath);
-        const expandResult = await workspaceRequest(entityId, '/shell', {
-            command: `ls -1d ${absPattern} 2>/dev/null`,
-        }, { timeoutMs: 10000 });
-
-        const files = (expandResult.stdout || '').split('\n').map(l => l.trim()).filter(Boolean);
-        if (files.length === 0) {
-    
-            return JSON.stringify({ success: false, error: `No files matched: ${workspacePath}` });
-        }
-
-        const results = [];
-        for (const filePath of files) {
-            const name = filePath.split('/').pop();
-            results.push(await pushOneFile(filePath, name, entityId, contextId, contextKey, chatId, resolver));
-        }
-
-
-        const succeeded = results.filter(r => r.success);
-        const failed = results.filter(r => !r.success);
-        return JSON.stringify({
-            success: failed.length === 0,
-            pushed: succeeded.length,
-            failed: failed.length,
-            files: results,
-        });
-    }
-
-    // Single file push
-    const absPath = toAbsWorkspacePath(workspacePath);
-    const displayName = tokens[3] || workspacePath.split('/').pop();
-    const result = await pushOneFile(absPath, displayName, entityId, contextId, contextKey, chatId, resolver);
-
 
     return JSON.stringify(result);
 }
 
-/** Pull a single file from cloud storage to workspace. (used by files pull) */
-async function pullOneFile(fileEntry, destPath, entityId) {
-    const cloudUrl = fileEntry.url;
-    const filename = fileEntry.displayFilename || 'unknown';
-
-    if (!cloudUrl) {
-        return { success: false, filename, error: `No URL available for file "${filename}"` };
-    }
-
-    try {
-        const response = await axios.get(cloudUrl, {
-            responseType: 'arraybuffer',
-            timeout: 60000,
-            validateStatus: (status) => status >= 200 && status < 400,
-        });
-
-        if (!response.data) {
-            return { success: false, filename, error: 'Failed to download file from cloud storage' };
-        }
-
-        const b64Content = Buffer.from(response.data).toString('base64');
-        const writeResult = await workspaceRequest(entityId, '/write', {
-            path: destPath,
-            content: b64Content,
-            encoding: 'base64',
-            createDirs: true,
-        }, { timeoutMs: 60000 });
-
-        if (!writeResult.success) {
-            return { success: false, filename, workspacePath: destPath, error: writeResult.error || 'Failed to write file to workspace' };
-        }
-
-        return {
-            success: true,
-            filename,
-            workspacePath: destPath,
-            bytesWritten: writeResult.bytesWritten || response.data.length,
-        };
-    } catch (e) {
-        return { success: false, filename, workspacePath: destPath, error: e.message };
-    }
-}
-
-async function handleFilesPull(tokens, args, resolver) {
-    // files pull <fileRef> [destPath]
-    const { entityId, contextId, contextKey } = args;
-    const fileRef = tokens[2];
-    if (!fileRef) {
-
-        return JSON.stringify({ success: false, error: 'Usage: files pull <fileRef|glob> [destPath]' });
-    }
-
-    const agentContext = args.agentContext;
-    if (!agentContext || !Array.isArray(agentContext) || agentContext.length === 0) {
-
-        return JSON.stringify({
-            success: false,
-            error: 'agentContext is required for files pull. Use FileCollection to find available files.',
-        });
-    }
-
-    const collection = await loadFileCollection(agentContext);
-
-    // Glob path: match pattern against collection filenames
-    if (GLOB_CHARS.test(fileRef)) {
-        const re = globToRegex(fileRef);
-        const matches = collection.filter(f => f.displayFilename && re.test(f.displayFilename));
-
-        if (matches.length === 0) {
-            return JSON.stringify({ success: false, error: `No files matched pattern: "${fileRef}"` });
-        }
-
-        // Resolve destination directory (always treated as directory for glob pulls)
-        const destDir = tokens[3] ? toAbsWorkspacePath(tokens[3]) : '/workspace/';
-        const destBase = destDir.endsWith('/') ? destDir : destDir + '/';
-
-        const results = [];
-        for (const file of matches) {
-            const dest = destBase + file.displayFilename;
-            results.push(await pullOneFile(file, dest, entityId));
-        }
-
-        const succeeded = results.filter(r => r.success);
-        const failed = results.filter(r => !r.success);
-        return JSON.stringify({
-            success: failed.length === 0,
-            pulled: succeeded.length,
-            failed: failed.length,
-            files: results,
-        });
-    }
-
-    // Single-file path
-    const foundFile = findFileInCollection(fileRef, collection);
-    if (!foundFile) {
-        return JSON.stringify({
-            success: false,
-            error: `File not found: "${fileRef}". Use FileCollection to find available files.`,
-        });
-    }
-
-    // Default dest: /workspace/<displayFilename>; normalize relative paths
-    let destPath = tokens[3] ? toAbsWorkspacePath(tokens[3]) : `/workspace/${foundFile.displayFilename || fileRef}`;
-
-    // Handle directory destinations (mirrors Unix cp behavior)
-    if (tokens[3]) {
-        const filename = foundFile.displayFilename || fileRef;
-        if (tokens[3].endsWith('/')) {
-            destPath = destPath.endsWith('/') ? destPath + filename : destPath + '/' + filename;
-        } else {
-            const probeResult = await workspaceRequest(entityId, '/shell', {
-                command: `test -d "${destPath}" && echo DIR`,
-            }, { timeoutMs: 10000 });
-            if (probeResult.success && (probeResult.stdout || '').trim() === 'DIR') {
-                destPath = destPath + '/' + filename;
-            }
-        }
-    }
-
-    const result = await pullOneFile(foundFile, destPath, entityId);
-    if (!result.success) {
-        return JSON.stringify({ success: false, error: result.error });
-    }
-
-    return JSON.stringify({
-        success: true,
-        file: foundFile.displayFilename || fileRef,
-        workspacePath: result.workspacePath,
-        bytesWritten: result.bytesWritten,
+async function handleJobs(args) {
+    const { entityId } = args;
+    const result = await workspaceRequest(entityId, '/shell/jobs', null, {
+        method: 'GET',
+        timeoutMs: 10000,
     });
+
+    return JSON.stringify(result);
 }
 
 async function handleFilesBackup(tokens, args, resolver) {
     // files backup [notes...]
-    const { entityId, contextId, contextKey, chatId } = args;
+    const { entityId, contextId } = args;
     const notes = tokens.slice(2).join(' ') || null;
 
     // 1. Create tarball inside workspace container
@@ -364,35 +178,16 @@ async function handleFilesBackup(tokens, args, resolver) {
         // 3. Upload to cloud storage
         const buffer = fs.readFileSync(tempFile);
         const filename = `workspace-backup-${backupResult.timestamp}.tar.gz`;
-        const uploadResult = await uploadFileToCloud(buffer, 'application/gzip', filename, resolver, contextId);
+        const uploadResult = await uploadFileToCloud(buffer, 'application/gzip', filename, resolver, contextId, args.chatId || null);
 
         if (!uploadResult || !uploadResult.url) {
             return JSON.stringify({ success: false, error: 'Failed to upload backup to cloud storage' });
         }
 
-        // 4. Add to file collection
-        const fileEntry = await addFileToCollection(
-            contextId,
-            contextKey || '',
-            uploadResult.url,
-            uploadResult.gcs || null,
-            filename,
-            ['workspace-backup'],
-            notes || `Workspace backup created at ${backupResult.timestamp}`,
-            uploadResult.hash || null,
-            null,
-            resolver,
-            true,
-            chatId || null,
-            entityId || null
-        );
-
         return JSON.stringify({
             success: true,
             filename,
-            fileId: fileEntry?.id || null,
             url: uploadResult.url,
-            hash: uploadResult.hash || null,
             sizeMB: backupResult.sizeMB,
             timestamp: backupResult.timestamp,
         });
@@ -436,7 +231,7 @@ async function handleFilesRestore(tokens, args, resolver) {
         return JSON.stringify({ success: false, error: `No URL available for backup "${foundFile.displayFilename || fileRef}"` });
     }
 
-    // Stream download from cloud → Cortex temp file → stream upload to container
+    // Stream download from cloud -> Cortex temp file -> stream upload to container
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-restore-'));
     const tempFile = path.join(tempDir, 'restore.tar.gz');
     const archivePath = '/tmp/workspace-restore.tar.gz';
@@ -516,7 +311,7 @@ async function handleReset(tokens, args, resolver) {
     if (destroy) {
         const entityConfig = await loadEntityConfig(entityId);
         if (!entityConfig) {
-    
+
             return JSON.stringify({ success: false, error: 'Entity not found' });
         }
 
@@ -551,8 +346,6 @@ function routeCommand(command) {
     if ((first === 'files' || first === 'scp') && tokens.length >= 2) {
         const sub = tokens[1].toLowerCase();
         switch (sub) {
-            case 'push':    return { handler: handleFilesPush, tokens };
-            case 'pull':    return { handler: handleFilesPull, tokens };
             case 'backup':  return { handler: handleFilesBackup, tokens };
             case 'restore': return { handler: handleFilesRestore, tokens };
             // Any other subcommand (e.g. scp user@host:/path) falls through to shell
@@ -569,6 +362,10 @@ function routeCommand(command) {
         const processId = tokens[1];
         if (!processId) return null; // let it fall to shell (will error naturally)
         return { handler: handlePoll, processId };
+    }
+
+    if (first === 'jobs') {
+        return { handler: handleJobs };
     }
 
     if (first === 'reset') {
@@ -590,12 +387,14 @@ export default {
         function: {
             name: 'WorkspaceSSH',
             description: `Execute commands in your workspace — a persistent Linux container (cwd: /workspace). Built-in commands:
-• files push <path|glob> [name] — upload file(s) to your file collection. Supports globs: files push *.jpg
-• files pull <fileRef|glob> [dest] — download from file collection to workspace. Supports globs: files pull *.jpg /dest/
 • files backup [notes] / files restore <ref> — snapshot or restore entire workspace
-• bg <cmd> — run in background, returns processId. poll <id> — check result
+• bg <cmd> — run in background, returns processId. poll <id> — check result. jobs — list all background processes
 • reset [--preserve .env] — wipe workspace contents
-Everything else runs as bash. Both relative and absolute paths work.`,
+Everything else runs as bash. Both relative and absolute paths work.
+
+/workspace/files/ is auto-synced cloud storage (GCS via gcsfuse). Files written there are automatically available via signed URLs. No manual push/pull needed.
+
+IMPORTANT: bg, poll, jobs, and reset are built-in commands — they must be the ENTIRE command string. Do not chain them with && or embed in scripts.`,
             parameters: {
                 type: 'object',
                 properties: {
@@ -606,6 +405,10 @@ Everything else runs as bash. Both relative and absolute paths work.`,
                     userMessage: {
                         type: 'string',
                         description: 'Brief display message',
+                    },
+                    timeoutSeconds: {
+                        type: 'number',
+                        description: 'Optional timeout in seconds for long-running commands. Defaults to 300 (5 min).',
                     },
                 },
                 required: ['command', 'userMessage'],
@@ -637,11 +440,15 @@ Everything else runs as bash. Both relative and absolute paths work.`,
                 return route.handler(route.processId, args, resolver);
             }
 
+            if (route.handler === handleJobs) {
+                return route.handler(args);
+            }
+
             // files and reset handlers receive tokens
             return route.handler(route.tokens, args, resolver);
         } catch (e) {
             logger.error(`WorkspaceSSH error: ${e.message}`);
-    
+
             return JSON.stringify({ success: false, error: e.message });
         }
     },

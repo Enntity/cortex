@@ -289,6 +289,28 @@
             "maxReturnTokens": 100000,
             "supportsStreaming": true
         },
+        "oai-gpt54": {
+            "type": "OPENAI-RESPONSES",
+            "emulateOpenAIChatModel": "gpt-5.4",
+            "reasoningEffortMap": { "none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/responses",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "gpt-5.4"
+                    },
+                    "requestsPerSecond": 50
+                }
+            ],
+            "maxTokenLength": 1050000,
+            "maxReturnTokens": 128000,
+            "supportsStreaming": true
+        },
         "oai-gpt52": {
             "type": "OPENAI-REASONING-VISION",
             "emulateOpenAIChatModel": "gpt-5.2",
@@ -484,6 +506,24 @@
             "requestsPerSecond": 10,
             "maxTokenLength": 1048576,
             "maxReturnTokens": 65535,
+            "supportsStreaming": true
+        },
+        "gemini-flash-31-lite-vision": {
+            "type": "GEMINI-3-REASONING-VISION",
+            "emulateOpenAIChatModel": "gemini-flash-31-lite",
+            "endpoints": [
+                {
+                    "name": "GLOBAL GEMINI-3.1-FLASH-LITE-VISION",
+                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/gemini-3.1-flash-lite-preview",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "requestsPerSecond": 10,
+            "maxTokenLength": 1048576,
+            "maxReturnTokens": 65536,
             "supportsStreaming": true
         },
         "claude-45-sonnet": {

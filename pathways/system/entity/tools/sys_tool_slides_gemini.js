@@ -1,7 +1,7 @@
 // sys_tool_slides_gemini.js
 // Entity tool that creates slides, infographics, and presentations using Gemini 3 Pro image generation
 import { callPathway } from '../../../../lib/pathwayTools.js';
-import { uploadImageToCloud, addFileToCollection, resolveFileParameter, buildFileCreationResponse } from '../../../../lib/fileUtils.js';
+import { uploadImageToCloud, resolveFileParameter, buildFileCreationResponse } from '../../../../lib/fileUtils.js';
 
 export default {
     prompt: [],
@@ -47,7 +47,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Optional: Array of file references (hashes, filenames, or URLs) from the file collection to use as reference images for the slide design. These images will be used as style references or incorporated into the slide. Maximum 3 images."
+                        description: "Optional: Array of file references (filenames, blob paths, or URLs) from the file collection to use as reference images for the slide design. These images will be used as style references or incorporated into the slide. Maximum 3 images."
                     },
                     aspectRatio: {
                         type: "string",
@@ -67,8 +67,7 @@ export default {
             let model = "gemini-pro-3-image";
             let prompt = args.detailedInstructions || "";
             
-            // Resolve input images to URLs using the common utility
-            // For Gemini, prefer GCS URLs over Azure URLs
+            // Resolve input images to URLs using the common utility.
             // Fail early if any provided image cannot be resolved
             const resolvedInputImages = [];
             if (args.inputImages && Array.isArray(args.inputImages)) {
@@ -81,7 +80,7 @@ export default {
                 
                 for (let i = 0; i < imagesToProcess.length; i++) {
                     const imageRef = imagesToProcess[i];
-                    const resolved = await resolveFileParameter(imageRef, args.agentContext, { preferGcs: true });
+                    const resolved = await resolveFileParameter(imageRef, args.agentContext);
                     if (!resolved) {
                         throw new Error(`File not found: "${imageRef}". Use FileCollection to find available files.`);
                     }
@@ -136,62 +135,33 @@ export default {
                 for (const artifact of pathwayResolver.pathwayResultData.artifacts) {
                     if (artifact.type === 'image' && artifact.data && artifact.mimeType) {
                         try {
-                            // Upload image to cloud storage (returns {url, gcs, hash})
-                            const uploadResult = await uploadImageToCloud(artifact.data, artifact.mimeType, pathwayResolver, args.contextId);
-                            
+                            // Upload image to cloud storage (returns canonical file metadata)
+                            const uploadResult = await uploadImageToCloud(artifact.data, artifact.mimeType, null, pathwayResolver, args.contextId, args.chatId || null);
+
                             const imageUrl = uploadResult.url || uploadResult;
-                            const imageGcs = uploadResult.gcs || null;
-                            const imageHash = uploadResult.hash || null;
+                            const imageFilename = uploadResult.filename || null;
                             
                             // Prepare image data
+                            const extension = artifact.mimeType.split('/')[1] || 'png';
+                            const prefix = (args.filenamePrefix || 'presentation-slide').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+                            const slideFilename = `${prefix}-${Date.now()}-${uploadedImages.length}.${extension}`;
+
                             const imageData = {
                                 type: 'image',
                                 url: imageUrl,
-                                gcs: imageGcs,
-                                hash: imageHash,
+                                filename: imageFilename || slideFilename,
                                 mimeType: artifact.mimeType
                             };
-                            
-                            // Add uploaded image to file collection if contextId is available
+
+                            // Upload is already done — file is in GCS
                             if (args.contextId && imageUrl) {
                                 try {
-                                    // Generate filename from mimeType (e.g., "image/png" -> "png")
-                                    const extension = artifact.mimeType.split('/')[1] || 'png';
-                                    // Use hash for uniqueness if available, otherwise use timestamp and index
-                                    const uniqueId = imageHash ? imageHash.substring(0, 8) : `${Date.now()}-${uploadedImages.length}`;
-                                    
-                                    // Determine filename prefix
-                                    const defaultPrefix = 'presentation-slide';
-                                    const filenamePrefix = args.filenamePrefix || defaultPrefix;
-                                    
-                                    // Sanitize the prefix to ensure it's a valid filename component
-                                    const sanitizedPrefix = filenamePrefix.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-                                    const filename = `${sanitizedPrefix}-${uniqueId}.${extension}`;
-                                    
-                                    // Merge provided tags with default tags
-                                    const defaultTags = ['presentation', 'generated'];
-                                    const providedTags = Array.isArray(args.tags) ? args.tags : [];
-                                    const allTags = [...defaultTags, ...providedTags.filter(tag => !defaultTags.includes(tag))];
-                                    
-                                    // Use the centralized utility function to add to collection - capture returned entry
-                                    const fileEntry = await addFileToCollection(
-                                        args.contextId,
-                                        args.contextKey || '',
-                                        imageUrl,
-                                        imageGcs,
-                                        filename,
-                                        allTags,
-                                        `Generated presentation content from prompt: ${args.detailedInstructions || 'presentation generation'}`,
-                                        imageHash,
-                                        null,
-                                        pathwayResolver,
-                                        true, // permanent => retention=permanent
-                                        chatId,
-                                        args.entityId || null
-                                    );
-                                    
-                                    // Use the file entry data for the return message
-                                    imageData.fileEntry = fileEntry;
+                                    imageData.fileEntry = {
+                                        url: imageUrl,
+                                        blobPath: uploadResult.blobPath || null,
+                                        filename: imageFilename || slideFilename,
+                                        displayFilename: slideFilename,
+                                    };
                                 } catch (collectionError) {
                                     // Log but don't fail - file collection is optional
                                     pathwayResolver.logWarning(`Failed to add image to file collection: ${collectionError.message}`);
@@ -216,23 +186,19 @@ export default {
                     // Build imageUrls array in the format expected by pathwayTools.js for toolImages injection
                     // This format matches ViewImages tool so images get properly injected into chat history
                     const imageUrls = successfulImages.map((img) => {
-                        const url = img.fileEntry?.url || img.url;
-                        const gcs = img.fileEntry?.gcs || img.gcs;
-                        const hash = img.fileEntry?.hash || img.hash;
-                        
                         return {
                             type: "image_url",
-                            url: url,
-                            gcs: gcs || null,
-                            image_url: { url: url },
-                            hash: hash || null
+                            url: img.fileEntry?.url || img.url,
+                            image_url: { url: img.fileEntry?.url || img.url },
+                            blobPath: img.fileEntry?.blobPath || img.blobPath || null,
+                            filename: img.fileEntry?.filename || img.filename || null,
                         };
                     });
                     
                     return buildFileCreationResponse(successfulImages, {
                         mediaType: 'image',
                         action: 'Slide/infographic generation',
-                        legacyUrls: imageUrls
+                        imageUrls
                     });
                 } else {
                     throw new Error('Slide generation failed: Content was generated but could not be uploaded to storage');
@@ -282,4 +248,3 @@ export default {
         }
     }
 };
-
