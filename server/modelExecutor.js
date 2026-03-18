@@ -33,6 +33,7 @@ import GroqChatPlugin from './plugins/groqChatPlugin.js';
 import VeoVideoPlugin from './plugins/veoVideoPlugin.js';
 import GrokVisionPlugin from './plugins/grokVisionPlugin.js';
 import GrokResponsesPlugin from './plugins/grokResponsesPlugin.js';
+import OpenAIResponsesPlugin from './plugins/openAiResponsesPlugin.js';
 import AzureFoundryAgentsPlugin from './plugins/azureFoundryAgentsPlugin.js';
 import GoogleCsePlugin from './plugins/googleCsePlugin.js';
 
@@ -86,6 +87,9 @@ class ModelExecutor {
                 break;
             case 'OPENAI-REASONING-VISION':
                 plugin = new OpenAIReasoningVisionPlugin(pathway, model);
+                break;
+            case 'OPENAI-RESPONSES':
+                plugin = new OpenAIResponsesPlugin(pathway, model);
                 break;
             case 'GEMINI-1.5-VISION':
                 plugin = new Gemini15VisionPlugin(pathway, model);

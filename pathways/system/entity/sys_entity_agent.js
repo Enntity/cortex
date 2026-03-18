@@ -429,11 +429,15 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools, enti
     if (allToolImages.length > 0) {
         finalMessages.push({
             role: "user",
-            content: allToolImages.map(img => ({
-                type: "image_url",
-                url: img.url,
-                image_url: { url: img.url },
-            }))
+            content: allToolImages
+                .filter(img => img?.url)
+                .map(img => ({
+                    type: "image_url",
+                    url: img.url,
+                    image_url: { url: img.url },
+                    ...(img.blobPath ? { blobPath: img.blobPath } : {}),
+                    ...(img.filename ? { filename: img.filename } : {}),
+                }))
         });
     }
 
@@ -1107,7 +1111,11 @@ export default {
             }
             lastUserMessage.content.push(...entityResources.map(resource => ({
                 type: "image_url", url: resource?.url,
-                image_url: { url: resource?.url }, originalFilename: resource?.name
+                image_url: { url: resource?.url },
+                ...(resource?.blobPath ? { blobPath: resource.blobPath } : {}),
+                ...(resource?.filename || resource?.name
+                    ? { originalFilename: resource.filename || resource.name }
+                    : {}),
             })));
         }
 

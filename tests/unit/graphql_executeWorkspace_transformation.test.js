@@ -48,7 +48,7 @@ test('should format cortex pathway arguments correctly with existing chatHistory
             {
                 role: 'user',
                 content: [
-                    '{"type":"image_url","url":"test-url","image_url":{"url":"test-url"},"gcs":"test-gcs","originalFilename":"test.jpg","hash":"test-hash"}'
+                    '{"type":"image_url","url":"test-url","image_url":{"url":"test-url"},"blobPath":"user-1/global/test.jpg","originalFilename":"test.jpg"}'
                 ]
             }
         ]
@@ -124,7 +124,7 @@ test('should format cortex pathway arguments correctly with existing chatHistory
     // Check the image content is preserved second
     const imageContent = JSON.parse(userMessage.content[1]);
     t.is(imageContent.type, 'image_url');
-    t.is(imageContent.gcs, 'test-gcs');
+    t.is(imageContent.blobPath, 'user-1/global/test.jpg');
 });
 
 test('should create new user message when no existing chatHistory', (t) => {

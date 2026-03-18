@@ -34,7 +34,7 @@ export default {
                                 },
                                 file: {
                                     type: "string",
-                                    description: "For image/video items: a file reference from FileCollection (hash, filename, URL, or GCS URL)."
+                                    description: "For image/video items: a file reference from FileCollection (filename, blob path, or URL)."
                                 },
                                 duration: {
                                     type: "number",

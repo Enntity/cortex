@@ -5,13 +5,13 @@
  * testing how the manager processes and transforms pathway prompts that include file attachments.
  * 
  * Key functionality tested:
- * - File hash transformation from 'files' to 'fileHashes' property
- * - Collection and deduplication of file hashes at the pathway level
+ * - File reference transformation from 'files' to 'fileRefs' property
+ * - Collection and deduplication of file references at the pathway level
  * - Backward compatibility with legacy string-based prompts without file attachments
  * - Handling of edge cases (null, undefined, empty file arrays)
  * - Prompt object creation with file metadata
  * 
- * The PathwayManager allows prompts to reference files by their hashes, which are then
+ * The PathwayManager allows prompts to reference files, which are then
  * processed and made available to the execution context. This test suite ensures that
  * file metadata is correctly preserved, transformed, and aggregated during pathway processing.
  * 
@@ -19,7 +19,7 @@
  * 1. Prompts with multiple file attachments
  * 2. Prompts with empty or missing file arrays
  * 3. Legacy string prompts (no file support)
- * 4. Duplicate file hash deduplication
+ * 4. Duplicate file reference deduplication
  * 5. Null/undefined file handling
  * 6. Direct prompt object creation with files
  */
@@ -99,22 +99,22 @@ test('pathwayManager handles prompt format with files correctly', async t => {
     // Verify first prompt with files
     const firstPrompt = transformedPathway.prompt[0];
     t.is(firstPrompt.name, 'Analyze Document');
-    t.truthy(firstPrompt.fileHashes);
-    t.deepEqual(firstPrompt.fileHashes, ['abc123def456', 'def456ghi789']);
+    t.truthy(firstPrompt.fileRefs);
+    t.deepEqual(firstPrompt.fileRefs, ['abc123def456', 'def456ghi789']);
     
     // Verify second prompt with empty files
     const secondPrompt = transformedPathway.prompt[1];
     t.is(secondPrompt.name, 'Summarize Text');
-    t.falsy(secondPrompt.fileHashes); // Empty array results in no fileHashes property
+    t.falsy(secondPrompt.fileRefs); // Empty array results in no fileRefs property
     
     // Verify third prompt without files property
     const thirdPrompt = transformedPathway.prompt[2];
     t.is(thirdPrompt.name, 'Simple Task');
-    t.falsy(thirdPrompt.fileHashes);
+    t.falsy(thirdPrompt.fileRefs);
     
-    // Verify pathway-level file hashes collection
-    t.truthy(transformedPathway.fileHashes);
-    t.deepEqual(transformedPathway.fileHashes, ['abc123def456', 'def456ghi789']);
+    // Verify pathway-level file reference collection
+    t.truthy(transformedPathway.fileRefs);
+    t.deepEqual(transformedPathway.fileRefs, ['abc123def456', 'def456ghi789']);
 });
 
 test('pathwayManager handles legacy string prompts correctly', async t => {
@@ -140,22 +140,22 @@ test('pathwayManager handles legacy string prompts correctly', async t => {
     t.true(Array.isArray(transformedPathway.prompt));
     t.is(transformedPathway.prompt.length, 2);
     
-    // Verify prompts don't have file hashes
+    // Verify prompts don't have file references
     transformedPathway.prompt.forEach(prompt => {
-        t.falsy(prompt.fileHashes);
+        t.falsy(prompt.fileRefs);
     });
     
-    // Verify no pathway-level file hashes
-    t.falsy(transformedPathway.fileHashes);
+    // Verify no pathway-level file references
+    t.falsy(transformedPathway.fileRefs);
 });
 
-test('pathwayManager removes duplicate file hashes at pathway level', async t => {
+test('pathwayManager removes duplicate file references at pathway level', async t => {
     const pathwayManager = new PathwayManager(mockConfig, mockBasePathway);
     
     // Replace storage with mock
     pathwayManager.storage = new MockStorageStrategy();
     
-    // Test prompts with duplicate file hashes
+    // Test prompts with duplicate file references
     const pathwayWithDuplicateFiles = {
         prompt: [
             {
@@ -175,10 +175,10 @@ test('pathwayManager removes duplicate file hashes at pathway level', async t =>
     // Test transformPrompts method
     const transformedPathway = await pathwayManager.transformPrompts(pathwayWithDuplicateFiles);
     
-    // Verify pathway-level file hashes are deduplicated
-    t.truthy(transformedPathway.fileHashes);
-    t.deepEqual(transformedPathway.fileHashes, ['abc123def456', 'def456ghi789', 'ghi789jkl012']);
-    t.is(transformedPathway.fileHashes.length, 3); // Should not have duplicates
+    // Verify pathway-level file references are deduplicated
+    t.truthy(transformedPathway.fileRefs);
+    t.deepEqual(transformedPathway.fileRefs, ['abc123def456', 'def456ghi789', 'ghi789jkl012']);
+    t.is(transformedPathway.fileRefs.length, 3); // Should not have duplicates
 });
 
 test('pathwayManager handles null and undefined files gracefully', async t => {
@@ -211,13 +211,13 @@ test('pathwayManager handles null and undefined files gracefully', async t => {
     t.truthy(transformedPathway);
     t.true(Array.isArray(transformedPathway.prompt));
     
-    // Both prompts should have empty or undefined fileHashes
+    // Both prompts should have empty or undefined fileRefs
     transformedPathway.prompt.forEach(prompt => {
-        t.true(!prompt.fileHashes || prompt.fileHashes.length === 0);
+        t.true(!prompt.fileRefs || prompt.fileRefs.length === 0);
     });
     
-    // No pathway-level file hashes should be set
-    t.falsy(transformedPathway.fileHashes);
+    // No pathway-level file references should be set
+    t.falsy(transformedPathway.fileRefs);
 });
 
 test('pathwayManager _createPromptObject handles files correctly', t => {
@@ -233,15 +233,15 @@ test('pathwayManager _createPromptObject handles files correctly', t => {
     const createdPrompt = pathwayManager._createPromptObject(promptWithFiles, 'System prompt');
     
     t.is(createdPrompt.name, 'Test Prompt');
-    t.truthy(createdPrompt.fileHashes);
-    t.deepEqual(createdPrompt.fileHashes, ['file1hash', 'file2hash']);
+    t.truthy(createdPrompt.fileRefs);
+    t.deepEqual(createdPrompt.fileRefs, ['file1hash', 'file2hash']);
     
     // Test with string prompt (no files)
     const stringPrompt = 'Simple text prompt';
     const createdStringPrompt = pathwayManager._createPromptObject(stringPrompt, 'System prompt', 'Default Name');
     
     t.is(createdStringPrompt.name, 'Default Name');
-    t.falsy(createdStringPrompt.fileHashes);
+    t.falsy(createdStringPrompt.fileRefs);
     
     // Test with object prompt without files
     const promptWithoutFiles = {
@@ -252,5 +252,5 @@ test('pathwayManager _createPromptObject handles files correctly', t => {
     const createdPromptNoFiles = pathwayManager._createPromptObject(promptWithoutFiles, 'System prompt');
     
     t.is(createdPromptNoFiles.name, 'No Files Prompt');
-    t.falsy(createdPromptNoFiles.fileHashes);
+    t.falsy(createdPromptNoFiles.fileRefs);
 });

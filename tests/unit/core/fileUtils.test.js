@@ -54,9 +54,9 @@ test('isTextMimeType: binary types', t => {
 // ─── findFileInCollection ────────────────────────────────────────────────────
 
 const mockFiles = [
-    { filename: 'report.pdf', displayFilename: 'Q4 Report', url: 'gs://bucket/user1/global/report.pdf', contentType: 'application/pdf' },
-    { filename: 'photo.jpg', displayFilename: 'Vacation Photo', url: 'gs://bucket/user1/global/photo.jpg', contentType: 'image/jpeg' },
-    { filename: 'data.csv', displayFilename: 'Sales Data', url: 'gs://bucket/user1/global/data.csv', contentType: 'text/csv' },
+    { filename: 'report.pdf', displayFilename: 'Q4 Report', url: 'https://files.example.com/report.pdf', blobPath: 'user1/global/report.pdf', contentType: 'application/pdf' },
+    { filename: 'photo.jpg', displayFilename: 'Vacation Photo', url: 'https://files.example.com/photo.jpg', blobPath: 'user1/global/photo.jpg', contentType: 'image/jpeg' },
+    { filename: 'data.csv', displayFilename: 'Sales Data', url: 'https://files.example.com/data.csv', blobPath: 'user1/global/data.csv', contentType: 'text/csv' },
 ];
 
 test('findFileInCollection: by filename', t => {
@@ -84,7 +84,13 @@ test('findFileInCollection: partial match', t => {
 });
 
 test('findFileInCollection: by URL', t => {
-    const found = fileUtils.findFileInCollection('gs://bucket/user1/global/photo.jpg', mockFiles);
+    const found = fileUtils.findFileInCollection('https://files.example.com/photo.jpg', mockFiles);
+    t.truthy(found);
+    t.is(found.filename, 'photo.jpg');
+});
+
+test('findFileInCollection: by blob path', t => {
+    const found = fileUtils.findFileInCollection('user1/global/photo.jpg', mockFiles);
     t.truthy(found);
     t.is(found.filename, 'photo.jpg');
 });

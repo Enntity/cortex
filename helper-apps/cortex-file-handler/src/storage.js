@@ -106,7 +106,7 @@ export function getBucket() {
  * @param {Buffer} buffer
  * @param {string} blobName - Full path within the bucket
  * @param {string} contentType
- * @returns {Promise<{url: string, blobName: string}>}
+ * @returns {Promise<{blobPath: string}>}
  */
 export async function uploadBuffer(buffer, blobName, contentType = "application/octet-stream") {
   let resolvedType = contentType;
@@ -126,7 +126,7 @@ export async function uploadBuffer(buffer, blobName, contentType = "application/
         maxContentLength: Infinity,
       }
     );
-    return { url: `gs://${bucketName}/${blobName}`, blobName };
+    return { blobPath: blobName };
   }
 
   const bucket = getBucket();
@@ -135,7 +135,7 @@ export async function uploadBuffer(buffer, blobName, contentType = "application/
     metadata: { contentType: resolvedType },
     resumable: false,
   });
-  return { url: `gs://${bucketName}/${blobName}`, blobName };
+  return { blobPath: blobName };
 }
 
 /**
@@ -143,7 +143,7 @@ export async function uploadBuffer(buffer, blobName, contentType = "application/
  * @param {import('stream').Readable} stream
  * @param {string} blobName
  * @param {string} contentType
- * @returns {Promise<string>} gs:// URL
+ * @returns {Promise<string>} Blob path
  */
 export async function uploadStream(stream, blobName, contentType = "application/octet-stream") {
   let resolvedType = contentType;
@@ -169,7 +169,7 @@ export async function uploadStream(stream, blobName, contentType = "application/
         maxContentLength: Infinity,
       }
     );
-    return `gs://${bucketName}/${blobName}`;
+    return blobName;
   }
 
   const bucket = getBucket();
@@ -184,30 +184,25 @@ export async function uploadStream(stream, blobName, contentType = "application/
     stream.on("error", reject);
   });
 
-  return `gs://${bucketName}/${blobName}`;
+  return blobName;
 }
 
 /**
- * Delete a file by its gs:// URL.
- * @param {string} gcsUrl - gs://bucket/path
+ * Delete a file by its blob path within the bucket.
+ * @param {string} blobPath
  */
-export async function deleteFile(gcsUrl) {
-  if (!gcsUrl || !gcsUrl.startsWith("gs://")) {
-    throw new Error("Invalid GCS URL");
-  }
-
-  const { bucket: bucketName, filePath } = parseGcsUrl(gcsUrl);
+export async function deleteFile(blobPath) {
+  const filePath = normalizeBlobPath(blobPath);
 
   if (isEmulator()) {
     await axios.delete(
-      `${emulatorHost()}/storage/v1/b/${bucketName}/o/${encodeURIComponent(filePath)}`,
+      `${emulatorHost()}/storage/v1/b/${getGCSBucketName()}/o/${encodeURIComponent(filePath)}`,
       { validateStatus: (s) => s === 200 || s === 204 || s === 404 }
     );
     return;
   }
 
-  const storage = getStorage();
-  const file = storage.bucket(bucketName).file(filePath);
+  const file = getBucket().file(filePath);
   try {
     await file.delete();
   } catch (err) {
@@ -266,19 +261,19 @@ export async function deleteByPrefix(prefix) {
 }
 
 /**
- * Check if a file exists at a gs:// URL.
- * @param {string} gcsUrl
+ * Check if a file exists at a blob path.
+ * @param {string} blobPath
  * @returns {Promise<boolean>}
  */
-export async function fileExists(gcsUrl) {
-  if (!gcsUrl || !gcsUrl.startsWith("gs://")) return false;
+export async function fileExists(blobPath) {
+  if (!blobPath) return false;
 
-  const { bucket: bucketName, filePath } = parseGcsUrl(gcsUrl);
+  const filePath = normalizeBlobPath(blobPath);
 
   if (isEmulator()) {
     try {
       const resp = await axios.get(
-        `${emulatorHost()}/storage/v1/b/${bucketName}/o/${encodeURIComponent(filePath)}`,
+        `${emulatorHost()}/storage/v1/b/${getGCSBucketName()}/o/${encodeURIComponent(filePath)}`,
         { validateStatus: (s) => s === 200 || s === 404 }
       );
       return resp.status === 200;
@@ -287,28 +282,23 @@ export async function fileExists(gcsUrl) {
     }
   }
 
-  const storage = getStorage();
-  const file = storage.bucket(bucketName).file(filePath);
+  const file = getBucket().file(filePath);
   const [exists] = await file.exists();
   return exists;
 }
 
 /**
- * Download a GCS file to a local path.
- * @param {string} gcsUrl
+ * Download a blob path to a local path.
+ * @param {string} blobPath
  * @param {string} destPath
  */
-export async function downloadToFile(gcsUrl, destPath) {
-  if (!gcsUrl || !gcsUrl.startsWith("gs://")) {
-    throw new Error("Invalid GCS URL");
-  }
-
-  const { bucket: bucketName, filePath } = parseGcsUrl(gcsUrl);
+export async function downloadToFile(blobPath, destPath) {
+  const filePath = normalizeBlobPath(blobPath);
 
   if (isEmulator()) {
     const response = await axios({
       method: "GET",
-      url: `${emulatorHost()}/storage/v1/b/${bucketName}/o/${encodeURIComponent(filePath)}?alt=media`,
+      url: `${emulatorHost()}/storage/v1/b/${getGCSBucketName()}/o/${encodeURIComponent(filePath)}?alt=media`,
       responseType: "stream",
     });
     const writer = fs.createWriteStream(destPath);
@@ -321,31 +311,25 @@ export async function downloadToFile(gcsUrl, destPath) {
     return;
   }
 
-  const storage = getStorage();
-  const file = storage.bucket(bucketName).file(filePath);
+  const file = getBucket().file(filePath);
   await file.download({ destination: destPath });
 }
 
 /**
- * Generate a time-limited signed URL for a gs:// file.
- * @param {string} gcsUrl - gs://bucket/path
+ * Generate a time-limited signed URL for a blob path.
+ * @param {string} blobPath
  * @param {number} minutes - Expiration time in minutes (default 5)
  * @returns {Promise<string>} Signed HTTPS URL
  */
-export async function getSignedUrl(gcsUrl, minutes = 5) {
-  if (!gcsUrl || !gcsUrl.startsWith("gs://")) {
-    throw new Error("Invalid GCS URL");
-  }
-
-  const { bucket: bucketName, filePath } = parseGcsUrl(gcsUrl);
+export async function getSignedUrl(blobPath, minutes = 5) {
+  const filePath = normalizeBlobPath(blobPath);
 
   if (isEmulator()) {
     // Emulator doesn't support signed URLs — return a direct download link
-    return `${emulatorHost()}/storage/v1/b/${bucketName}/o/${encodeURIComponent(filePath)}?alt=media`;
+    return `${emulatorHost()}/storage/v1/b/${getGCSBucketName()}/o/${encodeURIComponent(filePath)}?alt=media`;
   }
 
-  const storage = getStorage();
-  const file = storage.bucket(bucketName).file(filePath);
+  const file = getBucket().file(filePath);
   const [url] = await file.getSignedUrl({
     version: "v4",
     action: "read",
@@ -357,7 +341,7 @@ export async function getSignedUrl(gcsUrl, minutes = 5) {
 /**
  * List files under a GCS prefix (folder). Returns metadata with signed URLs.
  * @param {string} prefix - Folder prefix in the bucket
- * @returns {Promise<Array<{name: string, filename: string, hash: string, size: number, contentType: string, lastModified: string, url: string}>>}
+ * @returns {Promise<Array<{blobPath: string, filename: string, displayFilename: string, size: number, contentType: string, lastModified: string, url: string}>>}
  */
 export async function listFolder(prefix) {
   const bucketName = getGCSBucketName();
@@ -376,7 +360,7 @@ export async function listFolder(prefix) {
         const filename = path.basename(item.name);
         const signedUrl = `${emulatorHost()}/storage/v1/b/${bucketName}/o/${encodeURIComponent(item.name)}?alt=media`;
         results.push({
-          name: item.name,
+          blobPath: item.name,
           filename,
           displayFilename: filename,
           size: parseInt(item.size || "0", 10),
@@ -395,17 +379,11 @@ export async function listFolder(prefix) {
   for (const file of files) {
     const filename = path.basename(file.name);
 
-    let signedUrl;
-    try {
-      const gcsUrlStr = `gs://${bucketName}/${file.name}`;
-      signedUrl = await getSignedUrl(gcsUrlStr, 60);
-    } catch {
-      signedUrl = `gs://${bucketName}/${file.name}`;
-    }
+    const signedUrl = await getSignedUrl(file.name, 60);
 
     const metadata = file.metadata || {};
     results.push({
-      name: file.name,
+      blobPath: file.name,
       filename,
       displayFilename: filename,
       size: parseInt(metadata.size || "0", 10),
@@ -461,18 +439,14 @@ export function constructFolderPath({ userId, chatId, fileScope } = {}) {
 // --- Internal helpers ---
 
 /**
- * Parse a gs:// URL into bucket name and file path.
+ * Normalize a blob path.
  */
-function parseGcsUrl(url) {
-  const withoutProtocol = url.replace("gs://", "");
-  const slashIndex = withoutProtocol.indexOf("/");
-  if (slashIndex === -1) {
-    return { bucket: withoutProtocol, filePath: "" };
+function normalizeBlobPath(blobPath) {
+  const normalized = String(blobPath || "").replace(/^\/+/, "");
+  if (!normalized) {
+    throw new Error("Invalid blob path");
   }
-  return {
-    bucket: withoutProtocol.slice(0, slashIndex),
-    filePath: withoutProtocol.slice(slashIndex + 1),
-  };
+  return normalized;
 }
 
 /**

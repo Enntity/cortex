@@ -145,7 +145,7 @@ async function convertContentItemClaude4(item, maxImageSize, plugin) {
           case "image_url":
             // Handle images and documents coming as image_url type
             // May include: image_url.url, url, originalFilename
-            // Note: gcs URLs are for Google models only, Claude uses the main url
+            // Blob-path metadata is ignored here; Claude consumes the resolved URL.
             // Handle both: { image_url: "string" } and { image_url: { url: "string" } }
             let imageUrl = item.url || item.image_url?.url;
             if (typeof item.image_url === 'string') {
@@ -682,4 +682,3 @@ class Claude4VertexPlugin extends Claude3VertexPlugin {
 }
 
 export default Claude4VertexPlugin;
-

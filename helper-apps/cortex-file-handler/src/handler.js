@@ -18,11 +18,26 @@ import { sanitizeFilename, constructBlobName } from "./utils.js";
 
 const DEFAULT_SIGNED_MINUTES = 5;
 
-/**
- * Build a canonical gs:// URL.
- */
-function gcsUrl(blobName) {
-  return `gs://${getGCSBucketName()}/${blobName}`;
+function buildFileResponse({
+  publicUrl,
+  blobPath,
+  filename,
+  size,
+  contentType,
+  message,
+  expiresInMinutes,
+}) {
+  return Object.fromEntries(
+    Object.entries({
+      url: publicUrl,
+      blobPath,
+      filename,
+      size,
+      contentType,
+      message,
+      expiresInMinutes,
+    }).filter(([, value]) => value !== undefined && value !== null)
+  );
 }
 
 /**
@@ -32,9 +47,9 @@ function gcsUrl(blobName) {
 async function findByName(filename, folderPath = "") {
   const files = await listFolder(folderPath);
   const match = files.find(
-    (f) => f.filename === filename || f.name === `${folderPath}${filename}`
+    (f) => f.filename === filename || f.blobPath === `${folderPath}${filename}`
   );
-  return match ? match.name : null;
+  return match ? match.blobPath : null;
 }
 
 /**
@@ -147,16 +162,18 @@ async function handleMultipartUpload(req, res) {
   }
 
   const result = await uploadBuffer(fileBuffer, blobName, resolvedMimeType);
-  const shortLivedUrl = await getSignedUrl(result.url, DEFAULT_SIGNED_MINUTES);
+  const publicUrl = await getSignedUrl(result.blobPath, DEFAULT_SIGNED_MINUTES);
 
-  res.status(200).json({
-    url: result.url,
-    filename: sanitized,
-    shortLivedUrl,
-    size: fileBuffer.length,
-    contentType: resolvedMimeType,
-    message: `File '${sanitized}' uploaded successfully.`,
-  });
+  res.status(200).json(
+    buildFileResponse({
+      publicUrl,
+      blobPath: result.blobPath,
+      filename: sanitized,
+      size: fileBuffer.length,
+      contentType: resolvedMimeType,
+      message: `File '${sanitized}' uploaded successfully.`,
+    })
+  );
 }
 
 async function handleRename(req, res) {
@@ -184,13 +201,15 @@ async function handleRename(req, res) {
   const newBlobName = constructBlobName(sanitized, folderPath);
 
   if (existingBlobName === newBlobName) {
-    const signedUrl = await getSignedUrl(gcsUrl(newBlobName), DEFAULT_SIGNED_MINUTES);
-    return res.status(200).json({
-      url: gcsUrl(newBlobName),
-      filename: sanitized,
-      shortLivedUrl: signedUrl,
-      message: "File already has this name.",
-    });
+    const publicUrl = await getSignedUrl(newBlobName, DEFAULT_SIGNED_MINUTES);
+    return res.status(200).json(
+      buildFileResponse({
+        publicUrl,
+        blobPath: newBlobName,
+        filename: sanitized,
+        message: "File already has this name.",
+      })
+    );
   }
 
   const bucketName = getGCSBucketName();
@@ -217,15 +236,16 @@ async function handleRename(req, res) {
     await srcFile.delete({ ignoreNotFound: true });
   }
 
-  const newUrl = gcsUrl(newBlobName);
-  const signedUrl = await getSignedUrl(newUrl, DEFAULT_SIGNED_MINUTES);
+  const publicUrl = await getSignedUrl(newBlobName, DEFAULT_SIGNED_MINUTES);
 
-  res.status(200).json({
-    url: newUrl,
-    filename: sanitized,
-    shortLivedUrl: signedUrl,
-    message: `File renamed to '${sanitized}'.`,
-  });
+  res.status(200).json(
+    buildFileResponse({
+      publicUrl,
+      blobPath: newBlobName,
+      filename: sanitized,
+      message: `File renamed to '${sanitized}'.`,
+    })
+  );
 }
 
 // ─── GET ─────────────────────────────────────────────────────────────────────
@@ -262,25 +282,29 @@ async function handleListFolder(params, res) {
 }
 
 async function handleSignUrl(params, res) {
-  const gcsUrlParam = params.url;
-  if (!gcsUrlParam || !gcsUrlParam.startsWith("gs://")) {
-    return res.status(400).json({ error: "Missing or invalid url parameter (must be a gs:// URL)" });
+  const blobPath = params.blobPath ? String(params.blobPath).replace(/^\/+/, "") : null;
+  if (!blobPath) {
+    return res.status(400).json({
+      error: "Missing or invalid file reference (provide blobPath)",
+    });
   }
 
   const minutes = parseInt(params.minutes) || DEFAULT_SIGNED_MINUTES;
 
-  const exists = await fileExists(gcsUrlParam);
+  const exists = await fileExists(blobPath);
   if (!exists) {
-    return res.status(404).json({ error: `File not found: ${gcsUrlParam}` });
+    return res.status(404).json({ error: `File not found: ${blobPath}` });
   }
 
-  const shortLivedUrl = await getSignedUrl(gcsUrlParam, minutes);
+  const signedUrl = await getSignedUrl(blobPath, minutes);
 
-  res.status(200).json({
-    url: gcsUrlParam,
-    shortLivedUrl,
-    expiresInMinutes: minutes,
-  });
+  res.status(200).json(
+    buildFileResponse({
+      publicUrl: signedUrl,
+      blobPath,
+      expiresInMinutes: minutes,
+    })
+  );
 }
 
 async function handleFetchRemote(params, remoteUrl, res) {
@@ -322,15 +346,18 @@ async function handleFetchRemote(params, remoteUrl, res) {
     const resolvedMime = contentTypeHeader?.split(";")[0].trim() || mime.lookup(sanitized) || "application/octet-stream";
 
     const result = await uploadBuffer(buffer, blobName, resolvedMime);
-    const shortLivedUrl = await getSignedUrl(result.url, DEFAULT_SIGNED_MINUTES);
+    const publicUrl = await getSignedUrl(result.blobPath, DEFAULT_SIGNED_MINUTES);
 
-    res.status(200).json({
-      url: result.url,
-      filename: sanitized,
-      shortLivedUrl,
-      size: buffer.length,
-      message: `File '${sanitized}' uploaded successfully.`,
-    });
+    res.status(200).json(
+      buildFileResponse({
+        publicUrl,
+        blobPath: result.blobPath,
+        filename: sanitized,
+        size: buffer.length,
+        contentType: resolvedMime,
+        message: `File '${sanitized}' uploaded successfully.`,
+      })
+    );
   } catch (err) {
     if (err.code === "ECONNABORTED" || err.message?.includes("timeout")) {
       return res.status(408).json({ error: "Remote file download timed out" });
@@ -359,10 +386,10 @@ async function handleDelete(req, res) {
       return res.status(404).json({ error: `File '${filename}' not found` });
     }
 
-    await deleteFile(gcsUrl(blobName));
+    await deleteFile(blobName);
     return res.status(200).json({
       message: `File '${filename}' deleted successfully`,
-      deleted: { filename, blobName },
+      deleted: { filename, blobPath: blobName },
     });
   }
 

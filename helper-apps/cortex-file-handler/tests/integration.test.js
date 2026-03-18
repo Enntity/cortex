@@ -92,9 +92,7 @@ test.serial("upload a file", async (t) => {
   t.is(res.status, 200);
   t.is(res.data.filename, "hello.txt");
   t.truthy(res.data.url);
-  t.truthy(res.data.shortLivedUrl);
-  t.true(res.data.url.startsWith("gs://"));
-  t.true(res.data.url.includes("user-1/global/hello.txt"));
+  t.is(res.data.blobPath, "user-1/global/hello.txt");
 });
 
 test.serial("upload overwrites same filename", async (t) => {
@@ -105,7 +103,7 @@ test.serial("upload overwrites same filename", async (t) => {
   t.is(res.data.filename, "hello.txt");
 
   // Download and verify content was overwritten
-  const dlRes = await axios.get(res.data.shortLivedUrl, { responseType: "text" });
+  const dlRes = await axios.get(res.data.url, { responseType: "text" });
   t.is(dlRes.data, "Updated content");
 });
 
@@ -138,21 +136,22 @@ test.serial("signUrl returns download URL", async (t) => {
   const uploadRes = await axios.post(BASE, form, { headers: form.getHeaders() });
 
   const res = await axios.get(BASE, {
-    params: { operation: "signUrl", url: uploadRes.data.url, minutes: 10 },
+    params: { operation: "signUrl", blobPath: uploadRes.data.blobPath, minutes: 10 },
   });
 
   t.is(res.status, 200);
-  t.truthy(res.data.shortLivedUrl);
+  t.truthy(res.data.url);
   t.is(res.data.expiresInMinutes, 10);
+  t.is(res.data.blobPath, "user-1/global/signme.txt");
 
   // Actually download it
-  const dlRes = await axios.get(res.data.shortLivedUrl, { responseType: "text" });
+  const dlRes = await axios.get(res.data.url, { responseType: "text" });
   t.is(dlRes.data, "Sign me!");
 });
 
 test.serial("signUrl returns 404 for nonexistent file", async (t) => {
   const res = await axios.get(BASE, {
-    params: { operation: "signUrl", url: `gs://${BUCKET_NAME}/nonexistent.txt` },
+    params: { operation: "signUrl", blobPath: "nonexistent.txt" },
     validateStatus: () => true,
   });
   t.is(res.status, 404);
@@ -163,7 +162,7 @@ test.serial("upload to chat scope", async (t) => {
   const res = await axios.post(BASE, form, { headers: form.getHeaders() });
 
   t.is(res.status, 200);
-  t.true(res.data.url.includes("user-1/chats/chat-123/doc.pdf"));
+  t.is(res.data.blobPath, "user-1/chats/chat-123/doc.pdf");
 });
 
 test.serial("listFolder for chat scope", async (t) => {
@@ -180,12 +179,12 @@ test.serial("fetch remote URL", async (t) => {
   const uploadRes = await axios.post(BASE, form, { headers: form.getHeaders() });
 
   const res = await axios.get(BASE, {
-    params: { fetch: uploadRes.data.shortLivedUrl, contextId: "user-2", fileScope: "global" },
+    params: { fetch: uploadRes.data.url, contextId: "user-2", fileScope: "global" },
   });
 
   t.is(res.status, 200);
   t.truthy(res.data.url);
-  t.true(res.data.url.includes("user-2/global/"));
+  t.is(res.data.blobPath.startsWith("user-2/global/"), true);
 });
 
 test.serial("rename a file", async (t) => {
@@ -202,7 +201,7 @@ test.serial("rename a file", async (t) => {
 
   t.is(res.status, 200);
   t.is(res.data.filename, "new-name.txt");
-  t.true(res.data.url.includes("new-name.txt"));
+  t.is(res.data.blobPath, "user-1/global/new-name.txt");
 });
 
 test.serial("delete by filename", async (t) => {
@@ -285,11 +284,11 @@ test.serial("full lifecycle: upload → list → sign → download → delete �
   t.truthy(list.data.find((f) => f.filename === fname));
 
   // Sign
-  const sign = await axios.get(BASE, { params: { operation: "signUrl", url: up.data.url, minutes: 5 } });
-  t.truthy(sign.data.shortLivedUrl);
+  const sign = await axios.get(BASE, { params: { operation: "signUrl", blobPath: up.data.blobPath, minutes: 5 } });
+  t.truthy(sign.data.url);
 
   // Download
-  const dl = await axios.get(sign.data.shortLivedUrl, { responseType: "text" });
+  const dl = await axios.get(sign.data.url, { responseType: "text" });
   t.is(dl.data, content);
 
   // Delete

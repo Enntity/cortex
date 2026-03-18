@@ -90,7 +90,7 @@ test("GET signUrl without url returns 400", async (t) => {
 
 // ─── DELETE: missing params returns 400 ──────────────────────────────────────
 
-test("DELETE without hash or requestId returns 400", async (t) => {
+test("DELETE without filename or prefix returns 400", async (t) => {
   const { status, data } = await request("DELETE", "/api/CortexFileHandler");
   t.is(status, 400);
   t.truthy(data.error);
@@ -142,18 +142,18 @@ test("PATCH returns 405", async (t) => {
   t.truthy(data.error);
 });
 
-// ─── GET: signUrl with invalid URL returns 400 ──────────────────────────────
+// ─── GET: signUrl without blobPath returns 400 ──────────────────────────────
 
-test("GET signUrl with non-gs:// URL returns error", async (t) => {
+test("GET signUrl without blobPath returns error", async (t) => {
   const { status, data } = await request(
     "GET",
     "/api/CortexFileHandler?operation=signUrl&url=https://example.com/file.txt"
   );
-  // Should return 400 (invalid URL) or 500
-  t.true(status >= 400);
+  t.is(status, 400);
+  t.truthy(data.error);
 });
 
-// ─── DELETE: with hash but no GCS ────────────────────────────────────────────
+// ─── DELETE: with filename but no GCS ────────────────────────────────────────
 
 test.serial("DELETE with filename but no GCS configured returns error", async (t) => {
   const origBucket = process.env.GCS_BUCKETNAME;

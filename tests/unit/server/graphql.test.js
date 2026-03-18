@@ -198,14 +198,14 @@ test('executeWorkspace helper function DRY refactoring - structure verification'
                 name: 'prompt1',
                 systemPrompt: 'System prompt 1',
                 prompt: [{ messages: ['message1'] }],
-                fileHashes: [],
+                fileRefs: [],
                 rootResolver: mockRootResolver
             },
             {
                 name: 'prompt2',
                 systemPrompt: 'System prompt 2', 
                 prompt: [{ messages: ['message2'] }],
-                fileHashes: [],
+                fileRefs: [],
                 rootResolver: mockRootResolver
             }
         ]),
@@ -261,7 +261,7 @@ test('executeWorkspace helper function DRY refactoring - default case structure'
         getPathway: sinon.stub().resolves({
             prompt: [{ name: 'default-prompt' }], // No cortexPathwayName
             systemPrompt: 'Test system prompt',
-            fileHashes: [],
+            fileRefs: [],
             rootResolver: mockRootResolver
         }),
         getResolvers: sinon.stub().returns({ Mutation: {} })

@@ -180,7 +180,6 @@ test('injectFileIntoChatHistory should inject file into empty chat history', t =
         type: 'file',
         file: 'https://example.com/test.pdf',
         url: 'https://example.com/test.pdf',
-        gcs: 'gs://bucket/test.pdf',
         originalFilename: 'test.pdf'
     };
     
@@ -197,7 +196,6 @@ test('injectFileIntoChatHistory should inject file into empty chat history', t =
     t.is(injected.type, 'file');
     t.is(injected.file, 'https://example.com/test.pdf');
     t.is(injected.url, 'https://example.com/test.pdf');
-    t.is(injected.gcs, 'gs://bucket/test.pdf');
 });
 
 test('injectFileIntoChatHistory should inject file into existing chat history', t => {
@@ -230,7 +228,6 @@ test('injectFileIntoChatHistory should not inject duplicate file by URL', t => {
                 type: 'file',
                 file: 'https://example.com/test.pdf',
                 url: 'https://example.com/test.pdf',
-                gcs: 'gs://bucket/test.pdf',
                 originalFilename: 'test.pdf'
             }]
         }
@@ -239,7 +236,6 @@ test('injectFileIntoChatHistory should not inject duplicate file by URL', t => {
         type: 'file',
         file: 'https://example.com/test.pdf',
         url: 'https://example.com/test.pdf',
-        gcs: 'gs://bucket/test.pdf',
         originalFilename: 'test.pdf'
     };
     
@@ -250,7 +246,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by URL', t => {
     t.is(result[0].content.length, 1);
 });
 
-test('injectFileIntoChatHistory should not inject duplicate file by GCS URL', t => {
+test('injectFileIntoChatHistory should not inject duplicate file by blob path', t => {
     const chatHistory = [
         {
             role: 'user',
@@ -258,7 +254,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by GCS URL', t 
                 type: 'file',
                 file: 'https://example.com/test.pdf',
                 url: 'https://example.com/test.pdf',
-                gcs: 'gs://bucket/test.pdf',
+                blobPath: 'user-1/global/test.pdf',
                 originalFilename: 'test.pdf'
             }]
         }
@@ -267,7 +263,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by GCS URL', t 
         type: 'file',
         file: 'https://example.com/other.pdf',
         url: 'https://example.com/other.pdf',
-        gcs: 'gs://bucket/test.pdf', // Same GCS URL
+        blobPath: 'user-1/global/test.pdf',
         originalFilename: 'other.pdf'
     };
     
@@ -278,7 +274,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by GCS URL', t 
     t.is(result[0].content.length, 1);
 });
 
-test('injectFileIntoChatHistory should not inject duplicate file by hash', t => {
+test('injectFileIntoChatHistory should inject a different file when URL and blob path differ', t => {
     const chatHistory = [
         {
             role: 'user',
@@ -286,7 +282,7 @@ test('injectFileIntoChatHistory should not inject duplicate file by hash', t => 
                 type: 'file',
                 file: 'https://example.com/test.pdf',
                 url: 'https://example.com/test.pdf',
-                hash: 'abc123def456',
+                blobPath: 'user-1/global/test.pdf',
                 originalFilename: 'test.pdf'
             }]
         }
@@ -295,15 +291,14 @@ test('injectFileIntoChatHistory should not inject duplicate file by hash', t => 
         type: 'file',
         file: 'https://example.com/other.pdf',
         url: 'https://example.com/other.pdf',
-        hash: 'abc123def456', // Same hash
+        blobPath: 'user-1/global/other.pdf',
         originalFilename: 'other.pdf'
     };
     
     const result = injectFileIntoChatHistory(chatHistory, fileContent);
     
-    // Should be unchanged (no duplicate added)
-    t.is(result.length, 1);
-    t.is(result[0].content.length, 1);
+    t.is(result.length, 2);
+    t.deepEqual(result[1].content, [fileContent]);
 });
 
 test('injectFileIntoChatHistory should inject different file', t => {
@@ -366,7 +361,7 @@ test('injectFileIntoChatHistory should handle image_url type', t => {
         type: 'image_url',
         image_url: { url: 'https://example.com/image.jpg' },
         url: 'https://example.com/image.jpg',
-        gcs: 'gs://bucket/image.jpg',
+        blobPath: 'user-1/media/image.jpg',
         originalFilename: 'image.jpg'
     };
     
@@ -380,5 +375,5 @@ test('injectFileIntoChatHistory should handle image_url type', t => {
     t.truthy(injected.image_url);
     t.is(injected.image_url.url, 'https://example.com/image.jpg');
     t.is(injected.url, 'https://example.com/image.jpg');
-    t.is(injected.gcs, 'gs://bucket/image.jpg');
+    t.is(injected.blobPath, 'user-1/media/image.jpg');
 });

@@ -555,8 +555,19 @@ test.serial('toolCallback accumulates budget across multiple rounds', async (t) 
 
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(modifiedEntity);
 
+  let callCount = 0;
   const resolver = buildResolver({
-    promptAndParse: async () => 'done',
+    promptAndParse: async (callArgs) => {
+      callCount++;
+      if (callCount === 1 && callArgs.tools && callArgs.tools.length > 0) {
+        // After round 1, return ErrorJson (cost 10) for round 2
+        return {
+          tool_calls: [buildToolCall('ErrorJson', { userMessage: 'run' }, 'call-2')],
+        };
+      }
+      // After round 2, return text only — exits tool loop
+      return 'done';
+    },
   });
 
   const args = {
@@ -565,23 +576,14 @@ test.serial('toolCallback accumulates budget across multiple rounds', async (t) 
     entityToolsOpenAiFormat,
   };
 
-  // Round 1: one cheap tool (cost 1)
+  // Round 1: CheapTool (cost 1), then model returns ErrorJson (cost 10) for round 2
   await sysEntityAgent.toolCallback(
     args,
     { tool_calls: [buildToolCall('CheapTool', { userMessage: 'run' }, 'call-1')] },
     resolver,
   );
-  t.is(resolver.toolBudgetUsed, 1);
-  t.is(resolver.toolCallRound, 1);
-
-  // Round 2: one expensive tool (cost 10, default)
-  await sysEntityAgent.toolCallback(
-    args,
-    { tool_calls: [buildToolCall('ErrorJson', { userMessage: 'run' }, 'call-2')] },
-    resolver,
-  );
-  t.is(resolver.toolBudgetUsed, 11);
-  t.is(resolver.toolCallRound, 2);
+  t.is(resolver.toolBudgetUsed, 11, 'Budget should accumulate: 1 (CheapTool) + 10 (ErrorJson)');
+  t.is(resolver.toolCallRound, 2, 'Should have completed 2 rounds');
 });
 
 // === NEW TESTS FOR ROBUSTNESS FEATURES ===
@@ -1322,8 +1324,8 @@ test.serial('toolCallback injects toolImages into chat history as user message',
         result: JSON.stringify({
           message: 'Image is now available for viewing',
           imageUrls: [
-            { url: 'https://example.com/photo1.jpg', gcs: 'gs://bucket/photo1.jpg' },
-            { url: 'https://example.com/photo2.jpg', gcs: 'gs://bucket/photo2.jpg' },
+            { url: 'https://example.com/photo1.jpg', blobPath: 'user-1/media/photo1.jpg', filename: 'photo1.jpg' },
+            { url: 'https://example.com/photo2.jpg', blobPath: 'user-1/media/photo2.jpg', filename: 'photo2.jpg' },
           ],
         }),
       }),
@@ -1371,6 +1373,6 @@ test.serial('toolCallback injects toolImages into chat history as user message',
   t.is(imageMessage.content.length, 2, 'Should have two image content blocks');
   t.is(imageMessage.content[0].type, 'image_url');
   t.is(imageMessage.content[0].url, 'https://example.com/photo1.jpg');
-  t.is(imageMessage.content[0].gcs, 'gs://bucket/photo1.jpg');
+  t.is(imageMessage.content[0].blobPath, 'user-1/media/photo1.jpg');
   t.is(imageMessage.content[1].url, 'https://example.com/photo2.jpg');
 });

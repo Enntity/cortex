@@ -24,7 +24,7 @@ export default {
                 properties: {
                     file: {
                         type: "string",
-                        description: "An image file from your available files (from Available Files section or FileCollection) to set as your new base avatar. The file should be the hash or filename."
+                        description: "An image file from your available files (from Available Files section or FileCollection) to set as your new base avatar. The file can be referenced by filename, blob path, or URL."
                     },
                     userMessage: {
                         type: "string",
@@ -71,12 +71,11 @@ export default {
                 // Get base avatar image from entity record
                 const baseAvatar = entityConfig.avatar?.image;
                 if (baseAvatar && baseAvatar.url) {
-                    // Get a signed URL if the avatar URL is a gs:// URL
                     let avatarUrl = baseAvatar.url;
-                    if (avatarUrl.startsWith('gs://')) {
-                        const signedUrl = await getSignedFileUrl(avatarUrl);
-                        if (signedUrl) avatarUrl = signedUrl;
-                    }
+                    const signedUrl = await getSignedFileUrl(
+                        baseAvatar.blobPath || avatarUrl,
+                    );
+                    if (signedUrl) avatarUrl = signedUrl;
                     resolvedBaseAvatarImage = avatarUrl;
                 } else {
                     // No base avatar exists - will generate from scratch
@@ -171,13 +170,14 @@ export default {
                                 const imageUrl = artifact.url;
                                 const mimeType = artifact.mimeType || 'image/png';
                                 
-                                // Upload image to cloud storage (downloads from URL, computes hash, uploads)
+                                // Upload image to cloud storage and return the stored file URL.
                                 const uploadResult = await uploadFileToCloud(
                                     imageUrl,
                                     mimeType,
                                     null, // filename will be generated
                                     pathwayResolver,
-                                    args.contextId
+                                    args.contextId,
+                                    args.chatId || null
                                 );
                                 
                                 const uploadedUrl = uploadResult.url || uploadResult;
@@ -185,7 +185,9 @@ export default {
                                 const imageData = {
                                     type: 'image',
                                     url: uploadedUrl,
-                                    mimeType: mimeType
+                                    mimeType: mimeType,
+                                    filename: uploadResult.filename || null,
+                                    blobPath: uploadResult.blobPath || null,
                                 };
 
                                 uploadedImages.push(imageData);
@@ -211,13 +213,15 @@ export default {
                         if (successfulImages.length > 0) {
                             // Build imageUrls array in the format expected by pathwayTools.js for toolImages injection
                             // This format matches ViewImages tool so images get properly injected into chat history
-                            const imageUrls = successfulImages.map((img) => {
-                                return {
-                                    type: "image_url",
-                                    url: img.url,
-                                    image_url: { url: img.url },
-                                };
-                            });
+                                const imageUrls = successfulImages.map((img) => {
+                                    return {
+                                        type: "image_url",
+                                        url: img.url,
+                                        image_url: { url: img.url },
+                                        blobPath: img.blobPath || null,
+                                        filename: img.filename || null,
+                                    };
+                                });
                             
                             const isModification = args.inputImages && Array.isArray(args.inputImages) && args.inputImages.length > 0;
                             const isAvatar = args.toolFunction === "createavatarimage" || args.toolFunction === "CreateAvatarImage";
@@ -232,6 +236,7 @@ export default {
                                         const avatarImage = {
                                             url: firstImage.url,
                                             name: null,
+                                            blobPath: firstImage.blobPath || null,
                                             contextId: args.contextId || null
                                         };
                                         
@@ -309,7 +314,8 @@ export default {
                 // Prepare avatar image data
                 const avatarImage = {
                     url: foundFile.url,
-                    name: foundFile.filename || foundFile.displayFilename || null,
+                    filename: foundFile.filename || foundFile.displayFilename || null,
+                    blobPath: foundFile.blobPath || null,
                     contextId: foundFile._contextId || null
                 };
                 
@@ -335,7 +341,8 @@ export default {
                     message: `Base avatar updated successfully. The new avatar image will be used as the base for generating avatar variants.`,
                     avatarImage: {
                         url: avatarImage.url,
-                        name: avatarImage.name
+                        filename: avatarImage.filename,
+                        blobPath: avatarImage.blobPath || null,
                     }
                 });
             }

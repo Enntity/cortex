@@ -47,7 +47,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Optional: Array of file references (hashes, filenames, or URLs) from the file collection to use as reference images for the slide design. These images will be used as style references or incorporated into the slide. Maximum 3 images."
+                        description: "Optional: Array of file references (filenames, blob paths, or URLs) from the file collection to use as reference images for the slide design. These images will be used as style references or incorporated into the slide. Maximum 3 images."
                     },
                     aspectRatio: {
                         type: "string",
@@ -67,8 +67,7 @@ export default {
             let model = "gemini-pro-3-image";
             let prompt = args.detailedInstructions || "";
             
-            // Resolve input images to URLs using the common utility
-            // For Gemini, prefer GCS URLs over Azure URLs
+            // Resolve input images to URLs using the common utility.
             // Fail early if any provided image cannot be resolved
             const resolvedInputImages = [];
             if (args.inputImages && Array.isArray(args.inputImages)) {
@@ -81,7 +80,7 @@ export default {
                 
                 for (let i = 0; i < imagesToProcess.length; i++) {
                     const imageRef = imagesToProcess[i];
-                    const resolved = await resolveFileParameter(imageRef, args.agentContext, { preferGcs: true });
+                    const resolved = await resolveFileParameter(imageRef, args.agentContext);
                     if (!resolved) {
                         throw new Error(`File not found: "${imageRef}". Use FileCollection to find available files.`);
                     }
@@ -136,10 +135,10 @@ export default {
                 for (const artifact of pathwayResolver.pathwayResultData.artifacts) {
                     if (artifact.type === 'image' && artifact.data && artifact.mimeType) {
                         try {
-                            // Upload image to cloud storage (returns {url, filename, shortLivedUrl})
-                            const uploadResult = await uploadImageToCloud(artifact.data, artifact.mimeType, null, pathwayResolver, args.contextId);
+                            // Upload image to cloud storage (returns canonical file metadata)
+                            const uploadResult = await uploadImageToCloud(artifact.data, artifact.mimeType, null, pathwayResolver, args.contextId, args.chatId || null);
 
-                            const imageUrl = uploadResult.shortLivedUrl || uploadResult.url || uploadResult;
+                            const imageUrl = uploadResult.url || uploadResult;
                             const imageFilename = uploadResult.filename || null;
                             
                             // Prepare image data
@@ -157,7 +156,12 @@ export default {
                             // Upload is already done — file is in GCS
                             if (args.contextId && imageUrl) {
                                 try {
-                                    imageData.fileEntry = { url: imageUrl, displayFilename: slideFilename };
+                                    imageData.fileEntry = {
+                                        url: imageUrl,
+                                        blobPath: uploadResult.blobPath || null,
+                                        filename: imageFilename || slideFilename,
+                                        displayFilename: slideFilename,
+                                    };
                                 } catch (collectionError) {
                                     // Log but don't fail - file collection is optional
                                     pathwayResolver.logWarning(`Failed to add image to file collection: ${collectionError.message}`);
@@ -186,6 +190,8 @@ export default {
                             type: "image_url",
                             url: img.fileEntry?.url || img.url,
                             image_url: { url: img.fileEntry?.url || img.url },
+                            blobPath: img.fileEntry?.blobPath || img.blobPath || null,
+                            filename: img.fileEntry?.filename || img.filename || null,
                         };
                     });
                     
@@ -242,4 +248,3 @@ export default {
         }
     }
 };
-

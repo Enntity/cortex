@@ -1,7 +1,7 @@
 // sys_tool_view_image.js
 // Tool pathway that allows agents to view image files from the file collection
 import logger from '../../../../lib/logger.js';
-import { loadFileCollection, findFileInCollection, getSignedFileUrl } from '../../../../lib/fileUtils.js';
+import { loadFileCollection, findFileInCollection } from '../../../../lib/fileUtils.js';
 
 export default {
     prompt: [],
@@ -21,7 +21,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to view (from FileCollection): each can be the hash, the filename, the URL, or the GCS URL. You can find available files in the availableFiles section."
+                        description: "Array of files to view from FileCollection. Each reference can be a filename, blob path, or URL. You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",
@@ -72,18 +72,13 @@ export default {
                     continue;
                 }
 
-                // Resolve to signed URL if the URL is a gs:// URL
-                let resolvedUrl = foundFile.url;
-                if (resolvedUrl && resolvedUrl.startsWith('gs://')) {
-                    const signedUrl = await getSignedFileUrl(resolvedUrl);
-                    if (signedUrl) resolvedUrl = signedUrl;
-                }
-
                 // Add to imageUrls array
                 imageUrls.push({
                     type: "image_url",
-                    url: resolvedUrl,
-                    image_url: { url: resolvedUrl },
+                    url: foundFile.url,
+                    image_url: { url: foundFile.url },
+                    blobPath: foundFile.blobPath || null,
+                    filename: foundFile.filename || foundFile.displayFilename || null,
                 });
 
                 foundFilenames.push(foundFile.filename || file);
@@ -116,4 +111,3 @@ export default {
         }
     }
 };
-

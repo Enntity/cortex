@@ -1,10 +1,9 @@
 // sys_entity_agent_pulse.test.js
 // Tests for pulse-specific agent behaviors:
-// - EndPulse tool call breaks the executor loop immediately
-// - Pulse invocations (invocationType === 'pulse') skip the SetGoals gate
+// - EndPulse tool call breaks the primary tool loop immediately
 
 import test from 'ava';
-import sysEntityAgent, { extractToolCalls, passesGate } from '../../pathways/system/entity/sys_entity_agent.js';
+import sysEntityAgent, { extractToolCalls } from '../../pathways/system/entity/sys_entity_agent.js';
 import { config } from '../../config.js';
 import { getToolsForEntity } from '../../pathways/system/entity/tools/shared/sys_entity_tools.js';
 import { getEntityStore } from '../../lib/MongoEntityStore.js';
@@ -35,15 +34,6 @@ const buildToolCall = (name, args = { userMessage: 'run test' }, id = 'call-1') 
   function: {
     name,
     arguments: JSON.stringify(args),
-  },
-});
-
-const buildSetGoalsCall = (goal = 'Test goal', steps = ['Step 1', 'Step 2'], id = 'plan-1') => ({
-  id,
-  type: 'function',
-  function: {
-    name: 'SetGoals',
-    arguments: JSON.stringify({ goal, steps }),
   },
 });
 
@@ -137,27 +127,26 @@ const restoreConfig = (originals) => {
   entityStore._cacheTimestamps.delete(originals.entityId);
 };
 
-// === TEST 1: EndPulse in executor loop breaks the loop immediately ===
-test.serial('EndPulse in executor loop breaks the loop — cheap model called only once', async (t) => {
+// === TEST 1: EndPulse breaks the primary tool loop immediately ===
+test.serial('EndPulse in tool loop breaks the loop — primary model not called again', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
   const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
-  let cheapModelCallCount = 0;
+  let toolLoopCallCount = 0;
   let synthesisCallCount = 0;
   const resolver = buildResolver({
-    toolLoopModel: 'test-cheap-model',
     promptAndParse: async (args) => {
-      if (args.modelOverride === 'test-cheap-model') {
-        cheapModelCallCount++;
+      if (args.tools && args.tools.length > 0) {
+        toolLoopCallCount++;
         // Return EndPulse — should break the loop
         return {
-          tool_calls: [buildToolCall('EndPulse', { userMessage: 'Done for now.' }, `call-endpulse-${cheapModelCallCount}`)],
+          tool_calls: [buildToolCall('EndPulse', { userMessage: 'Done for now.' }, `call-endpulse-${toolLoopCallCount}`)],
         };
       }
-      // Synthesis call
+      // Synthesis call (no tools)
       synthesisCallCount++;
       return 'Resting now.';
     },
@@ -167,48 +156,46 @@ test.serial('EndPulse in executor loop breaks the loop — cheap model called on
     chatHistory: [{ role: 'user', content: 'autonomous pulse work' }],
     entityTools,
     entityToolsOpenAiFormat,
-    toolLoopModel: 'test-cheap-model',
     primaryModel: 'test-primary-model',
     configuredReasoningEffort: 'medium',
-    invocationType: 'pulse', // Skip gate for clean flow
+    invocationType: 'pulse',
   };
 
-  // Initial tool calls with SetGoals + SearchTool
+  // Initial tool calls: SearchTool
   const message = {
     tool_calls: [
-      buildSetGoalsCall('Check status', ['Search for info'], 'plan-pulse-1'),
       buildToolCall('SearchTool', { userMessage: 'search' }, 'call-search-pulse'),
     ],
   };
 
   await sysEntityAgent.toolCallback(args, message, resolver);
 
-  t.is(cheapModelCallCount, 1, 'Cheap model should be called exactly once (EndPulse breaks loop)');
+  // EndPulse should break the loop — only one tool loop call needed
+  t.is(toolLoopCallCount, 1, 'Tool loop should be called exactly once (EndPulse breaks loop)');
   t.is(synthesisCallCount, 1, 'Synthesis should still run once after EndPulse');
 });
 
-// === TEST 2: Without EndPulse, executor loop continues normally ===
-test.serial('Executor loop continues when EndPulse is not called (control test)', async (t) => {
+// === TEST 2: Without EndPulse, tool loop continues normally ===
+test.serial('Tool loop continues when EndPulse is not called (control test)', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
   const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
-  let cheapModelCallCount = 0;
+  let toolLoopCallCount = 0;
   const resolver = buildResolver({
-    toolLoopModel: 'test-cheap-model',
     promptAndParse: async (args) => {
-      if (args.modelOverride === 'test-cheap-model') {
-        cheapModelCallCount++;
-        if (cheapModelCallCount === 1) {
+      if (args.tools && args.tools.length > 0) {
+        toolLoopCallCount++;
+        if (toolLoopCallCount === 1) {
           // First call: return SearchTool (NOT EndPulse) — loop continues
           return {
-            tool_calls: [buildToolCall('SearchTool', { userMessage: 'more search' }, `call-search-${cheapModelCallCount}`)],
+            tool_calls: [buildToolCall('SearchTool', { userMessage: 'more search' }, `call-search-${toolLoopCallCount}`)],
           };
         }
-        // Second call: SYNTHESIZE — loop exits normally
-        return 'SYNTHESIZE';
+        // Second call: no tools — loop exits
+        return 'done with tools';
       }
       return 'final answer';
     },
@@ -218,148 +205,39 @@ test.serial('Executor loop continues when EndPulse is not called (control test)'
     chatHistory: [{ role: 'user', content: 'do research' }],
     entityTools,
     entityToolsOpenAiFormat,
-    toolLoopModel: 'test-cheap-model',
     primaryModel: 'test-primary-model',
     configuredReasoningEffort: 'medium',
   };
 
   const message = {
     tool_calls: [
-      buildSetGoalsCall('Research', ['Search'], 'plan-no-endpulse'),
       buildToolCall('SearchTool', { userMessage: 'search' }, 'call-1'),
     ],
   };
 
   await sysEntityAgent.toolCallback(args, message, resolver);
 
-  t.is(cheapModelCallCount, 2, 'Without EndPulse, executor loop continues (2 cheap model calls)');
+  t.is(toolLoopCallCount, 2, 'Without EndPulse, tool loop continues (2 calls)');
 });
 
-// === TEST 3: Pulse invocations skip the SetGoals gate ===
-test.serial('Pulse invocations skip SetGoals gate — no gate retries', async (t) => {
+// === TEST 3: EndPulse alongside other tools still breaks the loop ===
+test.serial('EndPulse alongside other tools still breaks tool loop', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
   const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
-  let gateRetryCount = 0;
-  let cheapModelCallCount = 0;
-  let synthesisCallCount = 0;
+  let toolLoopCallCount = 0;
   const resolver = buildResolver({
-    toolLoopModel: 'test-cheap-model',
     promptAndParse: async (args) => {
-      // Gate retry detection: primary model, non-streaming
-      if (args.modelOverride === 'test-primary-model' && args.stream === false) {
-        gateRetryCount++;
-        return {
-          tool_calls: [
-            buildSetGoalsCall('Retry plan', ['Step'], 'plan-retry'),
-            buildToolCall('SearchTool', { userMessage: 'retry' }, 'call-retry'),
-          ],
-        };
-      }
-      if (args.modelOverride === 'test-cheap-model') {
-        cheapModelCallCount++;
-        return 'SYNTHESIZE';
-      }
-      // Synthesis (primary model, stream undefined)
-      synthesisCallCount++;
-      return 'pulse response';
-    },
-  });
-
-  const args = {
-    chatHistory: [{ role: 'user', content: 'pulse work' }],
-    entityTools,
-    entityToolsOpenAiFormat,
-    toolLoopModel: 'test-cheap-model',
-    primaryModel: 'test-primary-model',
-    configuredReasoningEffort: 'medium',
-    invocationType: 'pulse', // Key: should skip gate
-  };
-
-  // Tool calls WITHOUT SetGoals — normally triggers gate retry
-  const message = {
-    tool_calls: [
-      buildToolCall('SearchTool', { userMessage: 'search' }, 'call-pulse-1'),
-    ],
-  };
-
-  await sysEntityAgent.toolCallback(args, message, resolver);
-
-  t.is(gateRetryCount, 0, 'No gate retries for pulse invocations');
-  t.true(cheapModelCallCount >= 1, 'Executor loop should run');
-  t.is(synthesisCallCount, 1, 'Synthesis should run');
-});
-
-// === TEST 4: Non-pulse invocations still require SetGoals gate ===
-test.serial('Non-pulse invocations without SetGoals trigger gate retry (control test)', async (t) => {
-  const originals = setupConfig();
-  t.teardown(() => restoreConfig(originals));
-
-  const entityConfig = originals.testEntity;
-  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
-
-  let gateRetryCount = 0;
-  const resolver = buildResolver({
-    toolLoopModel: 'test-cheap-model',
-    promptAndParse: async (args) => {
-      if (args.modelOverride === 'test-primary-model' && args.stream === false) {
-        gateRetryCount++;
-        return {
-          tool_calls: [
-            buildSetGoalsCall('Retry plan', ['Step'], 'plan-retry'),
-            buildToolCall('SearchTool', { userMessage: 'retry' }, 'call-retry'),
-          ],
-        };
-      }
-      if (args.modelOverride === 'test-cheap-model') return 'SYNTHESIZE';
-      return 'final answer';
-    },
-  });
-
-  const args = {
-    chatHistory: [{ role: 'user', content: 'user chat' }],
-    entityTools,
-    entityToolsOpenAiFormat,
-    toolLoopModel: 'test-cheap-model',
-    primaryModel: 'test-primary-model',
-    configuredReasoningEffort: 'medium',
-    // invocationType NOT set — defaults to non-pulse
-  };
-
-  // Tool calls WITHOUT SetGoals — should trigger gate
-  const message = {
-    tool_calls: [
-      buildToolCall('SearchTool', { userMessage: 'search' }, 'call-chat-1'),
-    ],
-  };
-
-  await sysEntityAgent.toolCallback(args, message, resolver);
-
-  t.true(gateRetryCount >= 1, 'Non-pulse invocations should trigger gate retries');
-});
-
-// === TEST 5: EndPulse alongside other tools still breaks the loop ===
-test.serial('EndPulse alongside other tools still breaks executor loop', async (t) => {
-  const originals = setupConfig();
-  t.teardown(() => restoreConfig(originals));
-
-  const entityConfig = originals.testEntity;
-  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
-
-  let cheapModelCallCount = 0;
-  const resolver = buildResolver({
-    toolLoopModel: 'test-cheap-model',
-    promptAndParse: async (args) => {
-      if (args.modelOverride === 'test-cheap-model') {
-        cheapModelCallCount++;
+      if (args.tools && args.tools.length > 0) {
+        toolLoopCallCount++;
         // Return EndPulse alongside SearchTool — both execute, but loop breaks
         return {
           tool_calls: [
-            buildToolCall('SearchTool', { userMessage: 'one last search' }, `call-last-search-${cheapModelCallCount}`),
-            buildToolCall('EndPulse', { reflection: 'Done.' }, `call-endpulse-${cheapModelCallCount}`),
+            buildToolCall('SearchTool', { userMessage: 'one last search' }, `call-last-search-${toolLoopCallCount}`),
+            buildToolCall('EndPulse', { reflection: 'Done.' }, `call-endpulse-${toolLoopCallCount}`),
           ],
         };
       }
@@ -371,7 +249,6 @@ test.serial('EndPulse alongside other tools still breaks executor loop', async (
     chatHistory: [{ role: 'user', content: 'pulse work' }],
     entityTools,
     entityToolsOpenAiFormat,
-    toolLoopModel: 'test-cheap-model',
     primaryModel: 'test-primary-model',
     configuredReasoningEffort: 'medium',
     invocationType: 'pulse',
@@ -379,33 +256,31 @@ test.serial('EndPulse alongside other tools still breaks executor loop', async (
 
   const message = {
     tool_calls: [
-      buildSetGoalsCall('Do stuff', ['Search', 'Rest'], 'plan-multi'),
       buildToolCall('SearchTool', { userMessage: 'search' }, 'call-init'),
     ],
   };
 
   await sysEntityAgent.toolCallback(args, message, resolver);
 
-  t.is(cheapModelCallCount, 1, 'Loop should break after EndPulse even with other tools in same round');
+  t.is(toolLoopCallCount, 1, 'Loop should break after EndPulse even with other tools in same round');
 });
 
-// === TEST 6: EndPulse breaks loop even without a plan ===
-test.serial('EndPulse breaks executor loop even when no SetGoals plan exists', async (t) => {
+// === TEST 4: EndPulse breaks loop even without prior tools ===
+test.serial('EndPulse breaks tool loop as first tool call', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
   const entityConfig = originals.testEntity;
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
-  let cheapModelCallCount = 0;
+  let toolLoopCallCount = 0;
   let synthesisCallCount = 0;
   const resolver = buildResolver({
-    toolLoopModel: 'test-cheap-model',
     promptAndParse: async (args) => {
-      if (args.modelOverride === 'test-cheap-model') {
-        cheapModelCallCount++;
+      if (args.tools && args.tools.length > 0) {
+        toolLoopCallCount++;
         return {
-          tool_calls: [buildToolCall('EndPulse', { taskContext: 'Continue later.' }, `call-endpulse-noplan-${cheapModelCallCount}`)],
+          tool_calls: [buildToolCall('EndPulse', { taskContext: 'Nothing to do.' }, `call-endpulse-nowork-${toolLoopCallCount}`)],
         };
       }
       synthesisCallCount++;
@@ -417,13 +292,12 @@ test.serial('EndPulse breaks executor loop even when no SetGoals plan exists', a
     chatHistory: [{ role: 'user', content: 'pulse wake' }],
     entityTools,
     entityToolsOpenAiFormat,
-    toolLoopModel: 'test-cheap-model',
     primaryModel: 'test-primary-model',
     configuredReasoningEffort: 'medium',
     invocationType: 'pulse',
   };
 
-  // Pulse with no SetGoals — gate is skipped, tool calls proceed
+  // Pulse with just SearchTool initially, then EndPulse from model
   const message = {
     tool_calls: [
       buildToolCall('SearchTool', { userMessage: 'check' }, 'call-noplan-1'),
@@ -432,7 +306,6 @@ test.serial('EndPulse breaks executor loop even when no SetGoals plan exists', a
 
   await sysEntityAgent.toolCallback(args, message, resolver);
 
-  t.is(cheapModelCallCount, 1, 'EndPulse should break loop even without a plan');
+  t.is(toolLoopCallCount, 1, 'EndPulse should break loop immediately');
   t.is(synthesisCallCount, 1, 'Synthesis should still run');
-  t.falsy(resolver.toolPlan, 'No plan should exist');
 });

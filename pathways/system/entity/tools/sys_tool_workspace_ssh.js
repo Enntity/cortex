@@ -96,11 +96,7 @@ async function handleShell(command, args, resolver) {
                             const basename = path.basename(ref);
                             const match = findFileInCollection(basename, collection);
                             if (match?.url) {
-                                // If it's a GCS URL, get a signed URL
-                                const displayUrl = match.name
-                                    ? await getSignedFileUrl(`gs://${match.name}`) || match.url
-                                    : match.url;
-                                displayLinks.push(`[${basename}](${displayUrl})`);
+                                displayLinks.push(`[${basename}](${match.url})`);
                             }
                         }
                         if (displayLinks.length > 0) {
@@ -182,7 +178,7 @@ async function handleFilesBackup(tokens, args, resolver) {
         // 3. Upload to cloud storage
         const buffer = fs.readFileSync(tempFile);
         const filename = `workspace-backup-${backupResult.timestamp}.tar.gz`;
-        const uploadResult = await uploadFileToCloud(buffer, 'application/gzip', filename, resolver, contextId);
+        const uploadResult = await uploadFileToCloud(buffer, 'application/gzip', filename, resolver, contextId, args.chatId || null);
 
         if (!uploadResult || !uploadResult.url) {
             return JSON.stringify({ success: false, error: 'Failed to upload backup to cloud storage' });

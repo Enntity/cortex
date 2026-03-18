@@ -75,13 +75,14 @@ export default {
                 if (!filename) throw new Error("filename is required");
                 if (!fileUrl) throw new Error("fileUrl is required");
 
-                const result = await uploadFileToCloud(fileUrl, null, filename, resolver, contextId);
+                const result = await uploadFileToCloud(fileUrl, null, filename, resolver, contextId, args.chatId || null);
 
                 resolver.tool = JSON.stringify({ toolUsed: "FileCollection", action: "add" });
                 return JSON.stringify({
                     success: true,
                     filename: result.filename || filename,
-                    url: result.shortLivedUrl || result.url,
+                    blobPath: result.blobPath || null,
+                    url: result.url,
                     message: `File "${filename}" uploaded successfully`
                 });
 
@@ -106,6 +107,7 @@ export default {
                         : `Found ${results.length} file(s) matching "${query}".`,
                     files: results.map(f => ({
                         filename: f.displayFilename || f.filename,
+                        blobPath: f.blobPath || null,
                         url: f.url,
                         size: f.size,
                         contentType: f.contentType,
@@ -168,6 +170,7 @@ export default {
                         : `Showing ${results.length} of ${files.length} file(s). Use filename to reference files.`,
                     files: results.map(f => ({
                         filename: f.displayFilename || f.filename,
+                        blobPath: f.blobPath || null,
                         url: f.url,
                         size: f.size,
                         contentType: f.contentType,

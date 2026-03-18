@@ -1,11 +1,10 @@
 // dualModelToolLoop.test.js
-// Tests for dual-model tool loop behavior: cheap model for tool orchestration,
-// primary model for final synthesis. The tool loop now runs inside toolCallback
-// for both streaming and non-streaming paths.
+// Tests for the primary-model tool loop with DelegateTask subagent.
+// The primary model runs its own tool loop; DelegateTask spawns a cheap subagent.
 
 import test from 'ava';
 import { insertSystemMessage, extractToolCalls, mergeParallelToolResults } from '../../../pathways/system/entity/sys_entity_agent.js';
-import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults } from '../../../pathways/system/entity/tools/shared/tool_result_compression.js';
+import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults, dehydrateToolHistory } from '../../../pathways/system/entity/tools/shared/tool_result_compression.js';
 
 // --- extractToolCalls ---
 
@@ -26,24 +25,21 @@ test('extractToolCalls returns empty array when no tool_calls on plain object', 
     t.deepEqual(extractToolCalls(message), []);
 });
 
-// --- insertSystemMessage: SYNTHESIZE injection ---
+// --- insertSystemMessage ---
 
-test('insertSystemMessage injects SYNTHESIZE instruction into messages', t => {
+test('insertSystemMessage injects instruction into messages', t => {
     const messages = [
         { role: 'user', content: 'What is the weather?' },
         { role: 'assistant', content: '', tool_calls: [{ id: 'tc1', function: { name: 'Weather' } }] },
         { role: 'tool', tool_call_id: 'tc1', content: 'Sunny, 72F' }
     ];
 
-    const result = insertSystemMessage(messages,
-        'If you need more information, call tools. If you have gathered sufficient information to answer the user\'s request, respond with just: SYNTHESIZE',
-        'req-123'
-    );
+    const result = insertSystemMessage(messages, 'Additional instruction text', 'req-123');
 
     t.is(result.length, 4);
     const injected = result[result.length - 1];
     t.is(injected.role, 'user');
-    t.true(injected.content.includes('SYNTHESIZE'));
+    t.true(injected.content.includes('Additional instruction text'));
     t.true(injected.content.includes('[system message: req-123]'));
 });
 
@@ -55,7 +51,6 @@ test('insertSystemMessage replaces previous system message with same requestId',
 
     const result = insertSystemMessage(messages, 'New instruction', 'req-1');
 
-    // Old message removed, new one added
     t.is(result.length, 2);
     t.is(result[0].content, 'Hello');
     t.true(result[1].content.includes('New instruction'));
@@ -70,20 +65,17 @@ test('insertSystemMessage does not remove messages with different requestId', t 
 
     const result = insertSystemMessage(messages, 'Third', 'req-1');
 
-    // req-1 removed, req-2 kept, new one added
     t.is(result.length, 2);
     t.true(result[0].content.includes('req-2'));
     t.true(result[1].content.includes('Third'));
 });
 
-// --- Dual-model configuration logic ---
+// --- Primary model configuration ---
 
 test('toolLoopModel is null when model is not in config', t => {
-    // Simulate config.get('models') not having TOOL_LOOP_MODEL
     const models = { 'oai-gpt41': { name: 'gpt-4.1' } };
     const TOOL_LOOP_MODEL = 'oai-gpt5-mini';
     const toolLoopModel = models[TOOL_LOOP_MODEL] ? TOOL_LOOP_MODEL : null;
-
     t.is(toolLoopModel, null);
 });
 
@@ -94,105 +86,107 @@ test('toolLoopModel is set when model exists in config', t => {
     };
     const TOOL_LOOP_MODEL = 'oai-gpt5-mini';
     const toolLoopModel = models[TOOL_LOOP_MODEL] ? TOOL_LOOP_MODEL : null;
-
     t.is(toolLoopModel, 'oai-gpt5-mini');
 });
 
-test('when toolLoopModel is null, fallback path uses primary model with auto tool_choice', t => {
-    const args = { toolLoopModel: null, primaryModel: 'oai-gpt41', stream: false };
+// --- Primary tool loop: model selection ---
 
-    // Fallback path: no internal loop, uses primary model with tool_choice: "auto"
+test('primary tool loop uses primary model for all calls', t => {
+    const args = { primaryModel: 'oai-gpt41', stream: false };
     const modelOverride = args.primaryModel;
-    const toolChoice = 'auto';
-
     t.is(modelOverride, 'oai-gpt41');
-    t.is(toolChoice, 'auto');
 });
 
-// --- Unified streaming/non-streaming behavior ---
-
-test('dual-model loop uses cheap model with stream:false for both streaming and non-streaming', t => {
-    // When toolLoopModel is set, the internal loop always uses stream:false
-    // regardless of the original args.stream value
-    const streamingArgs = { toolLoopModel: 'oai-gpt5-mini', primaryModel: 'oai-gpt41', stream: true };
-    const nonStreamingArgs = { toolLoopModel: 'oai-gpt5-mini', primaryModel: 'oai-gpt41', stream: false };
-
-    // Internal loop always: stream:false, model: toolLoopModel
-    // This is the same for both streaming and non-streaming
-    const loopStream = false; // always false in loop
-    const loopModel = streamingArgs.toolLoopModel;
-
-    t.false(loopStream);
-    t.is(loopModel, 'oai-gpt5-mini');
-
-    // Final synthesis preserves original stream setting
-    t.true(streamingArgs.stream);  // streaming: synthesis streams
-    t.false(nonStreamingArgs.stream);  // non-streaming: synthesis doesn't stream
-});
-
-test('final synthesis uses primary model with original stream setting and SetGoals-only tools', t => {
-    const SET_GOALS_TOOL = { type: 'function', function: { name: 'SetGoals' } };
-    const synthesisTools = [SET_GOALS_TOOL];
-
-    // Streaming request
-    const streamingArgs = { toolLoopModel: 'oai-gpt5-mini', primaryModel: 'oai-gpt41', stream: true };
-    const streamSynthesis = {
+test('synthesis uses primary model with original stream setting', t => {
+    const streamingArgs = { primaryModel: 'oai-gpt41', stream: true, configuredReasoningEffort: 'high' };
+    const synthArgs = {
         modelOverride: streamingArgs.primaryModel,
         stream: streamingArgs.stream,
-        tools: synthesisTools,
-        tool_choice: 'auto',
+        tools: [],
+        reasoningEffort: streamingArgs.configuredReasoningEffort || 'medium',
     };
-    t.is(streamSynthesis.modelOverride, 'oai-gpt41');
-    t.true(streamSynthesis.stream);
-    t.is(streamSynthesis.tools.length, 1);
-    t.is(streamSynthesis.tools[0].function.name, 'SetGoals');
-    t.is(streamSynthesis.tool_choice, 'auto');
+    t.is(synthArgs.modelOverride, 'oai-gpt41');
+    t.true(synthArgs.stream);
+    t.is(synthArgs.reasoningEffort, 'high');
+    t.deepEqual(synthArgs.tools, []);
 
-    // Non-streaming request
-    const nonStreamingArgs = { toolLoopModel: 'oai-gpt5-mini', primaryModel: 'oai-gpt41', stream: false };
-    const nonStreamSynthesis = {
+    const nonStreamingArgs = { primaryModel: 'oai-gpt41', stream: false };
+    const nonStreamSynth = {
         modelOverride: nonStreamingArgs.primaryModel,
         stream: nonStreamingArgs.stream,
-        tools: synthesisTools,
-        tool_choice: 'auto',
     };
-    t.is(nonStreamSynthesis.modelOverride, 'oai-gpt41');
-    t.false(nonStreamSynthesis.stream);
-    t.is(nonStreamSynthesis.tools.length, 1);
-    t.is(nonStreamSynthesis.tool_choice, 'auto');
+    t.false(nonStreamSynth.stream);
 });
 
-test('initial call always uses original stream setting', t => {
-    // With toolLoopModel + streaming: initial call streams
-    const streaming = { toolLoopModel: 'oai-gpt5-mini', stream: true };
-    t.true(streaming.stream);
-
-    // With toolLoopModel + non-streaming: initial call doesn't stream
-    const nonStreaming = { toolLoopModel: 'oai-gpt5-mini', stream: false };
-    t.false(nonStreaming.stream);
-
-    // Without toolLoopModel: initial call uses original setting
-    const noModel = { toolLoopModel: null, stream: true };
-    t.true(noModel.stream);
-});
-
-test('pathwayResolver.args snapshot includes toolLoopModel and primaryModel', t => {
-    // Simulates the ordering in executePathway:
-    // 1. Set model assignments on args
-    // 2. Snapshot args onto pathwayResolver
-    const args = { chatHistory: [], stream: true };
-    const toolLoopModel = 'oai-gpt5-mini';
+test('primaryModel falls back to resolver modelName when no explicit override', t => {
+    const modelOverride = undefined;
     const resolverModelName = 'oai-claude-45-opus';
+    const primaryModel = modelOverride || resolverModelName;
+    t.is(primaryModel, 'oai-claude-45-opus');
+});
 
-    // Assignments BEFORE snapshot (the fix)
-    args.toolLoopModel = toolLoopModel;
-    args.primaryModel = undefined || resolverModelName;
+test('primaryModel uses explicit override when set', t => {
+    const modelOverride = 'oai-gpt41';
+    const resolverModelName = 'oai-claude-45-opus';
+    const primaryModel = modelOverride || resolverModelName;
+    t.is(primaryModel, 'oai-gpt41');
+});
 
-    const pathwayResolverArgs = { ...args };
+test('final synthesis defaults to medium reasoning effort when not configured', t => {
+    const args = { primaryModel: 'oai-gpt41', configuredReasoningEffort: undefined, stream: true };
+    const reasoningEffort = args.configuredReasoningEffort || 'medium';
+    t.is(reasoningEffort, 'medium');
+});
 
-    // Streaming plugin callback uses pathwayResolver.args
-    t.is(pathwayResolverArgs.toolLoopModel, 'oai-gpt5-mini');
-    t.is(pathwayResolverArgs.primaryModel, 'oai-claude-45-opus');
+// --- DelegateTask tool configuration ---
+
+test('DelegateTask included in first call tools when toolLoopModel available', t => {
+    const DELEGATE_TASK_DEF = { type: 'function', function: { name: 'DelegateTask' } };
+    const entityTools = [
+        { type: 'function', function: { name: 'SearchTool' } },
+        { type: 'function', function: { name: 'AnalyzeTool' } },
+    ];
+    const toolLoopModel = 'oai-gpt5-mini';
+    const hasTools = entityTools.length > 0;
+    const delegateAvailable = hasTools && toolLoopModel;
+    const firstCallTools = hasTools
+        ? [...entityTools, ...(delegateAvailable ? [DELEGATE_TASK_DEF] : [])]
+        : [];
+
+    t.is(firstCallTools.length, 3);
+    t.true(firstCallTools.some(t => t.function.name === 'DelegateTask'));
+    t.true(firstCallTools.some(t => t.function.name === 'SearchTool'));
+});
+
+test('DelegateTask excluded from first call tools when no toolLoopModel', t => {
+    const DELEGATE_TASK_DEF = { type: 'function', function: { name: 'DelegateTask' } };
+    const entityTools = [
+        { type: 'function', function: { name: 'SearchTool' } },
+    ];
+    const toolLoopModel = null;
+    const hasTools = entityTools.length > 0;
+    const delegateAvailable = hasTools && toolLoopModel;
+    const firstCallTools = hasTools
+        ? [...entityTools, ...(delegateAvailable ? [DELEGATE_TASK_DEF] : [])]
+        : [];
+
+    t.is(firstCallTools.length, 1);
+    t.false(firstCallTools.some(t => t.function.name === 'DelegateTask'));
+});
+
+test('DelegateTask filtered from subagent tools (no recursion)', t => {
+    const DELEGATE_TASK_TOOL_NAME = 'delegatetask';
+    const entityToolsOpenAiFormat = [
+        { type: 'function', function: { name: 'SearchTool' } },
+        { type: 'function', function: { name: 'DelegateTask' } },
+        { type: 'function', function: { name: 'AnalyzeTool' } },
+    ];
+    const subTools = entityToolsOpenAiFormat.filter(t => t.function?.name?.toLowerCase() !== DELEGATE_TASK_TOOL_NAME);
+
+    t.is(subTools.length, 2);
+    t.false(subTools.some(t => t.function.name === 'DelegateTask'));
+    t.true(subTools.some(t => t.function.name === 'SearchTool'));
+    t.true(subTools.some(t => t.function.name === 'AnalyzeTool'));
 });
 
 // --- Final synthesis: rehydration before primary model ---
@@ -208,180 +202,78 @@ test('final synthesis rehydrates all compressed results', t => {
         { role: 'user', content: 'query' },
         { role: 'tool', tool_call_id: 'tc1', content: 'compressed1' },
         { role: 'tool', tool_call_id: 'tc2', content: 'compressed2' },
-        { role: 'assistant', content: 'SYNTHESIZE' }
+        { role: 'assistant', content: 'ready' }
     ];
 
     const rehydrated = rehydrateAllToolResults(messages, store);
 
     t.is(rehydrated[1].content, full1);
     t.is(rehydrated[2].content, full2);
-    // Non-tool messages unchanged
     t.is(rehydrated[0].content, 'query');
-    t.is(rehydrated[3].content, 'SYNTHESIZE');
+    t.is(rehydrated[3].content, 'ready');
 });
 
-// --- SYNTHESIZE instruction injection ---
+// --- Dehydration: always-on compression ---
 
-test('SYNTHESIZE instruction is injected inside dual-model loop for both streaming and non-streaming', t => {
-    const messages = [{ role: 'user', content: 'Hello' }];
-
-    // Streaming + toolLoopModel: inject (now works for streaming too!)
-    const streaming = { toolLoopModel: 'oai-gpt5-mini', stream: true };
-    let result;
-    if (streaming.toolLoopModel) {
-        result = insertSystemMessage([...messages],
-            'If you need more information, call tools. If you have gathered sufficient information to answer the user\'s request, respond with just: SYNTHESIZE',
-            'req-1'
-        );
-    }
-    t.is(result.length, 2);
-    t.true(result[1].content.includes('SYNTHESIZE'));
-
-    // Non-streaming + toolLoopModel: inject
-    const nonStreaming = { toolLoopModel: 'oai-gpt5-mini', stream: false };
-    if (nonStreaming.toolLoopModel) {
-        result = insertSystemMessage([...messages],
-            'If you need more information, call tools. If you have gathered sufficient information to answer the user\'s request, respond with just: SYNTHESIZE',
-            'req-2'
-        );
-    }
-    t.is(result.length, 2);
-    t.true(result[1].content.includes('SYNTHESIZE'));
-
-    // No toolLoopModel: no injection
-    const noModel = { toolLoopModel: null, stream: false };
-    result = [...messages];
-    if (noModel.toolLoopModel) {
-        result = insertSystemMessage(result, 'SYNTHESIZE instruction', 'req-3');
-    }
-    t.is(result.length, 1);
-});
-
-// --- Final synthesis uses correct model parameters ---
-
-test('final synthesis uses primary model with configured reasoning effort', t => {
-    const SET_GOALS_TOOL = { type: 'function', function: { name: 'SetGoals' } };
-    const synthesisTools = [SET_GOALS_TOOL];
-    const args = {
-        toolLoopModel: 'oai-gpt5-mini',
-        primaryModel: 'oai-gpt41',
-        configuredReasoningEffort: 'high',
-        stream: true
-    };
-
-    // Simulate final synthesis args construction
-    const synthesisArgs = {
-        modelOverride: args.primaryModel,
-        stream: args.stream,
-        tools: synthesisTools,
-        tool_choice: 'auto',
-        reasoningEffort: args.configuredReasoningEffort || 'medium',
-        skipMemoryLoad: true,
-    };
-
-    t.is(synthesisArgs.modelOverride, 'oai-gpt41');
-    t.true(synthesisArgs.stream);
-    t.is(synthesisArgs.tools.length, 1);
-    t.is(synthesisArgs.tools[0].function.name, 'SetGoals');
-    t.is(synthesisArgs.tool_choice, 'auto');
-    t.is(synthesisArgs.reasoningEffort, 'high');
-    t.true(synthesisArgs.skipMemoryLoad);
-});
-
-test('primaryModel falls back to resolver modelName when no explicit override', t => {
-    // Simulates the case where entityConfig.modelOverride and args.modelOverride are both undefined
-    const modelOverride = undefined; // no entity or args override
-    const resolverModelName = 'oai-claude-45-opus'; // pathway default
-
-    const primaryModel = modelOverride || resolverModelName;
-    t.is(primaryModel, 'oai-claude-45-opus');
-
-    // This ensures final synthesis swaps back from the cheap model
-    const synthesisArgs = { modelOverride: primaryModel };
-    t.truthy(synthesisArgs.modelOverride); // guard in promptAndParse passes
-});
-
-test('primaryModel uses explicit override when set', t => {
-    const modelOverride = 'oai-gpt41';
-    const resolverModelName = 'oai-claude-45-opus';
-
-    const primaryModel = modelOverride || resolverModelName;
-    t.is(primaryModel, 'oai-gpt41');
-});
-
-test('final synthesis defaults to medium reasoning effort when not configured', t => {
-    const args = {
-        toolLoopModel: 'oai-gpt5-mini',
-        primaryModel: 'oai-gpt41',
-        configuredReasoningEffort: undefined,
-        stream: true
-    };
-
-    const reasoningEffort = args.configuredReasoningEffort || 'medium';
-    t.is(reasoningEffort, 'medium');
-});
-
-// --- Edge cases ---
-
-test('no synthesis when toolLoopModel is null (fallback path uses auto tool_choice)', t => {
-    const args = { toolLoopModel: null, primaryModel: 'oai-gpt41', stream: false };
-
-    // When toolLoopModel is null, toolCallback uses fallback path:
-    // single processToolCallRound + promptAndParse with tool_choice: "auto"
-    const toolChoice = 'auto';
-    t.is(toolChoice, 'auto');
-});
-
-test('synthesis receives all entity tools plus SetGoals', t => {
-    const entityToolsOpenAiFormat = [
-        { type: 'function', function: { name: 'Search' } },
-        { type: 'function', function: { name: 'Analyze' } },
+test('dehydration stores and compresses large tool results', t => {
+    const store = new Map();
+    const bigContent = 'x'.repeat(5000);
+    const messages = [
+        { role: 'user', content: 'query' },
+        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
     ];
-    const SET_GOALS_OPENAI_DEF = { type: 'function', function: { name: 'SetGoals' } };
-    const synthesisTools = [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF];
 
-    const synthesisArgs = {
-        tools: synthesisTools,
-        tool_choice: 'auto',
-    };
+    // Round 1: register
+    for (const msg of messages) {
+        if (msg.role === 'tool' && msg.tool_call_id && msg.content && msg.content.length > COMPRESSION_THRESHOLD && !store.has(msg.tool_call_id)) {
+            store.set(msg.tool_call_id, { toolName: msg.name || 'unknown', fullContent: msg.content, charCount: msg.content.length, round: 1, compressed: false });
+        }
+    }
+    t.is(store.size, 1, 'Store should have entry');
+    t.is(store.get('tc1').fullContent, bigContent);
 
-    t.is(synthesisArgs.tools.length, 3);
-    t.true(synthesisArgs.tools.some(t => t.function.name === 'SetGoals'), 'Should include SetGoals');
-    t.true(synthesisArgs.tools.some(t => t.function.name === 'Search'), 'Should include entity tools');
-    t.is(synthesisArgs.tool_choice, 'auto');
+    // Round 2: compress older
+    const result = compressOlderToolResults(messages, store, 2, {});
+    t.not(result[1].content, bigContent, 'Tool result should be compressed');
+    t.true(store.get('tc1').compressed);
 });
 
-// --- Synthesis tool inclusion ---
+test('dehydration full cycle — compress then rehydrate', t => {
+    const store = new Map();
+    const bigContent = JSON.stringify({ title: 'Test', content: 'z'.repeat(5000) });
+    const messages = [
+        { role: 'user', content: 'search' },
+        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
+    ];
 
-test('synthesis includes entity tools so it can replan and execute', t => {
-    const entityToolsOpenAiFormat = [{ type: 'function', function: { name: 'Search' } }];
-    const SET_GOALS_OPENAI_DEF = { type: 'function', function: { name: 'SetGoals' } };
+    // Round 1: register
+    for (const msg of messages) {
+        if (msg.role === 'tool' && msg.tool_call_id && msg.content && msg.content.length > COMPRESSION_THRESHOLD && !store.has(msg.tool_call_id)) {
+            store.set(msg.tool_call_id, { toolName: msg.name, fullContent: msg.content, charCount: msg.content.length, round: 1, compressed: false });
+        }
+    }
 
-    // Synthesis gets all entity tools + SetGoals (gated architecture)
-    const synthesisTools = [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF];
-    const synthArgs = {
-        tools: synthesisTools,
-        tool_choice: 'auto',
-    };
-    t.is(synthArgs.tools.length, 2);
-    t.true(synthArgs.tools.some(t => t.function.name === 'SetGoals'), 'Should include SetGoals');
-    t.true(synthArgs.tools.some(t => t.function.name === 'Search'), 'Should include entity tools');
+    // Round 2: compress older
+    const compressed = compressOlderToolResults(messages, store, 2, {});
+    t.not(compressed[1].content, bigContent);
+
+    // Synthesis: rehydrate
+    const rehydrated = rehydrateAllToolResults(compressed, store);
+    t.is(rehydrated[1].content, bigContent);
 });
+
+// --- duplicate tool call detection ---
 
 test('duplicate tool call detection returns cached result with admonishment', t => {
-    // Simulate the per-request tool call cache
     const toolCallCache = new Map();
-
     const toolName = 'WorkspaceUpload';
     const toolArgs = '{"workspacePath":"/workspace/art.jpg"}';
     const cacheKey = `${toolName}:${toolArgs}`;
 
-    // First call: no cache hit, execute normally
     t.false(toolCallCache.has(cacheKey));
     const firstResult = '{"success":true,"fileId":"abc123"}';
     toolCallCache.set(cacheKey, firstResult);
 
-    // Second call: cache hit, return admonishment
     t.true(toolCallCache.has(cacheKey));
     const cachedResult = toolCallCache.get(cacheKey);
     const duplicateResponse = `This tool was already called with these exact arguments. Previous result: ${cachedResult}`;
@@ -391,25 +283,17 @@ test('duplicate tool call detection returns cached result with admonishment', t 
 
 test('duplicate detection uses tool name + arguments as cache key', t => {
     const toolCallCache = new Map();
-
-    // Same tool, different args — no collision
     toolCallCache.set('WorkspaceUpload:{"path":"/a.jpg"}', 'result-a');
     toolCallCache.set('WorkspaceUpload:{"path":"/b.jpg"}', 'result-b');
     t.is(toolCallCache.size, 2);
-
-    // Same tool, same args — cache hit
     t.true(toolCallCache.has('WorkspaceUpload:{"path":"/a.jpg"}'));
     t.is(toolCallCache.get('WorkspaceUpload:{"path":"/a.jpg"}'), 'result-a');
-
-    // Different tool, same args — no collision
     toolCallCache.set('WorkspaceBrowse:{"path":"/a.jpg"}', 'result-c');
     t.is(toolCallCache.size, 3);
 });
 
 test('duplicate detection catches non-consecutive repeats across rounds', t => {
     const toolCallCache = new Map();
-
-    // Round 1: upload 4 different files
     const files = ['/a.jpg', '/b.jpg', '/c.jpg', '/d.jpg'];
     for (const f of files) {
         const key = `WorkspaceUpload:{"workspacePath":"${f}"}`;
@@ -417,15 +301,12 @@ test('duplicate detection catches non-consecutive repeats across rounds', t => {
         toolCallCache.set(key, `{"success":true,"file":"${f}"}`);
     }
     t.is(toolCallCache.size, 4);
-
-    // Round 2: model tries to re-upload /a.jpg — cache hit despite /d.jpg being last
     const dupKey = 'WorkspaceUpload:{"workspacePath":"/a.jpg"}';
     t.true(toolCallCache.has(dupKey));
     t.true(toolCallCache.get(dupKey).includes('/a.jpg'));
 });
 
-test('extractToolCalls returns empty for text-only synthesis (no tool_calls)', t => {
-    // When synthesis responds with text only (no SetGoals replan), no tool_calls
+test('extractToolCalls returns empty for text-only response (no tool_calls)', t => {
     const textOnlyResult = { content: 'Here is your answer...' };
     t.deepEqual(extractToolCalls(textOnlyResult), []);
 });
@@ -437,7 +318,6 @@ test('mergeParallelToolResults combines parallel tool calls into one assistant m
         { role: 'user', content: 'Search for news APIs' }
     ];
 
-    // Simulate two parallel tool results — each has its own assistant + tool message
     const toolResults = [
         {
             messages: [
@@ -457,16 +337,11 @@ test('mergeParallelToolResults combines parallel tool calls into one assistant m
 
     const merged = mergeParallelToolResults(toolResults, preToolCallMessages);
 
-    // Should produce exactly 3 messages: 1 assistant + 2 tool results
     t.is(merged.length, 3);
-
-    // First message: single assistant with BOTH tool_calls
     t.is(merged[0].role, 'assistant');
     t.is(merged[0].tool_calls.length, 2);
     t.is(merged[0].tool_calls[0].id, 'tc1');
     t.is(merged[0].tool_calls[1].id, 'tc2');
-
-    // Tool results follow in order
     t.is(merged[1].role, 'tool');
     t.is(merged[1].tool_call_id, 'tc1');
     t.is(merged[1].content, 'Result 1');
@@ -477,7 +352,6 @@ test('mergeParallelToolResults combines parallel tool calls into one assistant m
 
 test('mergeParallelToolResults works with single tool call', t => {
     const preToolCallMessages = [{ role: 'user', content: 'Hello' }];
-
     const toolResults = [
         {
             messages: [
@@ -489,11 +363,9 @@ test('mergeParallelToolResults works with single tool call', t => {
     ];
 
     const merged = mergeParallelToolResults(toolResults, preToolCallMessages);
-
     t.is(merged.length, 2);
     t.is(merged[0].role, 'assistant');
     t.is(merged[0].tool_calls.length, 1);
-    t.is(merged[0].tool_calls[0].id, 'tc1');
     t.is(merged[1].role, 'tool');
     t.is(merged[1].content, 'Sunny');
 });
@@ -538,132 +410,9 @@ test('mergeParallelToolResults preserves thoughtSignature on tool calls', t => {
     t.is(merged[0].tool_calls[0].thoughtSignature, 'sig-abc');
 });
 
-// --- Dehydration toggle: toolLoopModel controls whether compression runs ---
-
-// Helper that mirrors the conditional logic in processToolCallRound
-function simulateDehydration(args, messages, store, currentRound, entityTools) {
-    if (!args.toolLoopModel) {
-        for (const msg of messages) {
-            if (msg.role === 'tool' && msg.tool_call_id &&
-                msg.content && msg.content.length > COMPRESSION_THRESHOLD &&
-                !store.has(msg.tool_call_id)) {
-                store.set(msg.tool_call_id, {
-                    toolName: msg.name || 'unknown',
-                    fullContent: msg.content,
-                    charCount: msg.content.length,
-                    round: currentRound,
-                    compressed: false
-                });
-            }
-        }
-        messages = compressOlderToolResults(messages, store, currentRound, entityTools);
-    }
-    return messages;
-}
-
-// Helper that mirrors the conditional logic before synthesis
-function simulateRehydration(args, chatHistory, store) {
-    if (!args.toolLoopModel) {
-        return rehydrateAllToolResults(chatHistory, store);
-    }
-    return chatHistory;
-}
-
-test('dehydration toggle: toolLoopModel set — results stay full, store empty', t => {
-    const args = { toolLoopModel: 'oai-gpt5-mini' };
-    const store = new Map();
-    const bigContent = 'x'.repeat(5000);
-    const messages = [
-        { role: 'user', content: 'query' },
-        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
-    ];
-
-    // Round 1: store result
-    simulateDehydration(args, messages, store, 1, {});
-    // Round 2: would compress older results if dehydration were active
-    const result = simulateDehydration(args, messages, store, 2, {});
-
-    t.is(store.size, 0, 'Store should be empty — no dehydration with toolLoopModel');
-    t.is(result[1].content, bigContent, 'Tool result should be full');
-});
-
-test('dehydration toggle: no toolLoopModel — results are compressed', t => {
-    const args = { toolLoopModel: null };
-    const store = new Map();
-    const bigContent = 'x'.repeat(5000);
-    const messages = [
-        { role: 'user', content: 'query' },
-        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
-    ];
-
-    // Round 1: store result
-    simulateDehydration(args, messages, store, 1, {});
-    t.is(store.size, 1, 'Store should have entry');
-    t.is(store.get('tc1').fullContent, bigContent);
-
-    // Round 2: older results get compressed
-    const result = simulateDehydration(args, messages, store, 2, {});
-    t.not(result[1].content, bigContent, 'Tool result should be compressed');
-    t.true(store.get('tc1').compressed);
-});
-
-test('rehydration toggle: toolLoopModel set — chatHistory unchanged', t => {
-    const args = { toolLoopModel: 'oai-gpt5-mini' };
-    const store = new Map();
-    const fullContent = 'y'.repeat(5000);
-    store.set('tc1', { fullContent, compressed: true, round: 1 });
-
-    const chatHistory = [
-        { role: 'tool', tool_call_id: 'tc1', content: 'compressed summary' },
-    ];
-
-    const result = simulateRehydration(args, chatHistory, store);
-    t.is(result[0].content, 'compressed summary', 'Should NOT rehydrate with toolLoopModel');
-    t.true(store.get('tc1').compressed, 'Store entry should stay compressed');
-});
-
-test('rehydration toggle: no toolLoopModel — full content restored', t => {
-    const args = { toolLoopModel: null };
-    const store = new Map();
-    const fullContent = 'y'.repeat(5000);
-    store.set('tc1', { fullContent, compressed: true, round: 1 });
-
-    const chatHistory = [
-        { role: 'tool', tool_call_id: 'tc1', content: 'compressed summary' },
-    ];
-
-    const result = simulateRehydration(args, chatHistory, store);
-    t.is(result[0].content, fullContent, 'Should rehydrate without toolLoopModel');
-    t.false(store.get('tc1').compressed, 'Store entry should be marked uncompressed');
-});
-
-test('dehydration toggle: full cycle without toolLoopModel — compress then rehydrate', t => {
-    const args = { toolLoopModel: null };
-    const store = new Map();
-    const bigContent = JSON.stringify({ title: 'Test', content: 'z'.repeat(5000) });
-    const messages = [
-        { role: 'user', content: 'search' },
-        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
-    ];
-
-    // Round 1: register
-    simulateDehydration(args, messages, store, 1, {});
-    // Round 2: compress older
-    const compressed = simulateDehydration(args, messages, store, 2, {});
-    t.not(compressed[1].content, bigContent);
-
-    // Synthesis: rehydrate
-    const rehydrated = simulateRehydration(args, compressed, store);
-    t.is(rehydrated[1].content, bigContent);
-});
-
 // --- streaming callback drain / empty response safety ---
 
 test('drainStreamingCallbacks always updates result, even with empty string', async t => {
-    // Regression: the old code had `if (cbResult) resultHolder.value = cbResult;`
-    // which treated empty string as falsy and kept the original value (potentially
-    // containing stale tool_calls that would re-trigger the callback loop).
-    // Fix: always assign, matching the original pre-rewrite behavior.
     const resolver = {};
     resolver._streamingToolCallbackPromise = Promise.resolve('');
 
@@ -677,7 +426,7 @@ test('drainStreamingCallbacks always updates result, even with empty string', as
     }
 
     t.true(hadCallback);
-    t.is(holder.value, '', 'Empty string must replace stale value — not keep tool_calls');
+    t.is(holder.value, '', 'Empty string must replace stale value');
 });
 
 test('drainStreamingCallbacks updates result with non-empty callback result', async t => {
@@ -695,39 +444,40 @@ test('drainStreamingCallbacks updates result with non-empty callback result', as
 });
 
 test('no depth cap on nested callbacks — only the tool budget limits recursion', t => {
-    // The rewrite originally had `if (callbackDepth > 1) return ''` which prevented
-    // synthesis from running after nested tool calls, causing empty responses.
-    // Now: no depth cap. The tool budget (TOOL_BUDGET) and duplicate detection
-    // prevent runaway loops. Any callback depth gets the full loop treatment.
-    // Gate check is skipped for depth > 1 (nested calls already passed the gate).
-
-    // Contract: callbackDepth has no ceiling — budget is the only limiter
-    const TOOL_BUDGET = 500; // from sys_entity_agent.js
+    const TOOL_BUDGET = 500;
     t.true(TOOL_BUDGET > 0, 'Tool budget exists as the recursion limiter');
-    // depth 1, 2, 3, 10 — all should run the full loop (gate skipped for > 1)
-    for (const depth of [1, 2, 3, 10]) {
-        const skipGate = depth > 1;
-        t.is(skipGate, depth > 1, `Depth ${depth}: gate ${skipGate ? 'skipped' : 'enforced'}`);
-    }
 });
 
-test('dehydration toggle: full cycle with toolLoopModel — no compression, no rehydration', t => {
-    const args = { toolLoopModel: 'oai-gpt5-mini' };
-    const store = new Map();
-    const bigContent = JSON.stringify({ title: 'Test', content: 'z'.repeat(5000) });
-    const messages = [
-        { role: 'user', content: 'search' },
-        { role: 'tool', tool_call_id: 'tc1', name: 'Search', content: bigContent },
+// --- dehydrateToolHistory: no plan tool filtering ---
+
+test('dehydrateToolHistory includes all tool calls (no plan filtering)', t => {
+    const chatHistory = [
+        { role: 'user', content: 'query' },
+        { role: 'assistant', content: '', tool_calls: [
+            { id: 'tc1', function: { name: 'SearchTool', arguments: '{"q":"test"}' } },
+        ] },
+        { role: 'tool', tool_call_id: 'tc1', name: 'SearchTool', content: 'result' },
     ];
 
-    // Round 1
-    simulateDehydration(args, messages, store, 1, {});
-    // Round 2
-    const afterRound2 = simulateDehydration(args, messages, store, 2, {});
-    t.is(afterRound2[1].content, bigContent, 'Content stays full');
+    const result = dehydrateToolHistory(chatHistory, {}, 0);
+    t.is(result.length, 2);
+    t.is(result[0].role, 'assistant');
+    t.is(result[0].tool_calls[0].function.name, 'SearchTool');
+    t.is(result[1].role, 'tool');
+});
 
-    // Synthesis
-    const forSynthesis = simulateRehydration(args, afterRound2, store);
-    t.is(forSynthesis[1].content, bigContent, 'Content still full — nothing to rehydrate');
-    t.is(store.size, 0, 'Store was never used');
+// --- pathwayResolver.args snapshot ---
+
+test('pathwayResolver.args snapshot includes toolLoopModel and primaryModel', t => {
+    const args = { chatHistory: [], stream: true };
+    const toolLoopModel = 'oai-gpt5-mini';
+    const resolverModelName = 'oai-claude-45-opus';
+
+    args.toolLoopModel = toolLoopModel;
+    args.primaryModel = undefined || resolverModelName;
+
+    const pathwayResolverArgs = { ...args };
+
+    t.is(pathwayResolverArgs.toolLoopModel, 'oai-gpt5-mini');
+    t.is(pathwayResolverArgs.primaryModel, 'oai-claude-45-opus');
 });
