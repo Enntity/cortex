@@ -8,6 +8,7 @@ import { extractCitationTitle, sanitizeBase64 } from '../../lib/util.js';
 import CortexResponse from '../../lib/cortexResponse.js';
 import { requestState } from '../requestState.js';
 import { addCitationsToResolver } from '../../lib/pathwayTools.js';
+import { applyPromptCacheToHeaders } from '../../lib/promptCaching.js';
 
 export function safeJsonParse(content) {
     try {
@@ -269,6 +270,11 @@ class GrokResponsesPlugin extends OpenAIVisionPlugin {
         };
         cortexRequest.params = {}; // query params
         cortexRequest.stream = stream;
+        cortexRequest.headers = applyPromptCacheToHeaders(
+            cortexRequest.headers || {},
+            parameters,
+            this.getPromptCacheSupport()
+        );
 
         return this.executeRequest(cortexRequest);
     }
@@ -692,4 +698,3 @@ class GrokResponsesPlugin extends OpenAIVisionPlugin {
 }
 
 export default GrokResponsesPlugin;
-

@@ -1,6 +1,7 @@
 // gemini15ChatPlugin.js
 import ModelPlugin from './modelPlugin.js';
 import logger from '../../lib/logger.js';
+import { applyPromptCacheToRequest } from '../../lib/promptCaching.js';
 
 const mergeResults = (data) => {
     let output = '';
@@ -162,7 +163,7 @@ class Gemini15ChatPlugin extends ModelPlugin {
             ...(geminiTools ? {tools: geminiTools} : {})
         };
     
-        return requestParameters;
+        return applyPromptCacheToRequest(requestParameters, parameters, this.getPromptCacheSupport());
     }
 
     // Parse the response from the new Chat API

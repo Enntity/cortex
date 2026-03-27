@@ -62,6 +62,29 @@ test('getRequestParameters', async (t) => {
     });
 });
 
+test('getRequestParameters forwards prompt cache settings when provided', async (t) => {
+    const plugin = new OpenAIChatPlugin(pathway, model);
+    const result = await plugin.getRequestParameters('Help me', {
+        prompt_cache_key: 'entity-runtime|entity-1|chat-1|chat|initial|plan|tools:none',
+        prompt_cache_retention: '24h',
+    }, mockPathwayResolverMessages.pathway.prompt);
+
+    t.is(result.prompt_cache_key, 'entity-runtime|entity-1|chat-1|chat|initial|plan|tools:none');
+    t.is(result.prompt_cache_retention, '24h');
+});
+
+test('getRequestParameters hashes overly long prompt cache keys down to OpenAI limits', async (t) => {
+    const plugin = new OpenAIChatPlugin(pathway, model);
+    const longKey = 'entity-runtime|' + 'tooling,'.repeat(40);
+    const result = await plugin.getRequestParameters('Help me', {
+        prompt_cache_key: longKey,
+    }, mockPathwayResolverMessages.pathway.prompt);
+
+    t.true(result.prompt_cache_key.length <= 64);
+    t.not(result.prompt_cache_key, longKey);
+    t.true(result.prompt_cache_key.startsWith('er:'));
+});
+
 // Test the execute function
 test('execute', async (t) => {
     const plugin = new OpenAIChatPlugin(pathway, model);

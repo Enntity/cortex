@@ -69,6 +69,48 @@ test('should handle Grok-specific parameters', async t => {
   // Vision parameters are handled in message content, not as top-level parameters
 });
 
+test('execute applies x-grok-conv-id from generic prompt cache hints', async t => {
+  const mockPathway = {
+    name: 'test-pathway',
+    temperature: 0.7,
+    prompt: 'Test prompt'
+  };
+
+  const mockModel = {
+    name: 'xai-grok-4-1-fast-reasoning',
+    type: 'GROK-VISION',
+    url: 'https://api.x.ai/v1/chat/completions',
+    headers: {
+      'Authorization': 'Bearer test-key',
+      'Content-Type': 'application/json'
+    },
+    params: {
+      model: 'grok-4-1-fast-reasoning'
+    },
+    maxTokenLength: 131072,
+    maxReturnTokens: 4096
+  };
+
+  const plugin = new GrokVisionPlugin(mockPathway, mockModel);
+  plugin.executeRequest = async (cortexRequest) => cortexRequest;
+
+  const result = await plugin.execute('test text', {
+    promptCache: {
+      key: 'er:initial:abc123',
+      conversationId: '0f2d40fb-3ff5-47b7-9cf6-42a6bbcf3ed7',
+    },
+    stream: false,
+  }, {}, {
+    data: {},
+    headers: {
+      Authorization: 'Bearer test-key',
+    },
+  });
+
+  t.is(result.headers['x-grok-conv-id'], '0f2d40fb-3ff5-47b7-9cf6-42a6bbcf3ed7');
+  t.falsy(result.data.prompt_cache_key);
+});
+
 test('should handle all Live Search parameters correctly', async t => {
   const mockPathway = {
     name: 'test-pathway',

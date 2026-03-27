@@ -5,6 +5,7 @@ import { addCitationsToResolver } from '../../lib/pathwayTools.js';
 import CortexResponse from '../../lib/cortexResponse.js';
 import axios from 'axios';
 import { sanitizeBase64 } from "../../lib/util.js";
+import { applyPromptCacheToRequest } from '../../lib/promptCaching.js';
 
 async function convertContentItem(item, maxImageSize, plugin) {
   let imageUrl = "";
@@ -556,7 +557,10 @@ class Claude3VertexPlugin extends OpenAIVisionPlugin {
 
     requestParameters.max_tokens = this.getModelMaxReturnTokens();
     requestParameters.anthropic_version = "vertex-2023-10-16";
-    return requestParameters;
+
+    return applyPromptCacheToRequest(requestParameters, parameters, this.getPromptCacheSupport(), {
+      vertex: this.model?.type !== 'CLAUDE-ANTHROPIC',
+    });
   }
 
   // Override the logging function to display the messages and responses

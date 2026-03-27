@@ -11,6 +11,8 @@ const CONTEXT_COMPRESSION_THRESHOLD = 0.7;
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000;
 const TOOL_LOOP_MODEL = 'xai-grok-4-1-fast-non-reasoning';
 const MAX_REPLAN_SAFETY_CAP = 10;
+const ROUTER_MAX_INPUT_CHARS = 280;
+const ROUTER_MAX_RECENT_FILES = 3;
 const TERMINAL_REPLAN_STOP_REASONS = new Set([
     'low_novelty',
     'evidence_cap',
@@ -68,14 +70,20 @@ import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResult
 import CortexResponse from '../../../lib/cortexResponse.js';
 import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
 import {
+    buildPromptCacheHint,
     buildSemanticToolKey,
+    DIRECT_ROUTE_WORKSPACE_COMMAND,
+    extractFilenameMentions,
+    extractRecentFileReferences,
     getEntityRuntime,
     getEntityRuntimeStore,
     isEntityRuntimeEnabled,
     normalizeToolFamily,
+    routeEntityTurn,
     resolveAuthorityEnvelope,
     resolveEntityModelPolicy,
     safeParseRuntimeValue,
+    shortlistToolsForCategory,
     summarizeAuthorityEnvelope,
     summarizeOrientationPacket,
 } from '../../../lib/entityRuntime/index.js';
@@ -255,14 +263,22 @@ export function passesGate(toolCalls) {
 function summarizeUsage(usage) {
     if (!usage) return undefined;
     const entries = Array.isArray(usage) ? usage : [usage];
-    let inputTokens = 0, outputTokens = 0;
+    let inputTokens = 0, outputTokens = 0, cachedTokens = 0, cacheWriteTokens = 0;
     for (const u of entries) {
         if (!u) continue;
         inputTokens += u.prompt_tokens || u.input_tokens || u.promptTokenCount || 0;
         outputTokens += u.completion_tokens || u.output_tokens || u.candidatesTokenCount || 0;
+        cachedTokens += u.prompt_tokens_details?.cached_tokens || u.input_tokens_details?.cached_tokens || u.cache_read_input_tokens || 0;
+        cacheWriteTokens += u.cache_creation_input_tokens || 0;
     }
     if (inputTokens === 0 && outputTokens === 0) return undefined;
-    return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+    return {
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        ...(cachedTokens > 0 && { cachedTokens }),
+        ...(cacheWriteTokens > 0 && { cacheWriteTokens }),
+    };
 }
 
 function summarizeToolNames(tools) {
@@ -293,23 +309,323 @@ function summarizeReturnedCalls(toolCalls) {
     });
 }
 
+function applyPromptCacheOptions(callArgs, purpose, model) {
+    if (!model || callArgs.promptCache) {
+        return callArgs;
+    }
+
+    const toolNames = summarizeToolNames(callArgs.tools) || [];
+    const promptCache = buildPromptCacheHint({
+        entityId: callArgs.entityId,
+        contextId: callArgs.contextId,
+        invocationType: callArgs.runtimeOrigin || callArgs.invocationType,
+        purpose,
+        model,
+        routeMode: callArgs.latencyRouteMode || '',
+        toolNames,
+    });
+
+    if (!promptCache?.key) return callArgs;
+
+    return {
+        ...callArgs,
+        promptCache,
+    };
+}
+
+function normalizeReasoningEffort(value, fallback = 'medium') {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (['low', 'medium', 'high', 'xhigh'].includes(normalized)) return normalized;
+    return fallback;
+}
+
+function normalizeRouterConfidence(value = '') {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (['low', 'medium', 'high'].includes(normalized)) return normalized;
+    return 'low';
+}
+
+function stripJsonCodeFence(text = '') {
+    const trimmed = String(text || '').trim();
+    if (!trimmed.startsWith('```')) return trimmed;
+    return trimmed
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+}
+
+function shouldUseModelRouter({ text = '', invocationType = '', initialRoute = null } = {}) {
+    if (!text || invocationType === 'pulse') return false;
+    if (!initialRoute || initialRoute.mode !== 'plan') return false;
+    if (text.length > ROUTER_MAX_INPUT_CHARS) return false;
+    if (text.includes('\n') || text.includes('```')) return false;
+    return true;
+}
+
+function buildRoutingPrompt({ text = '', recentFiles = [], availableToolNames = [], initialRoute = null } = {}) {
+    return [
+        {
+            role: 'system',
+            content: `You are a latency router for an agent runtime. Pick the cheapest safe route.
+
+Allowed modes:
+- "direct_reply": casual chat or a simple acknowledgement that needs no tools
+- "workspace_inventory": inspecting what files/directories exist in the workspace
+- "set_base_avatar": switching the base avatar to a named image file
+- "view_image": looking at a named or recently referenced image
+- "plan": anything else
+
+Tool categories:
+- "workspace": workspace/files inspection, local files, avatar/file operations
+- "images": image inspection or avatar/image-specific work
+- "web": current info, search, news, web reading
+- "memory": narrative memory recall/store
+- "media": image/video/slides generation or editing
+- "chart": charts/graphs/diagrams
+- "general": no strong category
+
+Rules:
+- Prefer "direct_reply" only when tools, files, current info, or deep reasoning are unnecessary.
+- Prefer "workspace_inventory" when the user is effectively asking what is present in /workspace or /workspace/files even if the phrasing is casual.
+- Use "plan" if there is any real ambiguity or multi-step work.
+- planningEffort: "low" for straightforward inspection/reporting/tool-routing turns, "medium" for normal tasks, "high" for broad research or complex problem-solving.
+- synthesisEffort: "low" for short direct answers or simple summaries, otherwise "medium" unless nuanced synthesis clearly needs "high".
+
+Return JSON only with this exact shape:
+{"mode":"plan|direct_reply|workspace_inventory|set_base_avatar|view_image","confidence":"low|medium|high","toolCategory":"general|workspace|images|web|memory|media|chart","planningEffort":"low|medium|high","synthesisEffort":"low|medium|high","reason":"short_snake_case_reason"}`,
+        },
+        {
+            role: 'user',
+            content: JSON.stringify({
+                userText: text,
+                recentFiles: recentFiles.slice(0, ROUTER_MAX_RECENT_FILES),
+                availableTools: availableToolNames,
+                heuristic: {
+                    mode: initialRoute?.mode || 'plan',
+                    reason: initialRoute?.reason || 'default',
+                    initialToolNames: initialRoute?.initialToolNames || [],
+                },
+            }),
+        },
+    ];
+}
+
+function parseRoutingDecision(response) {
+    const raw = stripJsonCodeFence(extractResponseText(response));
+    if (!raw) return null;
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+        return {
+            mode: String(parsed.mode || 'plan'),
+            confidence: normalizeRouterConfidence(parsed.confidence),
+            toolCategory: String(parsed.toolCategory || 'general').toLowerCase(),
+            planningEffort: normalizeReasoningEffort(parsed.planningEffort, 'medium'),
+            synthesisEffort: normalizeReasoningEffort(parsed.synthesisEffort, 'medium'),
+            reason: String(parsed.reason || 'model_route').trim() || 'model_route',
+        };
+    } catch {
+        return null;
+    }
+}
+
+function buildDirectRouteFromDecision(decision, { text = '', chatHistory = [], availableToolNames = [] } = {}) {
+    const explicitFiles = extractFilenameMentions(text);
+    const recentFiles = extractRecentFileReferences(chatHistory);
+    const targetImageFile = explicitFiles[0] || recentFiles[0] || null;
+
+    if (decision.mode === 'workspace_inventory' && availableToolNames.includes('WorkspaceSSH')) {
+        return {
+            mode: 'direct_tool',
+            reason: 'workspace_inventory',
+            toolName: 'WorkspaceSSH',
+            toolArgs: {
+                command: DIRECT_ROUTE_WORKSPACE_COMMAND,
+                userMessage: 'Checking the workspace files directly',
+                timeoutSeconds: 60,
+            },
+            initialToolNames: shortlistToolsForCategory('workspace', availableToolNames),
+        };
+    }
+
+    if (decision.mode === 'set_base_avatar' && explicitFiles[0] && availableToolNames.includes('SetBaseAvatar')) {
+        return {
+            mode: 'direct_tool',
+            reason: 'set_base_avatar',
+            toolName: 'SetBaseAvatar',
+            toolArgs: {
+                file: explicitFiles[0],
+                userMessage: `Switching the base avatar to ${explicitFiles[0]}`,
+            },
+            initialToolNames: shortlistToolsForCategory('images', availableToolNames),
+        };
+    }
+
+    if (decision.mode === 'view_image' && targetImageFile && availableToolNames.includes('ViewImages')) {
+        return {
+            mode: 'direct_tool',
+            reason: 'view_image',
+            toolName: 'ViewImages',
+            toolArgs: {
+                files: [targetImageFile],
+                userMessage: `Looking at ${targetImageFile}`,
+            },
+            initialToolNames: shortlistToolsForCategory('images', availableToolNames),
+        };
+    }
+
+    if (decision.mode === 'direct_reply') {
+        return {
+            mode: 'direct_reply',
+            reason: decision.reason || 'casual_chat',
+            initialToolNames: [],
+        };
+    }
+
+    return null;
+}
+
+async function maybeRefineRouteWithModel({
+    initialRoute,
+    text = '',
+    chatHistory = [],
+    availableToolNames = [],
+    args,
+    resolver,
+    modelPolicy = {},
+}) {
+    if (!shouldUseModelRouter({ text, invocationType: args.invocationType, initialRoute })) {
+        return initialRoute;
+    }
+
+    const routingModel = modelPolicy.routingModel;
+    if (!routingModel) return initialRoute;
+
+    const rid = getRequestId(resolver);
+    const previousPrompt = resolver.pathwayPrompt;
+    const recentFiles = extractRecentFileReferences(chatHistory);
+
+    try {
+        resolver.pathwayPrompt = [new Prompt({
+            messages: buildRoutingPrompt({
+                text,
+                recentFiles,
+                availableToolNames,
+                initialRoute,
+            }),
+        })];
+
+        const routeResponse = await callModelLogged(resolver, withVisibleModel({
+            ...args,
+            chatHistory: [],
+            stream: false,
+            useMemory: false,
+            skipMemoryLoad: true,
+            tools: [],
+            reasoningEffort: 'low',
+            latencyRouteMode: 'route_classifier',
+        }, routingModel), 'route', {
+            model: routingModel,
+        });
+
+        const decision = parseRoutingDecision(routeResponse);
+        if (!decision) {
+            logEvent(rid, 'route.classifier_invalid', {
+                model: routingModel,
+                contentChars: extractResponseText(routeResponse)?.length || 0,
+            });
+            return initialRoute;
+        }
+
+        const confidence = normalizeRouterConfidence(decision.confidence);
+        const nextRoute = {
+            ...initialRoute,
+            routeSource: 'model',
+            reason: initialRoute.reason === 'default' ? decision.reason : initialRoute.reason,
+            planningReasoningEffort: decision.planningEffort,
+            synthesisReasoningEffort: decision.synthesisEffort,
+        };
+
+        const categoryTools = shortlistToolsForCategory(decision.toolCategory, availableToolNames);
+        if (categoryTools.length > 0) {
+            nextRoute.initialToolNames = categoryTools;
+        }
+
+        if (confidence === 'high') {
+            const directRoute = buildDirectRouteFromDecision(decision, {
+                text,
+                chatHistory,
+                availableToolNames,
+            });
+            if (directRoute) {
+                logEvent(rid, 'route.classifier_selected', {
+                    model: routingModel,
+                    mode: directRoute.mode,
+                    reason: directRoute.reason,
+                    confidence,
+                    toolCategory: decision.toolCategory,
+                    planningEffort: decision.planningEffort,
+                    synthesisEffort: decision.synthesisEffort,
+                });
+                return {
+                    ...directRoute,
+                    routeSource: 'model',
+                    planningReasoningEffort: 'low',
+                    synthesisReasoningEffort: decision.synthesisEffort,
+                };
+            }
+        }
+
+        logEvent(rid, 'route.classifier_selected', {
+            model: routingModel,
+            mode: nextRoute.mode,
+            reason: nextRoute.reason,
+            confidence,
+            toolCategory: decision.toolCategory,
+            planningEffort: nextRoute.planningReasoningEffort,
+            synthesisEffort: nextRoute.synthesisReasoningEffort,
+        });
+        return confidence === 'low' ? initialRoute : nextRoute;
+    } catch (error) {
+        logEventError(rid, 'route.classifier_error', { model: routingModel, error: error.message });
+        return initialRoute;
+    } finally {
+        resolver.pathwayPrompt = previousPrompt;
+    }
+}
+
+function buildDirectToolResponseInstruction(route) {
+    if (route.reason === 'workspace_inventory') {
+        return 'The workspace listing above is authoritative. Answer directly from it. Be explicit about which files were found under /workspace and /workspace/files, and say when a location is empty.';
+    }
+    if (route.reason === 'set_base_avatar') {
+        return 'The avatar update result above is authoritative. If it succeeded, confirm the new avatar filename. If it failed, explain exactly what blocked the change.';
+    }
+    if (route.reason === 'view_image') {
+        return 'Use the viewed image context above to answer the user directly. Do not ask to inspect it again.';
+    }
+    return 'The relevant tool result is already in the conversation. Respond directly to the user and do not call tools again.';
+}
+
 // ─── Model Calling ───────────────────────────────────────────────────────────
 
 async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
     const rid = getRequestId(resolver);
     const model = callArgs.modelOverride || callArgs.model || overrides.model;
+    const optimizedCallArgs = applyPromptCacheOptions(callArgs, purpose, model);
     logEvent(rid, 'model.call', {
         model,
         purpose,
-        stream: callArgs.stream,
-        reasoningEffort: callArgs.reasoningEffort,
-        toolNames: summarizeToolNames(callArgs.tools),
-        toolChoice: callArgs.tool_choice || 'auto',
-        messageCount: callArgs.chatHistory?.length || 0,
+        stream: optimizedCallArgs.stream,
+        reasoningEffort: optimizedCallArgs.reasoningEffort,
+        toolNames: summarizeToolNames(optimizedCallArgs.tools),
+        toolChoice: optimizedCallArgs.tool_choice || 'auto',
+        messageCount: optimizedCallArgs.chatHistory?.length || 0,
+        ...(optimizedCallArgs.promptCache?.key && { promptCacheKey: optimizedCallArgs.promptCache.key }),
         ...overrides,
     });
     const start = Date.now();
-    const result = await resolver.promptAndParse(callArgs);
+    const result = await resolver.promptAndParse(optimizedCallArgs);
     const toolCalls = extractToolCalls(result);
     logEvent(rid, 'model.result', {
         model,
@@ -319,6 +635,95 @@ async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
         ...overrides,
     });
     return result;
+}
+
+async function runDirectToolFastPath(route, args, resolver, entityTools, handlePromptError) {
+    const rid = getRequestId(resolver);
+    const directToolCall = {
+        id: `fast-route-${Date.now()}`,
+        type: 'function',
+        function: {
+            name: route.toolName,
+            arguments: JSON.stringify(route.toolArgs || {}),
+        },
+    };
+
+    await markRuntimeStage(resolver, 'research_batch', 'Executing direct latency fast path', {
+        model: null,
+        route: route.reason,
+    });
+
+    try {
+        await processToolCallRound([directToolCall], args, resolver, entityTools);
+        const forcedHistory = [
+            ...(args.chatHistory || []),
+            {
+                role: 'user',
+                content: `[system message: ${rid}:fast-route] ${buildDirectToolResponseInstruction(route)}`,
+            },
+        ];
+
+        const finalized = await callModelLogged(resolver, withVisibleModel({
+            ...args,
+            chatHistory: forcedHistory,
+            stream: args.stream,
+            tools: [],
+            reasoningEffort: 'low',
+            skipMemoryLoad: true,
+            latencyRouteMode: route.reason,
+        }, args.synthesisModel || args.primaryModel), 'fast_finalize', {
+            model: args.synthesisModel || args.primaryModel,
+            route: route.reason,
+        });
+
+        if (!finalized) return await handlePromptError(null);
+
+        const holder = { value: finalized };
+        await drainStreamingCallbacks(resolver)(holder);
+        return holder.value;
+    } catch (error) {
+        return await handlePromptError(error);
+    }
+}
+
+async function runDirectReplyFastPath(route, args, resolver, handlePromptError) {
+    const rid = getRequestId(resolver);
+
+    await markRuntimeStage(resolver, 'synthesize', 'Executing conversational fast path', {
+        model: args.synthesisModel || args.primaryModel,
+        route: route.reason,
+    });
+
+    const forcedHistory = [
+        ...(args.chatHistory || []),
+        {
+            role: 'user',
+            content: `[system message: ${rid}:fast-reply] This turn is purely conversational and does not require tools. Respond directly to the user in your normal voice. Keep it concise unless the user asked for depth.`,
+        },
+    ];
+
+    try {
+        const finalized = await callModelLogged(resolver, withVisibleModel({
+            ...args,
+            chatHistory: forcedHistory,
+            stream: args.stream,
+            tools: [],
+            reasoningEffort: 'low',
+            skipMemoryLoad: true,
+            latencyRouteMode: route.reason,
+        }, args.synthesisModel || args.primaryModel), 'fast_chat', {
+            model: args.synthesisModel || args.primaryModel,
+            route: route.reason,
+        });
+
+        if (!finalized) return await handlePromptError(null);
+
+        const holder = { value: finalized };
+        await drainStreamingCallbacks(resolver)(holder);
+        return holder.value;
+    } catch (error) {
+        return await handlePromptError(error);
+    }
 }
 
 function makeErrorHandler(args, resolver) {
@@ -403,6 +808,25 @@ Orientation:
 ${focus}
 
 If the evidence is sufficient, synthesize. If it is not, use tools deliberately and avoid repeating the same search in slightly different wording.`;
+}
+
+function shouldIncludeAvailableFilesInPrompt({ text = '', route = null, planningToolNames = [] } = {}) {
+    if (route?.mode === 'direct_tool') return true;
+    if (/\b(file|files|workspace|stash|folder|directory|avatar|image|images|photo|photos|picture|pictures|video|videos|audio|pdf|upload|screenshot)\b/.test(text)) {
+        return true;
+    }
+
+    const fileCentricTools = new Set(['AnalyzePDF', 'AnalyzeVideo', 'CreateMedia', 'SetBaseAvatar', 'ViewImages', 'WorkspaceSSH']);
+    return planningToolNames.some(toolName => fileCentricTools.has(toolName));
+}
+
+function shouldIncludeDateTimeInPrompt({ text = '', route = null, planningToolNames = [] } = {}) {
+    if (/\b(today|tonight|tomorrow|yesterday|current|currently|latest|recent|news|weather|now|date|time|this morning|this afternoon|this evening)\b/.test(text)) {
+        return true;
+    }
+
+    const recencyTools = new Set(['FetchWebPageContentJina', 'SearchInternet', 'SearchXPlatform']);
+    return route?.mode === 'plan' && planningToolNames.some(toolName => recencyTools.has(toolName));
 }
 
 function withVisibleModel(callArgs, model) {
@@ -1296,7 +1720,7 @@ async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiForma
     try {
         let synthesisResult = await callModelLogged(resolver, withVisibleModel({
             ...args, stream: args.stream, tools: synthesisTools,
-            tool_choice: "auto", reasoningEffort: args.configuredReasoningEffort || 'medium', skipMemoryLoad: true,
+            tool_choice: "auto", reasoningEffort: args.synthesisReasoningEffort || args.configuredReasoningEffort || 'medium', skipMemoryLoad: true,
         }, args.synthesisModel || args.primaryModel), 'synthesis', { model: args.synthesisModel || args.primaryModel, replanCount: resolver.replanCount || 0, callbackDepth });
 
         if (!synthesisResult) return { result: await handlePromptError(null), done: true };
@@ -1350,7 +1774,7 @@ async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiForma
                     chatHistory: forcedHistory,
                     stream: args.stream,
                     tools: [],
-                    reasoningEffort: args.configuredReasoningEffort || 'medium',
+                    reasoningEffort: args.synthesisReasoningEffort || args.configuredReasoningEffort || 'medium',
                     skipMemoryLoad: true,
                 }, args.synthesisModel || args.primaryModel), 'synthesis_finalize', {
                     model: args.synthesisModel || args.primaryModel,
@@ -1452,7 +1876,7 @@ function loadEntityContext(entityConfig, args, resolver) {
     return { entityName, entityInstructions, useContinuityMemory, modelOverride, toolLoopModel, modelPolicy, authorityEnvelope };
 }
 
-function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse, runtimeContext = null) {
+function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse, runtimeContext = null, promptContext = {}) {
     const entityDNA = useContinuityMemory
         ? `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n`
         : (entityInstructions ? entityInstructions + '\n\n' : '');
@@ -1460,7 +1884,7 @@ function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstru
     const commonInstructionsTemplate = entityConfig?.isSystem
         ? `{{renderTemplate AI_COMMON_INSTRUCTIONS_TEXT}}`
         : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}`;
-    const instructionTemplates = `${commonInstructionsTemplate}\n{{renderTemplate AI_WORKSPACE}}\n${entityDNA}{{renderTemplate AI_EXPERTISE}}\n\n`;
+    const instructionTemplates = `${commonInstructionsTemplate}\n{{renderTemplate AI_WORKSPACE}}\n{{renderTemplate AI_EXPERTISE}}`;
     const searchRulesTemplate = `{{renderTemplate AI_SEARCH_RULES}}\n\n`;
 
     const voiceInstructions = voiceResponse ? `
@@ -1513,13 +1937,25 @@ with users too. Use SearchMemory to recall what you've learned in previous
 wakes. When you call EndPulse, include a reflection — it gets stored as an
 IDENTITY memory automatically.
 
-You can also use SendPushNotification to proactively reach out to a user
+    You can also use SendPushNotification to proactively reach out to a user
 if you've completed something they'd want to know about.
 ` : '';
     const runtimeInstructions = buildRuntimeInstructionBlock(runtimeContext);
+    const stableInstructionBlock = `${instructionTemplates}\n\n${toolsTemplate}${planInstruction}${searchRulesTemplate}${voiceInstructions}${pulseInstructions}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}`.trim();
+    const dynamicInstructionBlock = `${entityDNA}${runtimeInstructions ? `${runtimeInstructions}\n\n` : ''}`.trim();
+    const volatileSections = [];
+
+    if (promptContext.includeAvailableFiles) {
+        volatileSections.push('{{renderTemplate AI_AVAILABLE_FILES}}');
+    }
+    if (promptContext.includeDateTime) {
+        volatileSections.push('{{renderTemplate AI_DATETIME}}');
+    }
 
     return [
-        {"role": "system", "content": `${instructionTemplates}${toolsTemplate}${planInstruction}${searchRulesTemplate}${voiceInstructions}${pulseInstructions}${runtimeInstructions ? `${runtimeInstructions}\n\n` : ''}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}\n\n{{renderTemplate AI_AVAILABLE_FILES}}\n\n{{renderTemplate AI_DATETIME}}`},
+        {"role": "system", "content": stableInstructionBlock},
+        ...(dynamicInstructionBlock ? [{ "role": "system", "content": dynamicInstructionBlock }] : []),
+        ...(volatileSections.length > 0 ? [{ "role": "system", "content": volatileSections.join('\n\n') }] : []),
         "{{chatHistory}}",
     ];
 }
@@ -1677,6 +2113,43 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
     };
     resolver.args = {...args};
 
+    let runtimeRoute = routeEntityTurn({
+        text: extractUserMessage(args),
+        chatHistory: args.chatHistory || [],
+        availableToolNames: entityToolsOpenAiFormat.map(tool => tool.function?.name || ''),
+        invocationType,
+    });
+    runtimeRoute = await maybeRefineRouteWithModel({
+        initialRoute: runtimeRoute,
+        text: extractUserMessage(args),
+        chatHistory: args.chatHistory || [],
+        availableToolNames: entityToolsOpenAiFormat.map(tool => tool.function?.name || ''),
+        args,
+        resolver,
+        modelPolicy,
+    });
+    const planningToolNames = runtimeRoute.initialToolNames || [];
+    const planningToolsOpenAiFormat = planningToolNames.length > 0
+        ? entityToolsOpenAiFormat.filter(tool => planningToolNames.includes(tool.function?.name))
+        : entityToolsOpenAiFormat;
+    const promptContext = {
+        includeAvailableFiles: shouldIncludeAvailableFilesInPrompt({
+            text: extractUserMessage(args),
+            route: runtimeRoute,
+            planningToolNames: planningToolsOpenAiFormat.map(tool => tool.function?.name || '').filter(Boolean),
+        }),
+        includeDateTime: shouldIncludeDateTimeInPrompt({
+            text: extractUserMessage(args),
+            route: runtimeRoute,
+            planningToolNames: planningToolsOpenAiFormat.map(tool => tool.function?.name || '').filter(Boolean),
+        }),
+    };
+    args.latencyRouteMode = runtimeRoute.mode;
+    args.latencyRouteReason = runtimeRoute.reason;
+    args.initialPlanningToolNames = planningToolsOpenAiFormat.map(tool => tool.function?.name || '').filter(Boolean);
+    args.promptContext = promptContext;
+    resolver.args = {...args};
+
     const runtimeOrientationPacket = safeParseRuntimeValue(args.runtimeOrientationPacket);
     const runtimeContext = isEntityRuntimeEnabled(args)
         ? {
@@ -1699,22 +2172,16 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         useContinuityMemory,
         voiceResponse,
         isPulse,
-        runtimeContext
+        runtimeContext,
+        promptContext
     );
     resolver.pathwayPrompt = [new Prompt({ messages: promptMessages })];
 
     const reasoningEffort = entityConfig?.reasoningEffort || 'low';
 
-    args.chatHistory = sliceByTurns(args.messages && args.messages.length > 0 ? args.messages : args.chatHistory);
-
-    const { chatHistory: strippedHistory, availableFiles } = await syncAndStripFilesFromChatHistory(args.chatHistory, args.agentContext, chatId, entityId);
-    args.chatHistory = strippedHistory;
-
-    const rid = getRequestId(resolver);
-    try { args.chatHistory = await compressContextIfNeeded(args.chatHistory, resolver, args); }
-    catch (e) { logEventError(rid, 'request.error', { phase: 'compression', error: e.message }); }
-
     args.configuredReasoningEffort = reasoningEffort;
+    args.planningReasoningEffort = runtimeRoute.planningReasoningEffort || reasoningEffort || 'medium';
+    args.synthesisReasoningEffort = runtimeRoute.synthesisReasoningEffort || reasoningEffort || 'medium';
     args.toolLoopModel = toolLoopModel;
     args.modelPolicyResolved = modelPolicy;
     args.authorityEnvelopeResolved = authorityEnvelope;
@@ -1724,6 +2191,7 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
     args.planningModel = isEntityRuntimeEnabled(args) ? modelPolicy.planningModel : args.primaryModel;
     args.synthesisModel = isEntityRuntimeEnabled(args) ? modelPolicy.synthesisModel : args.primaryModel;
     args.verificationModel = isEntityRuntimeEnabled(args) ? modelPolicy.verificationModel : args.primaryModel;
+    args.chatHistory = sliceByTurns(args.messages && args.messages.length > 0 ? args.messages : args.chatHistory);
     resolver.args = {...args};
 
     if (isEntityRuntimeEnabled(args) && args.runtimeRunId) {
@@ -1745,12 +2213,18 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         };
     }
 
+    const rid = getRequestId(resolver);
     const requestStartTime = Date.now();
     resolver.requestStartTime = requestStartTime;
     logEvent(rid, 'request.start', {
         entity: entityId, model: args.primaryModel, stream: args.stream, invocationType,
         ...(toolLoopModel && { toolLoopModel }), reasoningEffort,
+        routingModel: modelPolicy.routingModel,
+        planningReasoningEffort: args.planningReasoningEffort,
+        synthesisReasoningEffort: args.synthesisReasoningEffort,
         entityToolCount: entityToolsOpenAiFormat.length, entityToolNames: summarizeToolNames(entityToolsOpenAiFormat),
+        planningToolCount: planningToolsOpenAiFormat.length,
+        planningToolNames: summarizeToolNames(planningToolsOpenAiFormat),
         ...(isEntityRuntimeEnabled(args) && {
             runtimeRunId: args.runtimeRunId,
             runtimeStage: args.runtimeStage || 'plan',
@@ -1760,18 +2234,86 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
     });
 
     try {
+        logEvent(rid, 'route.selected', {
+            mode: runtimeRoute.mode,
+            reason: runtimeRoute.reason,
+            routeSource: runtimeRoute.routeSource || 'heuristic',
+            planningToolNames: summarizeToolNames(planningToolsOpenAiFormat),
+            planningReasoningEffort: args.planningReasoningEffort,
+            synthesisReasoningEffort: args.synthesisReasoningEffort,
+            ...(runtimeRoute.toolName && { directTool: runtimeRoute.toolName }),
+        });
+
+        if (runtimeRoute.mode === 'direct_tool') {
+            logEvent(rid, 'route.preflight_skipped', {
+                mode: runtimeRoute.mode,
+                reason: runtimeRoute.reason,
+                skipped: ['file_sync', 'context_compression'],
+            });
+            const fastResult = await runDirectToolFastPath(runtimeRoute, args, resolver, entityTools, makeErrorHandler(args, resolver));
+            if (isPulse && useContinuityMemory && resolver.continuityEntityId) {
+                await recordPulseMemory(resolver, args, fastResult, entityName, entityInstructions);
+            } else if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
+                await recordConversationMemory(resolver, args, fastResult, entityName, entityInstructions);
+            }
+
+            logRequestEnd(resolver);
+            await finalizeRuntimeRun(args, resolver, fastResult);
+            return fastResult;
+        }
+
+        if (runtimeRoute.mode === 'direct_reply') {
+            logEvent(rid, 'route.preflight_skipped', {
+                mode: runtimeRoute.mode,
+                reason: runtimeRoute.reason,
+                skipped: ['file_sync', 'context_compression'],
+            });
+            const fastResult = await runDirectReplyFastPath(runtimeRoute, args, resolver, makeErrorHandler(args, resolver));
+            if (isPulse && useContinuityMemory && resolver.continuityEntityId) {
+                await recordPulseMemory(resolver, args, fastResult, entityName, entityInstructions);
+            } else if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
+                await recordConversationMemory(resolver, args, fastResult, entityName, entityInstructions);
+            }
+
+            logRequestEnd(resolver);
+            await finalizeRuntimeRun(args, resolver, fastResult);
+            return fastResult;
+        }
+
+        const { chatHistory: strippedHistory, availableFiles } = await syncAndStripFilesFromChatHistory(args.chatHistory, args.agentContext, chatId, entityId);
+        args.chatHistory = strippedHistory;
+        resolver.args = {...args};
+
+        try { args.chatHistory = await compressContextIfNeeded(args.chatHistory, resolver, args); }
+        catch (e) { logEventError(rid, 'request.error', { phase: 'compression', error: e.message }); }
+        resolver.args = {...args};
+
         const hasTools = entityToolsOpenAiFormat.length > 0;
-        const firstCallTools = hasTools ? [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF] : entityToolsOpenAiFormat;
+        const firstCallTools = hasTools ? [...planningToolsOpenAiFormat, SET_GOALS_OPENAI_DEF] : planningToolsOpenAiFormat;
 
         await markRuntimeStage(resolver, 'plan', 'Running initial planning/model pass', {
             model: args.planningModel || args.primaryModel,
         });
 
-        let response = await runAllPrompts(withVisibleModel({
+        const initialCallModel = args.planningModel || args.primaryModel;
+        const initialCallArgs = applyPromptCacheOptions(withVisibleModel({
             ...args, chatHistory: cloneMessages(args.chatHistory), availableFiles,
-            stream: args.stream, reasoningEffort: args.configuredReasoningEffort || 'low',
+            stream: args.stream, reasoningEffort: args.planningReasoningEffort || args.configuredReasoningEffort || 'low',
             tools: firstCallTools, tool_choice: "auto"
-        }, args.planningModel || args.primaryModel));
+        }, initialCallModel), 'initial', initialCallModel);
+
+        logEvent(rid, 'model.call', {
+            model: initialCallModel,
+            purpose: 'initial',
+            stream: initialCallArgs.stream,
+            reasoningEffort: initialCallArgs.reasoningEffort,
+            toolNames: summarizeToolNames(initialCallArgs.tools),
+            toolChoice: initialCallArgs.tool_choice || 'auto',
+            messageCount: initialCallArgs.chatHistory?.length || 0,
+            ...(initialCallArgs.promptCache?.key && { promptCacheKey: initialCallArgs.promptCache.key }),
+        });
+
+        let response = await runAllPrompts(initialCallArgs);
 
         if (!response) {
             const errorDetails = resolver.errors.length > 0 ? `: ${resolver.errors.join(', ')}` : '';

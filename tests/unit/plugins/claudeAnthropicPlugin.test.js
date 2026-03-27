@@ -115,6 +115,29 @@ test('getRequestParameters includes model in body', async (t) => {
     t.is(requestParams.anthropic_version, undefined);
 });
 
+test('getRequestParameters adds cache_control to reusable system content when prompt cache is requested', async (t) => {
+    const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
+
+    const parameters = {
+        promptCache: {
+            key: 'er:initial:abc123',
+            descriptor: 'entity-runtime|entity-1|chat-1|chat|initial|plan|tools:none',
+        },
+    };
+
+    const prompt = {
+        messages: [
+            { role: 'system', content: 'You are a cached assistant prefix.' },
+            { role: 'user', content: 'Hello' },
+        ],
+    };
+
+    const requestParams = await plugin.getRequestParameters('', parameters, prompt);
+
+    t.true(Array.isArray(requestParams.system));
+    t.deepEqual(requestParams.system[0].cache_control, { type: 'ephemeral' });
+});
+
 test('convertMessagesToClaudeVertex preserves message conversion from parent', async (t) => {
     const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
     
@@ -231,42 +254,46 @@ test('SSE conversion inherits from parent', (t) => {
 
 // Extended thinking / reasoningEffort tests
 
-test('reasoningEffort none does not enable thinking', async (t) => {
+test('reasoningEffort none disables thinking for direct Anthropic models', async (t) => {
     const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
     const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'none' };
     const result = await plugin.getRequestParameters('', parameters, {});
-    t.is(result.thinking, undefined);
+    t.deepEqual(result.thinking, { type: 'disabled' });
 });
 
-test('reasoningEffort low sets budget_tokens 1024', async (t) => {
+test('reasoningEffort low uses adaptive thinking and low output effort for direct Anthropic models', async (t) => {
     const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
     const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'low' };
     const result = await plugin.getRequestParameters('', parameters, {});
-    t.deepEqual(result.thinking, { type: 'enabled', budget_tokens: 1024 });
+    t.deepEqual(result.thinking, { type: 'adaptive' });
+    t.deepEqual(result.output_config, { effort: 'low' });
     t.is(result.temperature, 1);
 });
 
-test('reasoningEffort medium sets budget_tokens 4096', async (t) => {
+test('reasoningEffort medium uses adaptive thinking and medium output effort for direct Anthropic models', async (t) => {
     const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
     const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'medium' };
     const result = await plugin.getRequestParameters('', parameters, {});
-    t.deepEqual(result.thinking, { type: 'enabled', budget_tokens: 4096 });
+    t.deepEqual(result.thinking, { type: 'adaptive' });
+    t.deepEqual(result.output_config, { effort: 'medium' });
     t.is(result.temperature, 1);
 });
 
-test('reasoningEffort high sets budget_tokens 16384', async (t) => {
+test('reasoningEffort high uses adaptive thinking and high output effort for direct Anthropic models', async (t) => {
     const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
     const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'high' };
     const result = await plugin.getRequestParameters('', parameters, {});
-    t.deepEqual(result.thinking, { type: 'enabled', budget_tokens: 16384 });
+    t.deepEqual(result.thinking, { type: 'adaptive' });
+    t.deepEqual(result.output_config, { effort: 'high' });
     t.is(result.temperature, 1);
 });
 
-test('reasoningEffort xhigh sets budget_tokens 65536', async (t) => {
+test('reasoningEffort xhigh maps to max output effort for direct Anthropic models', async (t) => {
     const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
     const parameters = { messages: [{ role: 'user', content: 'Hi' }], reasoningEffort: 'xhigh' };
     const result = await plugin.getRequestParameters('', parameters, {});
-    t.deepEqual(result.thinking, { type: 'enabled', budget_tokens: 65536 });
+    t.deepEqual(result.thinking, { type: 'adaptive' });
+    t.deepEqual(result.output_config, { effort: 'max' });
     t.is(result.temperature, 1);
 });
 

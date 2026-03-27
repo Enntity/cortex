@@ -2,6 +2,7 @@
 import HandleBars from '../../lib/handleBars.js';
 import { executeRequest } from '../../lib/requestExecutor.js';
 import { encode } from '../../lib/encodeCache.js';
+import { normalizePromptCacheHint } from '../../lib/promptCaching.js';
 import { getFirstNToken } from '../chunker.js';
 import logger, { obscureUrlParams } from '../../lib/logger.js';
 import { config } from '../../config.js';
@@ -66,6 +67,29 @@ class ModelPlugin {
 
     safeGetEncodedLength(data) {
         return encode(data).length;
+    }
+
+    getPromptCacheSupport() {
+        const modelType = String(this.model?.type || '').toUpperCase();
+
+        if (modelType.startsWith('OPENAI')) {
+            return { provider: 'openai', mode: 'routing_key', maxKeyLength: 64 };
+        }
+        if (modelType.startsWith('CLAUDE')) {
+            return { provider: 'anthropic', mode: 'ephemeral_breakpoint' };
+        }
+        if (modelType.startsWith('GEMINI')) {
+            return { provider: 'google', mode: 'cached_content' };
+        }
+        if (modelType.startsWith('GROK') || modelType.startsWith('XAI')) {
+            return { provider: 'xai', mode: 'conversation_header' };
+        }
+
+        return { provider: 'none', mode: 'none' };
+    }
+
+    getPromptCacheHint(parameters = {}) {
+        return normalizePromptCacheHint(parameters);
     }
 
     truncateMessagesToTargetLength(messages, targetTokenLength = null, maxMessageTokenLength = Infinity) {

@@ -11,12 +11,14 @@ test('resolveEntityModelPolicy keeps explicit stage overrides and prefers the sh
         entityConfig: {
             modelPolicy: {
                 researchModel: 'xai-grok-4-1-fast-non-reasoning',
+                routingModel: 'oai-gpt54-mini',
                 synthesisModel: 'oai-gpt52',
             },
         },
         args: {
             modelPolicy: JSON.stringify({
                 planningModel: 'oai-gpt41-mini',
+                routingModel: 'oai-gpt54-nano',
                 verificationModel: 'oai-gpt41-nano',
             }),
         },
@@ -27,6 +29,7 @@ test('resolveEntityModelPolicy keeps explicit stage overrides and prefers the sh
     t.is(policy.synthesisModel, 'oai-gpt52');
     t.is(policy.verificationModel, 'oai-gpt41-nano');
     t.is(policy.researchModel, 'xai-grok-4-1-fast-non-reasoning');
+    t.is(policy.routingModel, 'oai-gpt54-nano');
 });
 
 test('resolveEntityModelPolicy defaults to cheap research while keeping planning and synthesis on the entity voice model', t => {
@@ -40,6 +43,7 @@ test('resolveEntityModelPolicy defaults to cheap research while keeping planning
 
     t.is(policy.planningModel, 'oai-gpt41');
     t.not(policy.researchModel, 'oai-gpt41');
+    t.is(policy.routingModel, 'oai-gpt54-nano');
     t.is(policy.synthesisModel, 'oai-gpt41');
     t.is(policy.verificationModel, 'oai-gpt41');
     t.is(policy.primaryModel, 'oai-gpt41');
@@ -72,6 +76,7 @@ test('resolveEntityModelPolicy lets an explicit request model override voice slo
 
     // Research is operational — configured cheap model wins
     t.is(policy.researchModel, 'xai-grok-4-1-fast-non-reasoning');
+    t.is(policy.routingModel, 'oai-gpt54-nano');
 });
 
 test('resolveAuthorityEnvelope merges digest defaults with entity and request overrides', t => {

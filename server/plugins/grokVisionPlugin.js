@@ -3,6 +3,7 @@ import logger from '../../lib/logger.js';
 import { sanitizeBase64 } from '../../lib/util.js';
 import { extractCitationTitle } from '../../lib/util.js';
 import CortexResponse from '../../lib/cortexResponse.js';
+import { applyPromptCacheToHeaders } from '../../lib/promptCaching.js';
 
 export function safeJsonParse(content) {
     try {
@@ -248,6 +249,11 @@ class GrokVisionPlugin extends OpenAIVisionPlugin {
         };
         cortexRequest.params = {}; // query params
         cortexRequest.stream = stream;
+        cortexRequest.headers = applyPromptCacheToHeaders(
+            cortexRequest.headers || {},
+            parameters,
+            this.getPromptCacheSupport()
+        );
 
         return this.executeRequest(cortexRequest);
 

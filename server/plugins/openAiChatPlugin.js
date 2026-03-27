@@ -2,6 +2,7 @@
 import ModelPlugin from './modelPlugin.js';
 import logger from '../../lib/logger.js';
 import CortexResponse from '../../lib/cortexResponse.js';
+import { applyPromptCacheToRequest } from '../../lib/promptCaching.js';
 
 class OpenAIChatPlugin extends ModelPlugin {
     constructor(pathway, model) {
@@ -77,14 +78,18 @@ class OpenAIChatPlugin extends ModelPlugin {
         }
 
         const requestParameters = {
-        messages: requestMessages,
-        temperature: this.temperature ?? 0.7,
-        ...(stream !== undefined ? { stream } : {}),
-        ...(tools && tools.length > 0 ? { tools, tool_choice: parameters.tool_choice || 'auto' } : {}),
-        ...(functions && functions.length > 0 ? { functions } : {}),
+            messages: requestMessages,
+            temperature: this.temperature ?? 0.7,
+            ...(stream !== undefined ? { stream } : {}),
+            ...(tools && tools.length > 0 ? { tools, tool_choice: parameters.tool_choice || 'auto' } : {}),
+            ...(functions && functions.length > 0 ? { functions } : {}),
         };
-    
-        return requestParameters;
+
+        const cacheSupport = this.getPromptCacheSupport();
+        return applyPromptCacheToRequest(requestParameters, parameters, cacheSupport, {
+            maxKeyLength: cacheSupport.maxKeyLength,
+            prefix: 'er',
+        });
     }
 
     // Assemble and execute the request to the OpenAI Chat API
