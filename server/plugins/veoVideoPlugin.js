@@ -18,15 +18,12 @@ class VeoVideoPlugin extends ModelPlugin {
 
     // Available Veo models
     const availableModels = {
-      'veo-2.0-generate': 'GA',
-      'veo-3.0-generate': 'Preview',
-      'veo-3.0-fast-generate': 'Preview',
-      'veo-3.1-generate': 'Preview',
-      'veo-3.1-fast-generate': 'Preview'
+      'veo-3.1-generate': 'GA',
+      'veo-3.1-fast-generate': 'GA'
     };
 
     // Get the model ID from the pathway or use default
-    const model = combinedParameters.model || 'veo-2.0-generate';
+    const model = combinedParameters.model || 'veo-3.1-generate';
     
     if (!availableModels[model]) {
       throw new Error(`Invalid Veo model ID: ${model}. Available models: ${Object.keys(availableModels).join(', ')}`);
@@ -42,9 +39,6 @@ class VeoVideoPlugin extends ModelPlugin {
           prompt: modelPromptText,
           // Optional input media fields
           ...(combinedParameters.image && { image: JSON.parse(combinedParameters.image) }),
-          // lastFrame and video are only supported in 2.0
-          ...(model === 'veo-2.0-generate' && combinedParameters.lastFrame && { lastFrame: JSON.parse(combinedParameters.lastFrame) }),
-          ...(model === 'veo-2.0-generate' && combinedParameters.video && { video: JSON.parse(combinedParameters.video) }),
         }
       ],
       parameters: {
@@ -52,9 +46,7 @@ class VeoVideoPlugin extends ModelPlugin {
         ...(combinedParameters.aspectRatio && { aspectRatio: combinedParameters.aspectRatio }),
         ...(combinedParameters.durationSeconds && { durationSeconds: combinedParameters.durationSeconds }),
         ...(combinedParameters.enhancePrompt !== undefined && { enhancePrompt: combinedParameters.enhancePrompt }),
-        // generateAudio is required for 3.0 and not supported by 2.0
-        ...(model === 'veo-3.0-generate' && { generateAudio: combinedParameters.generateAudio !== undefined ? combinedParameters.generateAudio : true }),
-        ...(model === 'veo-3.0-fast-generate' && { generateAudio: combinedParameters.generateAudio !== undefined ? combinedParameters.generateAudio : true }),
+        // generateAudio is required for 3.1
         ...(model === 'veo-3.1-generate' && { generateAudio: combinedParameters.generateAudio !== undefined ? combinedParameters.generateAudio : true }),
         ...(model === 'veo-3.1-fast-generate' && { generateAudio: combinedParameters.generateAudio !== undefined ? combinedParameters.generateAudio : true }),
         ...(combinedParameters.negativePrompt && { negativePrompt: combinedParameters.negativePrompt }),
@@ -72,61 +64,23 @@ class VeoVideoPlugin extends ModelPlugin {
   validateModelSpecificParameters(parameters, model) {
     // Duration constraints
     if (parameters.durationSeconds !== undefined) {
-      if (model === 'veo-3.0-generate' && parameters.durationSeconds !== 8) {
-        throw new Error(`Veo 3.0 only supports durationSeconds: 8, got: ${parameters.durationSeconds}`);
-      }
-      if (model === 'veo-3.0-fast-generate' && parameters.durationSeconds !== 8) {
-        throw new Error(`Veo 3.0 only supports durationSeconds: 8, got: ${parameters.durationSeconds}`);
-      }
       if (model === 'veo-3.1-generate' && parameters.durationSeconds !== 8) {
         throw new Error(`Veo 3.1 only supports durationSeconds: 8, got: ${parameters.durationSeconds}`);
       }
       if (model === 'veo-3.1-fast-generate' && parameters.durationSeconds !== 8) {
         throw new Error(`Veo 3.1 only supports durationSeconds: 8, got: ${parameters.durationSeconds}`);
       }
-      if (model === 'veo-2.0-generate' && (parameters.durationSeconds < 5 || parameters.durationSeconds > 8)) {
-        throw new Error(`Veo 2.0 supports durationSeconds between 5-8, got: ${parameters.durationSeconds}`);
-      }
     }
 
-    // lastFrame and video constraints
-    if (model === 'veo-3.0-generate') {
-      if (parameters.lastFrame) {
-        throw new Error('lastFrame parameter is not supported in Veo 3.0');
-      }
-      if (parameters.video) {
-        throw new Error('video parameter is not supported in Veo 3.0');
-      }
-      if (model === 'veo-3.0-fast-generate' && parameters.lastFrame) {
-        throw new Error('lastFrame parameter is not supported in Veo 3.0');
-      }
-      if (model === 'veo-3.0-fast-generate' && parameters.video) {
-        throw new Error('video parameter is not supported in Veo 3.0');
-      }
-      if (model === 'veo-3.1-generate' && parameters.lastFrame) {
-        throw new Error('lastFrame parameter is not supported in Veo 3.1');
-      }
-      if (model === 'veo-3.1-generate' && parameters.video) {
-        throw new Error('video parameter is not supported in Veo 3.1');
-      }
-      if (model === 'veo-3.1-fast-generate' && parameters.lastFrame) {
-        throw new Error('lastFrame parameter is not supported in Veo 3.1');
-      }
-      if (model === 'veo-3.1-fast-generate' && parameters.video) {
-        throw new Error('video parameter is not supported in Veo 3.1');
-      }
+    // lastFrame and video are not supported for the remaining Veo 3.1 models
+    if (parameters.lastFrame) {
+      throw new Error('lastFrame parameter is not supported in Veo 3.1');
+    }
+    if (parameters.video) {
+      throw new Error('video parameter is not supported in Veo 3.1');
     }
 
     // generateAudio constraints
-    if (model === 'veo-2.0-generate' && parameters.generateAudio) {
-      throw new Error('generateAudio parameter is not supported in Veo 2.0');
-    }
-    if (model === 'veo-3.0-generate' && parameters.generateAudio === undefined) {
-      logger.warn('generateAudio is required for Veo 3.0, defaulting to true');
-    }
-    if (model === 'veo-3.0-fast-generate' && parameters.generateAudio === undefined) {
-      logger.warn('generateAudio is required for Veo 3.0, defaulting to true');
-    }
     if (model === 'veo-3.1-generate' && parameters.generateAudio === undefined) {
       logger.warn('generateAudio is required for Veo 3.1, defaulting to true');
     }
@@ -147,7 +101,7 @@ class VeoVideoPlugin extends ModelPlugin {
     cortexRequest.params = requestParameters.params;
 
     // Get the model ID for the URL
-    const model = parameters.model || 'veo-2.0-generate';
+    const model = parameters.model || 'veo-3.1-generate';
     
     // Use the URL from the model configuration (cortexRequest.url is set by Cortex)
     const baseUrl = cortexRequest.url;
@@ -243,7 +197,7 @@ class VeoVideoPlugin extends ModelPlugin {
   // Override the logging function to display the request and response
   logRequestData(data, responseData, prompt) {
     const modelInput = data?.instances?.[0]?.prompt;
-    const model = this.model || 'veo-2.0-generate';
+    const model = this.model || 'veo-3.1-generate';
     const parameters = data?.parameters || {};
 
     logger.verbose(`Veo Model: ${model}`);

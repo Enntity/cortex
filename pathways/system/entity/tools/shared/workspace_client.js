@@ -471,11 +471,18 @@ async function createGenericContainer(entityId, backend, options = {}) {
 function buildGcsMountPayload(entityConfig) {
     const bucket = config.get('gcsBucketName');
     const saKey = config.get('gcpServiceAccountKey');
-    if (!bucket || !saKey) return null;
+    if (!bucket || !saKey) {
+        if (!bucket) logger.warn('[workspace] GCS_BUCKET_NAME not configured — skipping gcsfuse mount');
+        if (!saKey) logger.warn('[workspace] GCP_SERVICE_ACCOUNT_KEY not configured — skipping gcsfuse mount');
+        return null;
+    }
 
     // Scope to the entity's associated user (single-user entities only)
     const userId = entityConfig?.assocUserIds?.[0];
-    if (!userId) return null;
+    if (!userId) {
+        logger.warn(`[workspace] Entity has no assocUserIds — skipping gcsfuse mount`);
+        return null;
+    }
 
     return {
         bucket,

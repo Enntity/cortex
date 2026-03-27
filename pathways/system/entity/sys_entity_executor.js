@@ -11,6 +11,19 @@ const CONTEXT_COMPRESSION_THRESHOLD = 0.7;
 const DEFAULT_MODEL_CONTEXT_LIMIT = 128000;
 const TOOL_LOOP_MODEL = 'xai-grok-4-1-fast-non-reasoning';
 const MAX_REPLAN_SAFETY_CAP = 10;
+const TERMINAL_REPLAN_STOP_REASONS = new Set([
+    'low_novelty',
+    'evidence_cap',
+    'tool_budget_cap',
+    'research_round_cap',
+    'search_cap',
+    'fetch_cap',
+    'child_cap',
+    'repeated_search_cap',
+    'per_round_tool_cap',
+    'stage_tool_block',
+    'tool_envelope_cap',
+]);
 
 const SET_GOALS_TOOL_NAME = 'setgoals';
 
@@ -96,6 +109,30 @@ function buildToolCallEntry(toolCall, args) {
 
 function safeParse(str) {
     try { return JSON.parse(str); } catch { return undefined; }
+}
+
+function hasOnlySetGoalsToolCalls(toolCalls = []) {
+    return Array.isArray(toolCalls)
+        && toolCalls.length > 0
+        && toolCalls.every(tc => tc.function?.name?.toLowerCase() === SET_GOALS_TOOL_NAME);
+}
+
+function extractSetGoalsPlan(toolCall) {
+    if (toolCall?.function?.name?.toLowerCase() !== SET_GOALS_TOOL_NAME) return null;
+    const planArgs = safeParse(toolCall.function.arguments);
+    if (!planArgs?.goal || !Array.isArray(planArgs.steps)) return null;
+    return {
+        goal: String(planArgs.goal).trim(),
+        steps: planArgs.steps.map(step => String(step).trim()).filter(Boolean),
+    };
+}
+
+function buildPlanSignature(plan) {
+    if (!plan?.goal || !Array.isArray(plan.steps)) return null;
+    return JSON.stringify({
+        goal: String(plan.goal).trim().toLowerCase(),
+        steps: plan.steps.map(step => String(step).trim().toLowerCase()).filter(Boolean),
+    });
 }
 
 function detectToolError(result, toolName) {
@@ -398,14 +435,25 @@ async function markRuntimeStage(resolver, stage, note = '', meta = {}) {
     }
 }
 
+// Tools the cheap research model should never see or call.
+// These are creative, mutation, or side-effect tools — the synthesis model
+// can invoke them after reviewing evidence.
+const EXECUTOR_BLOCKED_TOOLS = new Set([
+    'createmedia', 'setbaseavatar', 'showoverlay', 'createchart',
+    'generateslides', 'sendpushnotification', 'storecontinuitymemory',
+]);
+
 function isToolAllowedForRuntimeStage(toolName = '', stage = '') {
-    const normalizedTool = toolName.toLowerCase();
     if (!stage) return true;
-    if (stage === 'synthesize') return normalizedTool === SET_GOALS_TOOL_NAME;
-    if (['plan', 'research_batch', 'assess', 'delegate', 'reduce', 'verify'].includes(stage)) {
-        return normalizedTool !== 'setbaseavatar';
-    }
+    // During synthesis only SetGoals is allowed (for replan).
+    // All other stages allow any tool — the executor loop's filtered tool list
+    // (filterToolsForExecutor) is what keeps creative tools away from the cheap model.
+    if (stage === 'synthesize') return toolName.toLowerCase() === SET_GOALS_TOOL_NAME;
     return true;
+}
+
+function filterToolsForExecutor(toolsOpenAiFormat) {
+    return toolsOpenAiFormat.filter(t => !EXECUTOR_BLOCKED_TOOLS.has(t.function?.name?.toLowerCase()));
 }
 
 function describeToolIntent(toolCall) {
@@ -783,6 +831,7 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     const proposedToolCalls = validToolCalls.filter(tc => tc.function.name.toLowerCase() !== SET_GOALS_TOOL_NAME);
     const { allowedToolCalls, skippedToolCalls, stopReason } = applyRuntimeToolEnvelope(proposedToolCalls, resolver);
     const realToolCalls = allowedToolCalls;
+    resolver._cycleExecutedToolCount = (resolver._cycleExecutedToolCount || 0) + realToolCalls.length;
 
     const setGoalsResults = interceptSetGoals(setGoalsCalls, preToolCallMessages, resolver);
     const toolResults = await Promise.all(realToolCalls.map(tc => executeSingleTool(tc, preToolCallMessages, args, resolver, entityTools)));
@@ -1183,6 +1232,7 @@ async function enforceGate(currentToolCalls, args, resolver, entityToolsOpenAiFo
 }
 
 async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
+    const researchTools = filterToolsForExecutor(entityToolsOpenAiFormat);
     while (resolver.toolBudgetUsed < getToolBudgetLimit(args, resolver) && (resolver.toolCallRound || 0) < getResearchRoundLimit(resolver)) {
         const rid = getRequestId(resolver);
         await markRuntimeStage(resolver, 'research_batch', 'Running bounded research loop', {
@@ -1194,7 +1244,7 @@ async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat
 
         try {
             const result = await callModelLogged(resolver, withVisibleModel({
-                ...args, stream: false, tools: entityToolsOpenAiFormat,
+                ...args, stream: false, tools: researchTools,
                 tool_choice: "auto", reasoningEffort: 'low', skipMemoryLoad: true,
             }, args.toolLoopModel), 'tool_loop', { model: args.toolLoopModel, round: resolver.toolCallRound, hasPlan: !!resolver.toolPlan });
 
@@ -1267,6 +1317,54 @@ async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiForma
 
         // Non-streaming tool_calls from synthesis
         const isReplan = passesGate(synthToolCalls);
+        const onlySetGoalsReplan = isEntityRuntimeEnabled(args) && hasOnlySetGoalsToolCalls(synthToolCalls);
+        if (isReplan && onlySetGoalsReplan) {
+            const proposedPlan = extractSetGoalsPlan(synthToolCalls[0]);
+            const samePlan = proposedPlan
+                && buildPlanSignature(proposedPlan) === buildPlanSignature(resolver.toolPlan);
+            const stopReason = resolver.entityRuntimeState?.stopReason || null;
+            const researchExhausted = !!(stopReason && TERMINAL_REPLAN_STOP_REASONS.has(stopReason));
+            const noExecutableWorkInCycle = (resolver._cycleExecutedToolCount || 0) === 0;
+
+            if (samePlan || researchExhausted || noExecutableWorkInCycle) {
+                const guardReason = samePlan
+                    ? 'same_plan'
+                    : (researchExhausted ? stopReason : 'no_executable_work');
+                logEvent(getRequestId(resolver), 'plan.replan_blocked', {
+                    reason: guardReason,
+                    stopReason,
+                    callbackDepth,
+                    currentCycleExecutedToolCount: resolver._cycleExecutedToolCount || 0,
+                    proposedPlan,
+                });
+
+                const forcedHistory = [
+                    ...(args.chatHistory || []),
+                    {
+                        role: 'user',
+                        content: `[system message: ${getRequestId(resolver)}:finalize] Research is complete for this run. Do not call SetGoals or any tools again. Respond directly to the user with the best answer you can from the evidence gathered so far. If you could not complete the requested action, say what blocked completion.`,
+                    },
+                ];
+                const finalized = await callModelLogged(resolver, withVisibleModel({
+                    ...args,
+                    chatHistory: forcedHistory,
+                    stream: args.stream,
+                    tools: [],
+                    reasoningEffort: args.configuredReasoningEffort || 'medium',
+                    skipMemoryLoad: true,
+                }, args.synthesisModel || args.primaryModel), 'synthesis_finalize', {
+                    model: args.synthesisModel || args.primaryModel,
+                    callbackDepth,
+                    guardReason,
+                });
+
+                if (!finalized) return { result: await handlePromptError(null), done: true };
+                const finalizedHolder = { value: finalized };
+                await drainStreamingCallbacks(resolver)(finalizedHolder);
+                return { result: finalizedHolder.value, done: true };
+            }
+        }
+
         if (isReplan && (resolver.replanCount || 0) < MAX_REPLAN_SAFETY_CAP) {
             resolver.replanCount = (resolver.replanCount || 0) + 1;
             logEvent(getRequestId(resolver), 'plan.replan', { replanCount: resolver.replanCount, tools: summarizeReturnedCalls(synthToolCalls) });
@@ -1301,6 +1399,7 @@ async function runDualModelPath(currentToolCalls, args, resolver, entityTools, e
     // Main loop: process → executor → synthesis → maybe replan
     let synthesisResult;
     while (true) {
+        resolver._cycleExecutedToolCount = 0;
         if (currentToolCalls.length > 0) {
             const { budgetExhausted } = await processToolCallRound(currentToolCalls, args, resolver, entityTools);
             if (budgetExhausted) currentToolCalls = [];
@@ -1568,9 +1667,12 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
     }
 
     const userInfo = args.userInfo || '';
+    const contextId = args.agentContext?.find(ctx => ctx?.default)?.contextId
+        || args.agentContext?.[0]?.contextId
+        || chatId || entityId;
     args = {
         ...args, ...config.get('entityConstants'),
-        entityId, entityTools, entityToolsOpenAiFormat, entityInstructions,
+        entityId, contextId, entityTools, entityToolsOpenAiFormat, entityInstructions,
         voiceResponse, chatId, userInfo, hasWorkspace: !!entityTools.workspacessh,
     };
     resolver.args = {...args};

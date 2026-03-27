@@ -24,7 +24,7 @@ export default {
                 properties: {
                     file: {
                         type: "string",
-                        description: "An image file from your available files (from Available Files section or FileCollection) to set as your new base avatar. The file can be referenced by filename, blob path, or URL."
+                        description: "An image file from your available files (from Available Files section or workspace) to set as your new base avatar. The file can be referenced by filename, blob path, or URL."
                     },
                     userMessage: {
                         type: "string",
@@ -92,7 +92,7 @@ export default {
             const resolvedInputImages = [];
             if (args.inputImages && Array.isArray(args.inputImages)) {
                 if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
-                    throw new Error("agentContext is required when using the 'inputImages' parameter. Use FileCollection to find available files.");
+                    throw new Error("agentContext is required when using the 'inputImages' parameter. Check your available files or browse /workspace/files/.");
                 }
                 
                 // Limit to 3 images maximum
@@ -102,7 +102,7 @@ export default {
                     const imageRef = imagesToProcess[i];
                     const resolved = await resolveFileParameter(imageRef, args.agentContext);
                     if (!resolved) {
-                        throw new Error(`File not found: "${imageRef}". Use FileCollection to find available files.`);
+                        throw new Error(`File not found: "${imageRef}". Check your available files or browse /workspace/files/.`);
                     }
                     resolvedInputImages.push(resolved);
                 }
@@ -299,7 +299,7 @@ export default {
                 const foundFile = findFileInCollection(args.file, collection);
                 
                 if (!foundFile) {
-                    throw new Error(`File not found: "${args.file}". Use FileCollection to find available files.`);
+                    throw new Error(`File not found: "${args.file}". Check your available files or browse /workspace/files/.`);
                 }
                 
                 // Validate it's an image
@@ -310,10 +310,17 @@ export default {
                 if (!isImage) {
                     throw new Error(`File "${foundFile.filename || args.file}" is not an image file (MIME type: ${mimeType || 'unknown'})`);
                 }
+
+                const resolvedUrl = foundFile.blobPath
+                    ? await getSignedFileUrl(foundFile.blobPath, 60) || foundFile.url
+                    : foundFile.url;
+                if (!resolvedUrl) {
+                    throw new Error(`No URL available for "${foundFile.filename || args.file}"`);
+                }
                 
                 // Prepare avatar image data
                 const avatarImage = {
-                    url: foundFile.url,
+                    url: resolvedUrl,
                     filename: foundFile.filename || foundFile.displayFilename || null,
                     blobPath: foundFile.blobPath || null,
                     contextId: foundFile._contextId || null

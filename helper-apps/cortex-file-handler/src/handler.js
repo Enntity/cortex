@@ -1,3 +1,5 @@
+import dns from "node:dns";
+import net from "node:net";
 import path from "path";
 import Busboy from "busboy";
 import axios from "axios";
@@ -14,9 +16,128 @@ import {
   getBucket,
 } from "./storage.js";
 import { getGCSBucketName } from "./constants.js";
-import { sanitizeFilename, constructBlobName } from "./utils.js";
+import {
+  sanitizeFilename,
+  constructBlobName,
+  appendFilenameSuffix,
+} from "./utils.js";
 
 const DEFAULT_SIGNED_MINUTES = 5;
+const MAX_COLLISION_ATTEMPTS = 1000;
+
+function isPrivateOrReservedIpv4(address) {
+  const octets = address.split(".").map((part) => parseInt(part, 10));
+  if (octets.length !== 4 || octets.some((part) => Number.isNaN(part))) {
+    return true;
+  }
+
+  const [first, second, third] = octets;
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 0 && third === 0) ||
+    (first === 192 && second === 168) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    first >= 224
+  );
+}
+
+function isPrivateOrReservedIpv6(address) {
+  const normalized = address.toLowerCase();
+  if (normalized === "::" || normalized === "::1") {
+    return true;
+  }
+  if (normalized.startsWith("::ffff:")) {
+    return isPrivateOrReservedIpv4(normalized.substring(7));
+  }
+  return (
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80:") ||
+    normalized.startsWith("fe90:") ||
+    normalized.startsWith("fea0:") ||
+    normalized.startsWith("feb0:")
+  );
+}
+
+function isDisallowedAddress(address) {
+  if (!net.isIP(address)) {
+    return true;
+  }
+  return net.isIP(address) === 4
+    ? isPrivateOrReservedIpv4(address)
+    : isPrivateOrReservedIpv6(address);
+}
+
+function isDisallowedHostname(hostname) {
+  const normalized = String(hostname || "").toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized.endsWith(".local") ||
+    normalized === "metadata.google.internal" ||
+    normalized.endsWith(".internal")
+  );
+}
+
+async function assertSafeRemoteUrl(remoteUrl) {
+  const urlObj = new URL(remoteUrl);
+  if (!["http:", "https:"].includes(urlObj.protocol)) {
+    const error = new Error("Only http and https URLs are allowed");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (urlObj.username || urlObj.password) {
+    const error = new Error("Remote URLs with embedded credentials are not allowed");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const hostname = urlObj.hostname;
+  if (isDisallowedHostname(hostname)) {
+    const error = new Error("Remote URL host is not allowed");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const addresses = net.isIP(hostname)
+    ? [{ address: hostname }]
+    : await dns.promises.lookup(hostname, { all: true, verbatim: true });
+
+  if (!Array.isArray(addresses) || addresses.length === 0) {
+    const error = new Error("Remote URL hostname could not be resolved");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (addresses.some(({ address }) => isDisallowedAddress(address))) {
+    const error = new Error("Remote URL resolves to a private or reserved address");
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+async function resolveAvailableBlobName(filename, folderPath = "") {
+  const sanitized = sanitizeFilename(filename);
+  let resolvedFilename = sanitized;
+  let blobName = constructBlobName(resolvedFilename, folderPath);
+  let attempt = 2;
+
+  while (await fileExists(blobName)) {
+    if (attempt > MAX_COLLISION_ATTEMPTS) {
+      throw new Error(`Unable to allocate a unique blob name for '${sanitized}'`);
+    }
+    resolvedFilename = appendFilenameSuffix(sanitized, attempt);
+    blobName = constructBlobName(resolvedFilename, folderPath);
+    attempt += 1;
+  }
+
+  return { resolvedFilename, blobName };
+}
 
 function buildFileResponse({
   publicUrl,
@@ -151,13 +272,15 @@ async function handleMultipartUpload(req, res) {
   const filename = params.filename || uploadFilename;
 
   const folderPath = constructFolderPath({ userId, chatId, fileScope });
-  const sanitized = sanitizeFilename(filename);
-  const blobName = constructBlobName(sanitized, folderPath);
+  const { resolvedFilename, blobName } = await resolveAvailableBlobName(
+    filename,
+    folderPath
+  );
 
   // Resolve content type
   let resolvedMimeType = uploadMimeType;
   if (resolvedMimeType === "application/octet-stream") {
-    const looked = mime.lookup(sanitized);
+    const looked = mime.lookup(resolvedFilename);
     if (looked) resolvedMimeType = looked;
   }
 
@@ -168,10 +291,10 @@ async function handleMultipartUpload(req, res) {
     buildFileResponse({
       publicUrl,
       blobPath: result.blobPath,
-      filename: sanitized,
+      filename: resolvedFilename,
       size: fileBuffer.length,
       contentType: resolvedMimeType,
-      message: `File '${sanitized}' uploaded successfully.`,
+      message: `File '${resolvedFilename}' uploaded successfully.`,
     })
   );
 }
@@ -210,6 +333,14 @@ async function handleRename(req, res) {
         message: "File already has this name.",
       })
     );
+  }
+
+  if (await fileExists(newBlobName)) {
+    return res.status(409).json({
+      error: `File '${sanitized}' already exists`,
+      filename: sanitized,
+      blobPath: newBlobName,
+    });
   }
 
   const bucketName = getGCSBucketName();
@@ -313,6 +444,7 @@ async function handleFetchRemote(params, remoteUrl, res) {
   const fileScope = params.fileScope || null;
 
   try {
+    await assertSafeRemoteUrl(remoteUrl);
     const urlObj = new URL(remoteUrl);
     let remoteFilename = path.basename(urlObj.pathname) || "download";
 
@@ -341,9 +473,14 @@ async function handleFetchRemote(params, remoteUrl, res) {
     }
 
     const folderPath = constructFolderPath({ userId, chatId, fileScope });
-    const sanitized = sanitizeFilename(remoteFilename);
-    const blobName = constructBlobName(sanitized, folderPath);
-    const resolvedMime = contentTypeHeader?.split(";")[0].trim() || mime.lookup(sanitized) || "application/octet-stream";
+    const { resolvedFilename, blobName } = await resolveAvailableBlobName(
+      remoteFilename,
+      folderPath
+    );
+    const resolvedMime =
+      contentTypeHeader?.split(";")[0].trim() ||
+      mime.lookup(resolvedFilename) ||
+      "application/octet-stream";
 
     const result = await uploadBuffer(buffer, blobName, resolvedMime);
     const publicUrl = await getSignedUrl(result.blobPath, DEFAULT_SIGNED_MINUTES);
@@ -352,13 +489,16 @@ async function handleFetchRemote(params, remoteUrl, res) {
       buildFileResponse({
         publicUrl,
         blobPath: result.blobPath,
-        filename: sanitized,
+        filename: resolvedFilename,
         size: buffer.length,
         contentType: resolvedMime,
-        message: `File '${sanitized}' uploaded successfully.`,
+        message: `File '${resolvedFilename}' uploaded successfully.`,
       })
     );
   } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
     if (err.code === "ECONNABORTED" || err.message?.includes("timeout")) {
       return res.status(408).json({ error: "Remote file download timed out" });
     }

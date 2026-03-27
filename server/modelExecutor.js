@@ -33,6 +33,8 @@ import GroqChatPlugin from './plugins/groqChatPlugin.js';
 import VeoVideoPlugin from './plugins/veoVideoPlugin.js';
 import GrokVisionPlugin from './plugins/grokVisionPlugin.js';
 import GrokResponsesPlugin from './plugins/grokResponsesPlugin.js';
+import XAIImagePlugin from './plugins/xaiImagePlugin.js';
+import XAIVideoPlugin from './plugins/xaiVideoPlugin.js';
 import OpenAIResponsesPlugin from './plugins/openAiResponsesPlugin.js';
 import AzureFoundryAgentsPlugin from './plugins/azureFoundryAgentsPlugin.js';
 import GoogleCsePlugin from './plugins/googleCsePlugin.js';
@@ -138,6 +140,12 @@ class ModelExecutor {
                 break;
             case 'GROK-RESPONSES':
                 plugin = new GrokResponsesPlugin(pathway, model);
+                break;
+            case 'XAI-IMAGE':
+                plugin = new XAIImagePlugin(pathway, model);
+                break;
+            case 'XAI-VIDEO':
+                plugin = new XAIVideoPlugin(pathway, model);
                 break;
             case 'AZURE-FOUNDRY-AGENTS':
                 plugin = new AzureFoundryAgentsPlugin(pathway, model);

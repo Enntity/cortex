@@ -47,7 +47,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to analyze from FileCollection. Each reference can be a filename, blob path, or URL. You can find available files in the availableFiles section."
+                        description: "Array of files to analyze from your available files or workspace. Each reference can be a filename, blob path, or URL. You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",
@@ -76,7 +76,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to analyze. Each can be: (1) A YouTube URL (youtube.com/watch?v=..., youtu.be/..., youtube.com/shorts/..., youtube.com/embed/...), (2) A direct video/audio file URL, (3) A file from the collection (filename, blob path, or URL from FileCollection). You can find available files in the availableFiles section."
+                        description: "Array of files to analyze. Each can be: (1) A YouTube URL (youtube.com/watch?v=..., youtu.be/..., youtube.com/shorts/..., youtube.com/embed/...), (2) A direct video/audio file URL, (3) A file from the collection (filename, blob path, or URL from your available files or workspace). You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",
@@ -134,7 +134,7 @@ export default {
                 if (fileContents.length === 0) {
                     const errorMessage = errors.length > 0 
                         ? errors.join('; ')
-                        : 'No files found. Use FileCollection to find available files.';
+                        : 'No files found. Check your available files or browse /workspace/files/.';
                     resolver.tool = JSON.stringify({ toolUsed: "vision" });
                     return JSON.stringify({ 
                         error: errorMessage,

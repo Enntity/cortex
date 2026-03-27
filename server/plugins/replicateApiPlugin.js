@@ -339,6 +339,26 @@ class ReplicateApiPlugin extends ModelPlugin {
         };
         break;
       }
+      case "replicate-kling-v2.5-turbo-pro": {
+        const validRatios = ["16:9", "9:16", "1:1"];
+        const validDurations = [5, 10];
+        const aspectRatio = combinedParameters.aspect_ratio ?? combinedParameters.aspectRatio;
+        const startImage = combinedParameters.start_image || combinedParameters.startImage || combinedParameters.image || undefined;
+        const endImage = combinedParameters.end_image || combinedParameters.endImage || undefined;
+        const negativePrompt = combinedParameters.negative_prompt ?? combinedParameters.negativePrompt ?? "";
+
+        requestParameters = {
+          input: omitUndefined({
+            prompt: modelPromptText,
+            aspect_ratio: validRatios.includes(aspectRatio) ? aspectRatio : "16:9",
+            duration: validDurations.includes(combinedParameters.duration) ? combinedParameters.duration : 5,
+            negative_prompt: negativePrompt,
+            start_image: startImage,
+            end_image: endImage,
+          }),
+        };
+        break;
+      }
       case "replicate-seedream-4": {
         const validSizes = ["1K", "2K", "4K", "custom"];
         const validRatios = ["1:1", "4:3", "3:4", "16:9", "9:16", "match_input_image"];

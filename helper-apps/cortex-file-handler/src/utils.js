@@ -53,6 +53,18 @@ export function constructBlobName(filename, folderPath = "") {
 }
 
 /**
+ * Append a suffix before the filename extension.
+ * @param {string} filename - Filename to modify
+ * @param {string|number} suffix - Suffix to append
+ * @returns {string}
+ */
+export function appendFilenameSuffix(filename, suffix) {
+  const sanitized = sanitizeFilename(filename);
+  const parsed = path.parse(sanitized);
+  return `${parsed.name}-${suffix}${parsed.ext}`;
+}
+
+/**
  * Check if a MIME type is text-based (should get charset=utf-8).
  * @param {string} mimeType - MIME type string
  * @returns {boolean}

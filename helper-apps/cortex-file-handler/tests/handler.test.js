@@ -153,6 +153,15 @@ test("GET signUrl without blobPath returns error", async (t) => {
   t.truthy(data.error);
 });
 
+test("GET fetch blocks localhost targets", async (t) => {
+  const { status, data } = await request(
+    "GET",
+    "/api/CortexFileHandler?fetch=http://localhost/test.txt&contextId=user1&fileScope=global"
+  );
+  t.is(status, 403);
+  t.truthy(data.error);
+});
+
 // ─── DELETE: with filename but no GCS ────────────────────────────────────────
 
 test.serial("DELETE with filename but no GCS configured returns error", async (t) => {

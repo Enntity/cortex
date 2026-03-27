@@ -51,6 +51,11 @@
         "xai-grok-4-1-fast-reasoning": {
             "type": "GROK-VISION",
             "emulateOpenAIChatModel": "xai-grok-4-1-fast-reasoning",
+            "metadata": {
+                "displayName": "Grok 4.1 Fast Reasoning",
+                "category": "chat",
+                "isAgentic": true
+            },
             "restStreaming": {
                 "inputParameters": {
                     "stream": false,
@@ -78,6 +83,11 @@
         "xai-grok-4-1-fast-non-reasoning": {
             "type": "GROK-VISION",
             "emulateOpenAIChatModel": "xai-grok-4-1-fast-non-reasoning",
+            "metadata": {
+                "displayName": "Grok 4.1 Fast Non-Reasoning",
+                "category": "chat",
+                "isAgentic": true
+            },
             "restStreaming": {
                 "inputParameters": {
                     "stream": false,
@@ -99,6 +109,103 @@
                 }
             ],
             "maxTokenLength": 256000,
+            "maxReturnTokens": 128000,
+            "supportsStreaming": true
+        },
+        "xai-grok-4-20-0309-reasoning": {
+            "type": "GROK-VISION",
+            "emulateOpenAIChatModel": "xai-grok-4-20-0309-reasoning",
+            "metadata": {
+                "displayName": "Grok 4.20 Reasoning",
+                "category": "chat",
+                "isAgentic": true
+            },
+            "restStreaming": {
+                "inputParameters": {
+                    "stream": false,
+                    "search_parameters": ""
+                }
+            },
+            "endpoints": [
+                {
+                    "name": "XAI GROK-4.20-0309-REASONING",
+                    "url": "https://api.x.ai/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-4.20-0309-reasoning"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 2000000,
+            "maxReturnTokens": 128000,
+            "supportsStreaming": true
+        },
+        "xai-grok-4-20-0309-non-reasoning": {
+            "type": "GROK-VISION",
+            "emulateOpenAIChatModel": "xai-grok-4-20-0309-non-reasoning",
+            "metadata": {
+                "displayName": "Grok 4.20 Non-Reasoning",
+                "category": "chat",
+                "isAgentic": true
+            },
+            "restStreaming": {
+                "inputParameters": {
+                    "stream": false,
+                    "search_parameters": ""
+                }
+            },
+            "endpoints": [
+                {
+                    "name": "XAI GROK-4.20-0309-NON-REASONING",
+                    "url": "https://api.x.ai/v1/chat/completions",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-4.20-0309-non-reasoning"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 2000000,
+            "maxReturnTokens": 128000,
+            "supportsStreaming": true
+        },
+        "xai-grok-4-20-multi-agent-0309": {
+            "type": "GROK-RESPONSES",
+            "emulateOpenAIChatModel": "grok-4.20-multi-agent-0309",
+            "metadata": {
+                "displayName": "Grok 4.20 Multi-Agent",
+                "category": "chat",
+                "isAgentic": true
+            },
+            "restStreaming": {
+                "inputParameters": {
+                    "stream": true,
+                    "tools": "",
+                    "inline_citations": true
+                }
+            },
+            "endpoints": [
+                {
+                    "name": "XAI GROK-4.20-MULTI-AGENT-0309",
+                    "url": "https://api.x.ai/v1/responses",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-4.20-multi-agent-0309"
+                    },
+                    "requestsPerSecond": 10
+                }
+            ],
+            "maxTokenLength": 2000000,
             "maxReturnTokens": 128000,
             "supportsStreaming": true
         },
@@ -292,6 +399,11 @@
         "oai-gpt54": {
             "type": "OPENAI-RESPONSES",
             "emulateOpenAIChatModel": "gpt-5.4",
+            "metadata": {
+                "displayName": "GPT 5.4",
+                "category": "chat",
+                "isAgentic": true
+            },
             "reasoningEffortMap": { "none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
             "endpoints": [
                 {
@@ -303,6 +415,59 @@
                     },
                     "params": {
                         "model": "gpt-5.4"
+                    },
+                    "requestsPerSecond": 50
+                }
+            ],
+            "maxTokenLength": 1050000,
+            "maxReturnTokens": 128000,
+            "supportsStreaming": true
+        },
+        "oai-gpt54-mini": {
+            "type": "OPENAI-RESPONSES",
+            "emulateOpenAIChatModel": "gpt-5.4-mini",
+            "metadata": {
+                "displayName": "GPT 5.4 Mini",
+                "category": "chat",
+                "isAgentic": true
+            },
+            "reasoningEffortMap": { "none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/responses",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "gpt-5.4-mini"
+                    },
+                    "requestsPerSecond": 50
+                }
+            ],
+            "maxTokenLength": 1050000,
+            "maxReturnTokens": 128000,
+            "supportsStreaming": true
+        },
+        "oai-gpt54-nano": {
+            "type": "OPENAI-RESPONSES",
+            "emulateOpenAIChatModel": "gpt-5.4-nano",
+            "metadata": {
+                "displayName": "GPT 5.4 Nano",
+                "category": "chat"
+            },
+            "reasoningEffortMap": { "none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+            "endpoints": [
+                {
+                    "name": "default",
+                    "url": "https://api.openai.com/v1/responses",
+                    "headers": {
+                        "Authorization": "Bearer {{OPENAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "gpt-5.4-nano"
                     },
                     "requestsPerSecond": 50
                 }
@@ -440,6 +605,24 @@
         },
         "gemini-flash-31-image": {
             "type": "GEMINI-3-IMAGE",
+            "metadata": {
+                "displayName": "Gemini 3.1 Flash Image",
+                "category": "image",
+                "isDefault": true,
+                "pathwayName": "image_gemini_25",
+                "resultKey": "image_gemini_25",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [0, 3],
+                    "quality": "high",
+                    "aspectRatio": "1:1",
+                    "optimizePrompt": true
+                },
+                "availableAspectRatios": [],
+                "mediaToggles": {
+                    "optimizePrompt": true
+                }
+            },
             "endpoints": [
                 {
                     "name": "GLOBAL GEMINI-3.1-FLASH-IMAGE",
@@ -457,6 +640,26 @@
         },
         "gemini-pro-3-image": {
             "type": "GEMINI-3-IMAGE",
+            "metadata": {
+                "displayName": "Gemini 3 Pro Image",
+                "category": "image",
+                "pathwayName": "image_gemini_3",
+                "resultKey": "image_gemini_3",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [0, 14],
+                    "quality": "high",
+                    "aspectRatio": "1:1",
+                    "image_size": "2K",
+                    "optimizePrompt": true
+                },
+                "availableAspectRatios": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+                "availableImageSizes": ["2K"],
+                "mediaToggles": {
+                    "optimizePrompt": true,
+                    "imageSize": true
+                }
+            },
             "endpoints": [
                 {
                     "name": "GLOBAL GEMINI-PRO-3.0-IMAGE",
@@ -475,6 +678,11 @@
         "gemini-pro-31-vision": {
             "type": "GEMINI-3-REASONING-VISION",
             "emulateOpenAIChatModel": "gemini-pro-31",
+            "metadata": {
+                "displayName": "Gemini 3.1 Pro",
+                "category": "chat",
+                "isAgentic": true
+            },
             "endpoints": [
                 {
                     "name": "GLOBAL GEMINI-PRO-3.1-VISION",
@@ -493,6 +701,12 @@
         "gemini-flash-3-vision": {
             "type": "GEMINI-3-REASONING-VISION",
             "emulateOpenAIChatModel": "gemini-flash-3",
+            "metadata": {
+                "displayName": "Gemini 3 Flash",
+                "category": "chat",
+                "isDefault": true,
+                "isAgentic": true
+            },
             "endpoints": [
                 {
                     "name": "GLOBAL GEMINI-FLASH-3-VISION",
@@ -511,6 +725,11 @@
         "gemini-flash-31-lite-vision": {
             "type": "GEMINI-3-REASONING-VISION",
             "emulateOpenAIChatModel": "gemini-flash-31-lite",
+            "metadata": {
+                "displayName": "Gemini 3.1 Flash Lite",
+                "category": "chat",
+                "isAgentic": true
+            },
             "endpoints": [
                 {
                     "name": "GLOBAL GEMINI-3.1-FLASH-LITE-VISION",
@@ -598,6 +817,11 @@
         "claude-46-opus": {
             "type": "CLAUDE-ANTHROPIC",
             "emulateOpenAIChatModel": "claude-4.6-opus",
+            "metadata": {
+                "displayName": "Claude 4.6 Opus",
+                "category": "chat",
+                "isAgentic": true
+            },
             "endpoints": [
                 {
                     "name": "Anthropic Claude Opus 4.6",
@@ -620,6 +844,11 @@
         "claude-46-sonnet": {
             "type": "CLAUDE-ANTHROPIC",
             "emulateOpenAIChatModel": "claude-4.6-sonnet",
+            "metadata": {
+                "displayName": "Claude 4.6 Sonnet",
+                "category": "chat",
+                "isAgentic": true
+            },
             "endpoints": [
                 {
                     "name": "Anthropic Claude Sonnet 4.6",
@@ -657,57 +886,34 @@
             "requestsPerSecond": 10,
             "maxTokenLength": 2048
         },
-        "veo-2.0-generate": {
-            "type": "VEO-VIDEO",
-            "endpoints": [
-                {
-                    "name": "GLOBAL VEO 2.0",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/veo-2.0-generate-001",
-                    "headers": {
-                        "Content-Type": "application/json"
-                    },
-                    "requestsPerSecond": 2
-                }
-            ],
-            "maxTokenLength": 1000,
-            "supportsStreaming": false
-        },
-        "veo-3.0-generate": {
-            "type": "VEO-VIDEO",
-            "endpoints": [
-                {
-                    "name": "GLOBAL VEO 3.0 PREVIEW",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/veo-3.0-generate-preview",
-                    "headers": {
-                        "Content-Type": "application/json"
-                    },
-                    "requestsPerSecond": 1
-                }
-            ],
-            "maxTokenLength": 1000,
-            "supportsStreaming": false
-        },
-        "veo-3.0-fast-generate": {
-            "type": "VEO-VIDEO",
-            "endpoints": [
-                {
-                    "name": "GLOBAL VEO 3.0 PREVIEW",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/veo-3.0-fast-generate-preview",
-                    "headers": {
-                        "Content-Type": "application/json"
-                    },
-                    "requestsPerSecond": 1
-                }
-            ],
-            "maxTokenLength": 1000,
-            "supportsStreaming": false
-        },
         "veo-3.1-generate": {
             "type": "VEO-VIDEO",
+            "metadata": {
+                "displayName": "Veo 3.1",
+                "category": "video",
+                "isDefault": true,
+                "pathwayName": "video_veo",
+                "resultKey": "video_veo",
+                "mediaDefaults": {
+                    "type": "video",
+                    "inputImages": [0, 1],
+                    "aspectRatio": "16:9",
+                    "duration": 8,
+                    "generateAudio": true,
+                    "resolution": "1080p",
+                    "cameraFixed": false
+                },
+                "availableAspectRatios": ["16:9", "9:16"],
+                "availableDurations": [8],
+                "availableResolutions": ["1080p"],
+                "mediaToggles": {
+                    "generateAudio": true
+                }
+            },
             "endpoints": [
                 {
-                    "name": "GLOBAL VEO 3.1 PREVIEW",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/veo-3.1-generate-preview",
+                    "name": "GLOBAL VEO 3.1 GA",
+                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/veo-3.1-generate-001",
                     "headers": {
                         "Content-Type": "application/json"
                     },
@@ -719,10 +925,31 @@
         },
         "veo-3.1-fast-generate": {
             "type": "VEO-VIDEO",
+            "metadata": {
+                "displayName": "Veo 3.1 Fast",
+                "category": "video",
+                "pathwayName": "video_veo",
+                "resultKey": "video_veo",
+                "mediaDefaults": {
+                    "type": "video",
+                    "inputImages": [0, 1],
+                    "aspectRatio": "16:9",
+                    "duration": 8,
+                    "generateAudio": true,
+                    "resolution": "1080p",
+                    "cameraFixed": false
+                },
+                "availableAspectRatios": ["16:9", "9:16"],
+                "availableDurations": [8],
+                "availableResolutions": ["1080p"],
+                "mediaToggles": {
+                    "generateAudio": true
+                }
+            },
             "endpoints": [
                 {
-                    "name": "GLOBAL VEO 3.0 PREVIEW",
-                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/veo-3.1-fast-generate-preview",
+                    "name": "GLOBAL VEO 3.1 FAST GA",
+                    "url": "https://aiplatform.googleapis.com/v1/projects/enntityvertex/locations/global/publishers/google/models/veo-3.1-fast-generate-001",
                     "headers": {
                         "Content-Type": "application/json"
                     },
@@ -734,6 +961,24 @@
         },
         "replicate-flux-2-pro": {
             "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Flux 2 Pro",
+                "category": "image",
+                "pathwayName": "image_flux",
+                "resultKey": "image_flux",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [0, 8],
+                    "quality": "high",
+                    "aspectRatio": "1:1",
+                    "resolution": "1 MP",
+                    "output_format": "webp",
+                    "output_quality": 80,
+                    "safety_tolerance": 5
+                },
+                "availableAspectRatios": ["1:1", "16:9", "21:9", "3:2", "2:3", "4:5", "5:4", "3:4", "4:3", "9:16", "9:21"],
+                "availableResolutions": ["1 MP"]
+            },
             "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-2-pro/predictions",
             "headers": {
                 "Prefer": "wait",
@@ -743,6 +988,23 @@
         },
         "replicate-qwen-image-edit-2511": {
             "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Qwen Image Edit 2511",
+                "category": "image",
+                "pathwayName": "image_qwen",
+                "resultKey": "image_qwen",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [1, 3],
+                    "quality": "high",
+                    "aspectRatio": "match_input_image",
+                    "output_format": "webp",
+                    "output_quality": 95,
+                    "go_fast": true,
+                    "disable_safety_checker": false
+                },
+                "availableAspectRatios": ["1:1", "16:9", "9:16", "4:3", "3:4", "match_input_image"]
+            },
             "url": "https://api.replicate.com/v1/models/qwen/qwen-image-edit-2511/predictions",
             "headers": {
                 "Prefer": "wait",
@@ -913,17 +1175,28 @@
                 "Content-Type": "application/json"
             }
         },
-        "replicate-seedance-1-pro": {
-            "type": "REPLICATE-API",
-            "url": "https://api.replicate.com/v1/models/bytedance/seedance-1-pro/predictions",
-            "headers": {
-                "Prefer": "wait",
-                "Authorization": "Token {{REPLICATE_API_KEY}}",
-                "Content-Type": "application/json"
-            }
-        },
         "replicate-seedance-1.5-pro": {
             "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Seedance 1.5 Pro",
+                "category": "video",
+                "pathwayName": "video_seedance",
+                "resultKey": "video_seedance",
+                "mediaDefaults": {
+                    "type": "video",
+                    "inputImages": [0, 1],
+                    "aspectRatio": "16:9",
+                    "duration": 5,
+                    "generateAudio": false,
+                    "cameraFixed": false
+                },
+                "availableAspectRatios": ["16:9", "4:3", "9:16", "1:1", "3:4", "21:9", "9:21"],
+                "availableDurations": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                "mediaToggles": {
+                    "cameraFixed": true,
+                    "generateAudio": true
+                }
+            },
             "url": "https://api.replicate.com/v1/models/bytedance/seedance-1.5-pro/predictions",
             "headers": {
                 "Prefer": "wait",
@@ -933,6 +1206,19 @@
         },
         "replicate-flux-11-pro": {
             "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Flux Pro",
+                "category": "image",
+                "pathwayName": "image_flux",
+                "resultKey": "image_flux",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [0, 0],
+                    "quality": "high",
+                    "aspectRatio": "1:1"
+                },
+                "availableAspectRatios": ["1:1", "16:9", "21:9", "3:2", "2:3", "4:5", "5:4", "3:4", "4:3", "9:16", "9:21"]
+            },
             "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
             "headers": {
                 "Prefer": "wait=60",
@@ -978,6 +1264,19 @@
         },
         "replicate-flux-kontext-max": {
             "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Flux Kontext Max",
+                "category": "image",
+                "pathwayName": "image_flux",
+                "resultKey": "image_flux",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [1, 1],
+                    "quality": "high",
+                    "aspectRatio": "match_input_image"
+                },
+                "availableAspectRatios": ["1:1", "16:9", "21:9", "3:2", "2:3", "4:5", "5:4", "3:4", "4:3", "9:16", "9:21", "match_input_image"]
+            },
             "url": "https://api.replicate.com/v1/models/black-forest-labs/flux-kontext-max/predictions",
             "headers": {
                 "Prefer": "wait",
@@ -987,6 +1286,19 @@
         },
         "replicate-multi-image-kontext-max": {
             "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Multi-Image Kontext Max",
+                "category": "image",
+                "pathwayName": "image_flux",
+                "resultKey": "image_flux",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [2, 2],
+                    "quality": "high",
+                    "aspectRatio": "1:1"
+                },
+                "availableAspectRatios": ["1:1", "16:9", "21:9", "3:2", "2:3", "4:5", "5:4", "3:4", "4:3", "9:16", "9:21", "match_input_image"]
+            },
             "url": "https://api.replicate.com/v1/models/flux-kontext-apps/multi-image-kontext-max/predictions",
             "headers": {
                 "Prefer": "wait",
@@ -996,6 +1308,33 @@
         },
         "replicate-qwen-image": {
             "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Qwen Image",
+                "category": "image",
+                "pathwayName": "image_qwen",
+                "resultKey": "image_qwen",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [0, 0],
+                    "quality": "high",
+                    "aspectRatio": "16:9",
+                    "negativePrompt": "",
+                    "width": 1024,
+                    "height": 1024,
+                    "numberResults": 1,
+                    "output_format": "webp",
+                    "output_quality": 80,
+                    "go_fast": true,
+                    "guidance": 4,
+                    "strength": 0.9,
+                    "image_size": "optimize_for_quality",
+                    "lora_scale": 1,
+                    "enhance_prompt": false,
+                    "num_inference_steps": 50,
+                    "disable_safety_checker": false
+                },
+                "availableAspectRatios": ["1:1", "16:9", "9:16", "4:3", "3:4"]
+            },
             "url": "https://api.replicate.com/v1/models/qwen/qwen-image/predictions",
             "headers": {
                 "Prefer": "wait",
@@ -1005,6 +1344,27 @@
         },
         "replicate-qwen-image-edit-plus": {
             "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Qwen Image Edit Plus",
+                "category": "image",
+                "pathwayName": "image_qwen",
+                "resultKey": "image_qwen",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [1, 3],
+                    "quality": "high",
+                    "aspectRatio": "match_input_image",
+                    "negativePrompt": "",
+                    "width": 1024,
+                    "height": 1024,
+                    "numberResults": 1,
+                    "output_format": "webp",
+                    "output_quality": 95,
+                    "go_fast": true,
+                    "disable_safety_checker": false
+                },
+                "availableAspectRatios": ["1:1", "16:9", "9:16", "4:3", "3:4", "match_input_image"]
+            },
             "url": "https://api.replicate.com/v1/models/qwen/qwen-image-edit-plus/predictions",
             "headers": {
                 "Prefer": "wait",
@@ -1014,12 +1374,212 @@
         },
         "replicate-seedream-4": {
             "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Seedream 4.0",
+                "category": "image",
+                "pathwayName": "image_seedream4",
+                "resultKey": "image_seedream4",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [0, 3],
+                    "quality": "high",
+                    "aspectRatio": "4:3",
+                    "size": "2K",
+                    "width": 2048,
+                    "height": 2048,
+                    "maxImages": 1,
+                    "numberResults": 1,
+                    "sequentialImageGeneration": "disabled",
+                    "seed": 0
+                },
+                "availableAspectRatios": ["4:3"]
+            },
             "url": "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions",
             "headers": {
                 "Prefer": "wait",
                 "Authorization": "Token {{REPLICATE_API_KEY}}",
                 "Content-Type": "application/json"
             }
+        },
+        "replicate-kling-v2.5-turbo-pro": {
+            "type": "REPLICATE-API",
+            "metadata": {
+                "displayName": "Kling 2.5 Turbo Pro",
+                "category": "video",
+                "pathwayName": "video_kling",
+                "resultKey": "video_kling",
+                "preferredUrlFormat": "azure",
+                "mediaDefaults": {
+                    "type": "video",
+                    "inputImages": [0, 2],
+                    "aspectRatio": "16:9",
+                    "duration": 5,
+                    "negativePrompt": ""
+                },
+                "availableAspectRatios": ["16:9", "9:16", "1:1"],
+                "availableDurations": [5, 10]
+            },
+            "url": "https://api.replicate.com/v1/models/kwaivgi/kling-v2.5-turbo-pro/predictions",
+            "headers": {
+                "Prefer": "wait",
+                "Authorization": "Token {{REPLICATE_API_KEY}}",
+                "Content-Type": "application/json"
+            }
+        },
+        "xai-grok-imagine-image-pro": {
+            "type": "XAI-IMAGE",
+            "metadata": {
+                "displayName": "Grok Imagine Image Pro",
+                "category": "image",
+                "pathwayName": "image_xai",
+                "resultKey": "image_xai",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [0, 3],
+                    "quality": "high",
+                    "aspectRatio": "1:1",
+                    "image_size": "2k",
+                    "numberResults": 1
+                },
+                "availableAspectRatios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20", "auto", "match_input_image"],
+                "availableImageSizes": ["1k", "2k"],
+                "mediaToggles": {
+                    "imageSize": true
+                }
+            },
+            "endpoints": [
+                {
+                    "name": "generations",
+                    "url": "https://api.x.ai/v1/images/generations",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-imagine-image-pro"
+                    },
+                    "requestsPerSecond": 1
+                },
+                {
+                    "name": "edits",
+                    "url": "https://api.x.ai/v1/images/edits",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-imagine-image-pro"
+                    },
+                    "requestsPerSecond": 1
+                }
+            ],
+            "maxTokenLength": 256000,
+            "maxReturnTokens": 8192,
+            "supportsStreaming": false
+        },
+        "xai-grok-imagine-image": {
+            "type": "XAI-IMAGE",
+            "metadata": {
+                "displayName": "Grok Imagine Image",
+                "category": "image",
+                "pathwayName": "image_xai",
+                "resultKey": "image_xai",
+                "mediaDefaults": {
+                    "type": "image",
+                    "inputImages": [0, 3],
+                    "quality": "high",
+                    "aspectRatio": "1:1",
+                    "image_size": "1k",
+                    "numberResults": 1
+                },
+                "availableAspectRatios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20", "auto", "match_input_image"],
+                "availableImageSizes": ["1k", "2k"],
+                "mediaToggles": {
+                    "imageSize": true
+                }
+            },
+            "endpoints": [
+                {
+                    "name": "generations",
+                    "url": "https://api.x.ai/v1/images/generations",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-imagine-image"
+                    },
+                    "requestsPerSecond": 5
+                },
+                {
+                    "name": "edits",
+                    "url": "https://api.x.ai/v1/images/edits",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-imagine-image"
+                    },
+                    "requestsPerSecond": 5
+                }
+            ],
+            "maxTokenLength": 256000,
+            "maxReturnTokens": 8192,
+            "supportsStreaming": false
+        },
+        "xai-grok-imagine-video": {
+            "type": "XAI-VIDEO",
+            "metadata": {
+                "displayName": "Grok Imagine Video",
+                "category": "video",
+                "pathwayName": "video_xai",
+                "resultKey": "video_xai",
+                "mediaDefaults": {
+                    "type": "video",
+                    "inputImages": [0, 3],
+                    "aspectRatio": "16:9",
+                    "duration": 5,
+                    "resolution": "480p",
+                    "generateAudio": false,
+                    "cameraFixed": false
+                },
+                "availableAspectRatios": ["16:9", "9:16", "1:1"],
+                "availableDurations": [5, 10, 15],
+                "availableResolutions": ["480p", "720p"],
+                "mediaToggles": {
+                    "resolution": true
+                }
+            },
+            "endpoints": [
+                {
+                    "name": "generations",
+                    "url": "https://api.x.ai/v1/videos/generations",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-imagine-video"
+                    },
+                    "requestsPerSecond": 1
+                },
+                {
+                    "name": "edits",
+                    "url": "https://api.x.ai/v1/videos/edits",
+                    "headers": {
+                        "Authorization": "Bearer {{XAI_API_KEY}}",
+                        "Content-Type": "application/json"
+                    },
+                    "params": {
+                        "model": "grok-imagine-video"
+                    },
+                    "requestsPerSecond": 1
+                }
+            ],
+            "maxTokenLength": 256000,
+            "maxReturnTokens": 8192,
+            "supportsStreaming": false
         },
         "replicate-flux-2-dev": {
             "type": "REPLICATE-API",
@@ -1151,6 +1711,11 @@
             "maxReturnTokens": 4096,
             "supportsStreaming": false
         }
+    },
+    "modelRedirects": {
+        "gemini-25-flash-image-preview": "gemini-flash-31-image",
+        "gemini-3-pro-image-preview": "gemini-pro-3-image",
+        "replicate-seedance-1-pro": "replicate-seedance-1.5-pro"
     },
     "enableCache": true,
     "enableRestEndpoints": true,

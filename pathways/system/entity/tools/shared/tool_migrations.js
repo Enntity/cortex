@@ -18,12 +18,13 @@ export const TOOL_MIGRATIONS = {
     'createavatarvariant': 'createmedia',
     'generatevideo': 'createmedia',
 
-    // Consolidations: file collection tools → FileCollection
-    'addfiletocollection': 'filecollection',
-    'searchfilecollection': 'filecollection',
-    'listfilecollection': 'filecollection',
-    'removefilefromcollection': 'filecollection',
-    'updatefilemetadata': 'filecollection',
+    // File collection tools → removed (workspace shell handles files via gcsfuse)
+    'addfiletocollection': null,
+    'searchfilecollection': null,
+    'listfilecollection': null,
+    'removefilefromcollection': null,
+    'updatefilemetadata': null,
+    'filecollection': null,
 
     // Consolidations: workspace tools → WorkspaceSSH
     'workspaceshell': 'workspacessh',
@@ -64,7 +65,10 @@ export function migrateToolList(tools) {
         const normalizedTool = tool.toLowerCase();
         const newTool = TOOL_MIGRATIONS[normalizedTool];
 
-        if (newTool) {
+        if (newTool === null) {
+            // Tool removed — drop it from the list
+            changed = true;
+        } else if (newTool) {
             migrated.add(newTool);
             changed = true;
         } else {
@@ -86,5 +90,5 @@ export function migrateToolList(tools) {
 export function needsMigration(tools) {
     if (!tools || !Array.isArray(tools) || tools.includes('*')) return false;
 
-    return tools.some(tool => TOOL_MIGRATIONS[tool.toLowerCase()]);
+    return tools.some(tool => tool.toLowerCase() in TOOL_MIGRATIONS);
 }

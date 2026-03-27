@@ -212,7 +212,7 @@ async function handleFilesRestore(tokens, args, resolver) {
     if (!agentContext || !Array.isArray(agentContext) || agentContext.length === 0) {
         return JSON.stringify({
             success: false,
-            error: "agentContext is required. Use FileCollection to find available backups (tagged 'workspace-backup').",
+            error: "agentContext is required. Check your available files or browse /workspace/files/ for backups.",
         });
     }
 
@@ -222,11 +222,13 @@ async function handleFilesRestore(tokens, args, resolver) {
     if (!foundFile) {
         return JSON.stringify({
             success: false,
-            error: `Backup not found: "${fileRef}". Use FileCollection to find available backups (tagged 'workspace-backup').`,
+            error: `Backup not found: "${fileRef}". Check your available files or browse /workspace/files/ for backups.`,
         });
     }
 
-    const cloudUrl = foundFile.url;
+    const cloudUrl = foundFile.blobPath
+        ? await getSignedFileUrl(foundFile.blobPath, 60) || foundFile.url
+        : foundFile.url;
     if (!cloudUrl) {
         return JSON.stringify({ success: false, error: `No URL available for backup "${foundFile.displayFilename || fileRef}"` });
     }

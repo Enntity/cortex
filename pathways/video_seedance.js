@@ -3,7 +3,7 @@ export default {
 
   enableDuplicateRequests: false,
   inputParameters: {
-    model: "replicate-seedance-1-pro",
+    model: "replicate-seedance-1.5-pro",
     resolution: "1080p",
     aspectRatio: "16:9",
     fps: 24,

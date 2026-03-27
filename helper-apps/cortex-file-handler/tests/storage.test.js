@@ -1,6 +1,11 @@
 import test from "ava";
 import { constructFolderPath, _resetForTesting } from "../src/storage.js";
-import { sanitizeFilename, constructBlobName, isTextMimeType } from "../src/utils.js";
+import {
+  sanitizeFilename,
+  constructBlobName,
+  appendFilenameSuffix,
+  isTextMimeType,
+} from "../src/utils.js";
 import { getGCSBucketName } from "../src/constants.js";
 
 // Reset singletons between tests
@@ -133,6 +138,14 @@ test("constructBlobName: sanitizes filename", (t) => {
 
 test("constructBlobName: empty folder path", (t) => {
   t.is(constructBlobName("file.txt"), "file.txt");
+});
+
+test("appendFilenameSuffix: inserts suffix before extension", (t) => {
+  t.is(appendFilenameSuffix("photo.jpg", 2), "photo-2.jpg");
+});
+
+test("appendFilenameSuffix: handles filenames without extension", (t) => {
+  t.is(appendFilenameSuffix("README", 3), "README-3");
 });
 
 // ─── isTextMimeType ──────────────────────────────────────────────────────────

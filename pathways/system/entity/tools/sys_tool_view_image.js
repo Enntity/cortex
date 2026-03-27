@@ -1,7 +1,11 @@
 // sys_tool_view_image.js
 // Tool pathway that allows agents to view image files from the file collection
 import logger from '../../../../lib/logger.js';
-import { loadFileCollection, findFileInCollection } from '../../../../lib/fileUtils.js';
+import {
+    loadFileCollection,
+    findFileInCollection,
+    getSignedFileUrl,
+} from '../../../../lib/fileUtils.js';
 
 export default {
     prompt: [],
@@ -21,7 +25,7 @@ export default {
                         items: {
                             type: "string"
                         },
-                        description: "Array of files to view from FileCollection. Each reference can be a filename, blob path, or URL. You can find available files in the availableFiles section."
+                        description: "Array of files to view from your available files or workspace. Each reference can be a filename, blob path, or URL. You can find available files in the availableFiles section."
                     },
                     userMessage: {
                         type: "string",
@@ -72,11 +76,19 @@ export default {
                     continue;
                 }
 
+                const resolvedUrl = foundFile.blobPath
+                    ? await getSignedFileUrl(foundFile.blobPath, 60) || foundFile.url
+                    : foundFile.url;
+                if (!resolvedUrl) {
+                    errors.push(`No URL available for "${foundFile.filename || file}"`);
+                    continue;
+                }
+
                 // Add to imageUrls array
                 imageUrls.push({
                     type: "image_url",
-                    url: foundFile.url,
-                    image_url: { url: foundFile.url },
+                    url: resolvedUrl,
+                    image_url: { url: resolvedUrl },
                     blobPath: foundFile.blobPath || null,
                     filename: foundFile.filename || foundFile.displayFilename || null,
                 });

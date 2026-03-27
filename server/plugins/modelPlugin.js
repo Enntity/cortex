@@ -572,7 +572,15 @@ class ModelPlugin {
 
             const errorData = Array.isArray(responseData) ? responseData[0] : responseData;
             if (errorData && errorData.error) {
-                const newError = new Error(errorData.error.message);
+                const providerErrorMessage =
+                    typeof errorData.error === 'string'
+                        ? errorData.error
+                        : errorData.error?.message
+                            || errorData.message
+                            || errorData.status;
+                const newError = new Error(
+                    providerErrorMessage || 'Provider request failed',
+                );
                 newError.data = errorData;
                 throw newError;
             }

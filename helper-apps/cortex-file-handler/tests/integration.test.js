@@ -95,16 +95,19 @@ test.serial("upload a file", async (t) => {
   t.is(res.data.blobPath, "user-1/global/hello.txt");
 });
 
-test.serial("upload overwrites same filename", async (t) => {
+test.serial("upload adds suffix for same filename", async (t) => {
   const form = makeFormData("Updated content", "hello.txt", { userId: "user-1", fileScope: "global" });
   const res = await axios.post(BASE, form, { headers: form.getHeaders() });
 
   t.is(res.status, 200);
-  t.is(res.data.filename, "hello.txt");
+  t.is(res.data.filename, "hello-2.txt");
+  t.is(res.data.blobPath, "user-1/global/hello-2.txt");
 
-  // Download and verify content was overwritten
-  const dlRes = await axios.get(res.data.url, { responseType: "text" });
-  t.is(dlRes.data, "Updated content");
+  const listRes = await axios.get(BASE, {
+    params: { operation: "listFolder", userId: "user-1", fileScope: "global" },
+  });
+  t.truthy(listRes.data.find((f) => f.filename === "hello.txt"));
+  t.truthy(listRes.data.find((f) => f.filename === "hello-2.txt"));
 });
 
 test.serial("listFolder returns files", async (t) => {
@@ -173,18 +176,19 @@ test.serial("listFolder for chat scope", async (t) => {
   t.truthy(res.data.find((f) => f.filename === "doc.pdf"));
 });
 
-test.serial("fetch remote URL", async (t) => {
-  // Upload a source file, then fetch it into another user's scope
+test.serial("fetch remote URL blocks localhost targets", async (t) => {
+  // Upload a source file, then attempt to fetch its local signed URL.
+  // Local/private destinations should be rejected.
   const form = makeFormData("Fetchable content", "source.txt", { userId: "user-1", fileScope: "global" });
   const uploadRes = await axios.post(BASE, form, { headers: form.getHeaders() });
 
   const res = await axios.get(BASE, {
     params: { fetch: uploadRes.data.url, contextId: "user-2", fileScope: "global" },
+    validateStatus: () => true,
   });
 
-  t.is(res.status, 200);
-  t.truthy(res.data.url);
-  t.is(res.data.blobPath.startsWith("user-2/global/"), true);
+  t.is(res.status, 403);
+  t.regex(res.data.error, /private|reserved|not allowed/i);
 });
 
 test.serial("rename a file", async (t) => {

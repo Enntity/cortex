@@ -186,7 +186,7 @@ Videos are 8-second clips with AI audio. Use sparingly - video is slow and expen
                 if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
                     return JSON.stringify({
                         error: true,
-                        message: "referenceImages requires file context. Use FileCollection to find available files."
+                        message: "referenceImages requires file context. Check your available files or browse /workspace/files/."
                     });
                 }
 
@@ -200,7 +200,7 @@ Videos are 8-second clips with AI audio. Use sparingly - video is slow and expen
                     if (!resolved) {
                         return JSON.stringify({
                             error: true,
-                            message: `File not found: "${imageRef}". Use FileCollection to find available files.`
+                            message: `File not found: "${imageRef}". Check your available files or browse /workspace/files/.`
                         });
                     }
                     resolvedReferenceImages.push(resolved);

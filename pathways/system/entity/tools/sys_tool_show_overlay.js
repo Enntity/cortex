@@ -1,7 +1,11 @@
 // sys_tool_show_overlay.js
 // Tool pathway that allows agents to show overlay playlist items in a special UI location
 import logger from '../../../../lib/logger.js';
-import { loadFileCollection, findFileInCollection } from '../../../../lib/fileUtils.js';
+import {
+    loadFileCollection,
+    findFileInCollection,
+    getSignedFileUrl,
+} from '../../../../lib/fileUtils.js';
 import { sendAppCommand } from '../../../../lib/pathwayTools.js';
 
 export default {
@@ -34,7 +38,7 @@ export default {
                                 },
                                 file: {
                                     type: "string",
-                                    description: "For image/video items: a file reference from FileCollection (filename, blob path, or URL)."
+                                    description: "For image/video items: a file reference from your available files or workspace (filename, blob path, or URL)."
                                 },
                                 duration: {
                                     type: "number",
@@ -69,7 +73,7 @@ export default {
         if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
             return JSON.stringify({
                 error: true,
-                message: "agentContext is required. Use FileCollection to find available files."
+                message: "agentContext is required. Check your available files or browse /workspace/files/."
             });
         }
 
@@ -140,9 +144,17 @@ export default {
                     continue;
                 }
 
+                const resolvedUrl = foundFile.blobPath
+                    ? await getSignedFileUrl(foundFile.blobPath, 60) || foundFile.url
+                    : foundFile.url;
+                if (!resolvedUrl) {
+                    errors.push(`No URL available for "${foundFile.filename || fileRef}"`);
+                    continue;
+                }
+
                 overlayItems.push({
                     type,
-                    url: foundFile.url,
+                    url: resolvedUrl,
                     ...(foundFile.filename && { filename: foundFile.filename }),
                     ...(duration !== undefined && { duration }),
                     ...(label && { label })

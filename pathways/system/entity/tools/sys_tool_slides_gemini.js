@@ -72,7 +72,7 @@ export default {
             const resolvedInputImages = [];
             if (args.inputImages && Array.isArray(args.inputImages)) {
                 if (!args.agentContext || !Array.isArray(args.agentContext) || args.agentContext.length === 0) {
-                    throw new Error("agentContext is required when using the 'inputImages' parameter. Use FileCollection to find available files.");
+                    throw new Error("agentContext is required when using the 'inputImages' parameter. Check your available files or browse /workspace/files/.");
                 }
                 
                 // Limit to 3 images maximum
@@ -82,7 +82,7 @@ export default {
                     const imageRef = imagesToProcess[i];
                     const resolved = await resolveFileParameter(imageRef, args.agentContext);
                     if (!resolved) {
-                        throw new Error(`File not found: "${imageRef}". Use FileCollection to find available files.`);
+                        throw new Error(`File not found: "${imageRef}". Check your available files or browse /workspace/files/.`);
                     }
                     resolvedInputImages.push(resolved);
                 }

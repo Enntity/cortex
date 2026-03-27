@@ -665,6 +665,7 @@ test.serial('SetGoals call from synthesis triggers replan and re-enters executor
     chatHistory: [{ role: 'user', content: 'test replan' }],
     entityTools,
     entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
     toolLoopModel: 'test-cheap-model',
     primaryModel: 'test-primary-model',
     configuredReasoningEffort: 'medium',
@@ -684,8 +685,8 @@ test.serial('SetGoals call from synthesis triggers replan and re-enters executor
   t.deepEqual(resolver.toolPlan.steps, ['New step 1', 'New step 2'], 'Plan steps should be updated');
 });
 
-// === TEST 12: Safety cap prevents infinite replan ===
-test.serial('safety cap prevents infinite SetGoals replan loop', async (t) => {
+// === TEST 12: Non-actionable SetGoals replans are finalized ===
+test.serial('SetGoals-only replans without new executable work are finalized instead of looping', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -693,12 +694,17 @@ test.serial('safety cap prevents infinite SetGoals replan loop', async (t) => {
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
   let synthesisCallCount = 0;
+  let finalizationCallCount = 0;
   const resolver = buildResolver({
     toolLoopModel: 'test-cheap-model',
     promptAndParse: async (args) => {
       // Every cheap model call returns SYNTHESIZE immediately
       if (args.modelOverride === 'test-cheap-model') {
         return 'SYNTHESIZE';
+      }
+      if ((args.tools || []).length === 0) {
+        finalizationCallCount++;
+        return 'Final answer after blocked replan';
       }
       // Every synthesis call returns SetGoals (trying to replan infinitely)
       synthesisCallCount++;
@@ -712,6 +718,7 @@ test.serial('safety cap prevents infinite SetGoals replan loop', async (t) => {
     chatHistory: [{ role: 'user', content: 'infinite replan test' }],
     entityTools,
     entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
     toolLoopModel: 'test-cheap-model',
     primaryModel: 'test-primary-model',
     configuredReasoningEffort: 'medium',
@@ -724,15 +731,15 @@ test.serial('safety cap prevents infinite SetGoals replan loop', async (t) => {
     ],
   };
 
-  await toolCallback(args, message, resolver);
+  const result = await toolCallback(args, message, resolver);
 
-  // Safety cap is 10 — synthesis can replan freely up to that hard limit
-  t.true(synthesisCallCount <= 12, `Synthesis should be bounded by safety cap (was ${synthesisCallCount})`);
-  t.true(synthesisCallCount >= 2, `Synthesis should be called at least 2 times (was ${synthesisCallCount})`);
+  t.is(result, 'Final answer after blocked replan');
+  t.is(synthesisCallCount, 2, `Expected exactly one replan attempt before finalization (was ${synthesisCallCount})`);
+  t.is(finalizationCallCount, 1, 'Runtime should force one direct finalization call');
 });
 
-// === TEST 13: Synthesis receives all tools + SetGoals ===
-test.serial('Synthesis model receives all entity tools plus SetGoals', async (t) => {
+// === TEST 13: Runtime synthesis stays SetGoals-only ===
+test.serial('Runtime synthesis model receives only SetGoals', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -758,6 +765,7 @@ test.serial('Synthesis model receives all entity tools plus SetGoals', async (t)
     chatHistory: [{ role: 'user', content: 'test synthesis tools' }],
     entityTools,
     entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
     toolLoopModel: 'test-cheap-model',
     primaryModel: 'test-primary-model',
     configuredReasoningEffort: 'medium',
@@ -774,8 +782,7 @@ test.serial('Synthesis model receives all entity tools plus SetGoals', async (t)
 
   t.truthy(synthesisToolNames, 'Should have captured synthesis tools');
   t.true(synthesisToolNames.includes('SetGoals'), 'Synthesis should have SetGoals tool');
-  t.true(synthesisToolNames.includes('SearchTool'), 'Synthesis should have entity tools');
-  t.true(synthesisToolNames.includes('AnalyzeTool'), 'Synthesis should have all entity tools');
+  t.deepEqual(synthesisToolNames, ['SetGoals'], 'Runtime synthesis should stay SetGoals-only');
 });
 
 // === TEST 14: buildStepInstruction helper ===
@@ -888,6 +895,7 @@ test.serial('replanCount accumulates on pathwayResolver across calls', async (t)
     chatHistory: [{ role: 'user', content: 'shared replan test' }],
     entityTools,
     entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
     toolLoopModel: 'test-cheap-model',
     primaryModel: 'test-primary-model',
     configuredReasoningEffort: 'medium',

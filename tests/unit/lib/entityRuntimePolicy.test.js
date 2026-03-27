@@ -29,7 +29,7 @@ test('resolveEntityModelPolicy keeps explicit stage overrides and prefers the sh
     t.is(policy.researchModel, 'xai-grok-4-1-fast-non-reasoning');
 });
 
-test('resolveEntityModelPolicy defaults to cheap planning and research while keeping synthesis on the entity voice model', t => {
+test('resolveEntityModelPolicy defaults to cheap research while keeping planning and synthesis on the entity voice model', t => {
     const policy = resolveEntityModelPolicy({
         entityConfig: {
             preferredModel: 'oai-gpt41',
@@ -38,14 +38,14 @@ test('resolveEntityModelPolicy defaults to cheap planning and research while kee
         resolver: { modelName: 'oai-gpt41' },
     });
 
-    t.not(policy.planningModel, 'oai-gpt41');
+    t.is(policy.planningModel, 'oai-gpt41');
     t.not(policy.researchModel, 'oai-gpt41');
     t.is(policy.synthesisModel, 'oai-gpt41');
     t.is(policy.verificationModel, 'oai-gpt41');
     t.is(policy.primaryModel, 'oai-gpt41');
 });
 
-test('resolveEntityModelPolicy lets an explicit request model override every stage', t => {
+test('resolveEntityModelPolicy lets an explicit request model override voice slots but not operational slots', t => {
     const policy = resolveEntityModelPolicy({
         entityConfig: {
             preferredModel: 'oai-gpt41',
@@ -61,12 +61,17 @@ test('resolveEntityModelPolicy lets an explicit request model override every sta
         resolver: { modelName: 'oai-gpt41' },
     });
 
-    t.is(policy.planningModel, 'oai-gpt41-mini');
-    t.is(policy.researchModel, 'oai-gpt41-mini');
+    // Voice slots — forcedPrimary wins
     t.is(policy.synthesisModel, 'oai-gpt41-mini');
     t.is(policy.verificationModel, 'oai-gpt41-mini');
     t.is(policy.primaryModel, 'oai-gpt41-mini');
     t.is(policy.forcedPrimaryModel, 'oai-gpt41-mini');
+
+    // Planning is a voice slot — forcedPrimary wins
+    t.is(policy.planningModel, 'oai-gpt41-mini');
+
+    // Research is operational — configured cheap model wins
+    t.is(policy.researchModel, 'xai-grok-4-1-fast-non-reasoning');
 });
 
 test('resolveAuthorityEnvelope merges digest defaults with entity and request overrides', t => {
