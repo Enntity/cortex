@@ -266,8 +266,7 @@ app.post('/reconfigure', wrap(async (req, res) => {
         // Build gcsfuse command
         const args = [
             '--implicit-dirs',
-            '--stat-cache-ttl', '60s',
-            '--type-cache-ttl', '60s',
+            '--metadata-cache-ttl-secs', '60',
             '--file-cache-max-size-mb', '512',
             '--cache-dir', '/tmp/gcsfuse-cache',
             '--key-file', keyPath,

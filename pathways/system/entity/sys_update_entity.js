@@ -6,7 +6,7 @@
 // - entityId: Required - UUID of the entity to update
 // - contextId: Required - User ID (must be associated with the entity or be the creator)
 // - Entity properties (all optional, only provided ones are updated):
-//   - name, description, identity, tools, useMemory, preferredModel, modelOverride, reasoningEffort
+//   - name, description, identity, tools, useMemory, reasoningEffort
 //   - modelPolicy, authorityProfile, autonomyProfile, defaultChildPolicy
 //   - avatarText (emoji), avatarDescription (for image gen), avatarImageUrl (avatar image URL)
 //   - voice: JSON string of voice preference array [{provider, voiceId, name?, settings?}, ...]
@@ -32,8 +32,6 @@ const ALLOWED_PROPERTIES = new Set([
     'identity',
     'tools',
     'useMemory',
-    'preferredModel',
-    'modelOverride',
     'reasoningEffort',
     'modelPolicy',
     'authorityProfile',
@@ -67,8 +65,6 @@ const MAX_LENGTHS = {
     name: 100,
     description: 1000,
     identity: 50000,
-    preferredModel: 100,
-    modelOverride: 100,
     modelPolicy: 20000,
     authorityProfile: 20000,
     autonomyProfile: 20000,
@@ -90,8 +86,6 @@ export default {
         identity: undefined,
         tools: { type: 'array', items: { type: 'string' }, default: undefined },
         useMemory: { type: 'boolean', default: undefined },
-        preferredModel: undefined,
-        modelOverride: undefined,
         reasoningEffort: undefined,
         modelPolicy: undefined,
         authorityProfile: undefined,
@@ -116,7 +110,7 @@ export default {
         pulseActiveHoursEnd: undefined,
         pulseActiveHoursTimezone: undefined,
     },
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     isMutation: true,
     executePathway: async ({ args }) => {
         try {

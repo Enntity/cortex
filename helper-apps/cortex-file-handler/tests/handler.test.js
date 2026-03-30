@@ -227,3 +227,13 @@ test.serial("GET listFolder returns error without GCS", async (t) => {
     delete process.env.GCS_BUCKETNAME;
   }
 });
+
+test.serial("GET listFolder rejects requests without user context", async (t) => {
+  const { status, data } = await request(
+    "GET",
+    "/api/CortexFileHandler?operation=listFolder&fileScope=all"
+  );
+
+  t.is(status, 400);
+  t.is(data.error, "userId or contextId is required for listFolder");
+});

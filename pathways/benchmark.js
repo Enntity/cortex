@@ -6,7 +6,9 @@ export default {
     prompt: `{{text}}`,
     inputParameters: {
         model: '',
+        reasoningEffort: '',
     },
     useInputChunking: false,
     enableCache: false,
+    temperature: 0,
 };

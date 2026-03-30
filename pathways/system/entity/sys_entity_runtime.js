@@ -16,6 +16,15 @@ function extractGoal(args = {}) {
     return '';
 }
 
+function extractContextId(args = {}) {
+    return args.contextId
+        || args.agentContext?.find(ctx => ctx?.default)?.contextId
+        || args.agentContext?.[0]?.contextId
+        || args.chatId
+        || (args.invocationType === 'pulse' ? args.entityId : null)
+        || null;
+}
+
 export default {
     prompt: [],
     emulateOpenAIChatModel: 'cortex-agent-runtime',
@@ -63,6 +72,7 @@ export default {
             run = await runtime.resumeRun({
                 runId: args.runId,
                 entityId: args.entityId || entityConfig?.id,
+                contextId: extractContextId(args),
                 origin: runtimeOrigin,
                 trigger: args.trigger || 'manual',
                 resolver,
@@ -116,6 +126,8 @@ export default {
                 runtimeStage: 'research_batch',
                 runtimeOrigin: run.origin,
                 runGoal: run.goal,
+                runtimeConversationMode: run.conversationMode,
+                runtimeConversationModeConfidence: run.conversationModeConfidence,
                 requestedOutput: run.requestedOutput,
                 authorityEnvelope: run.authorityEnvelope,
                 modelPolicy: run.modelPolicy,

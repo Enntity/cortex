@@ -99,6 +99,32 @@ const cancelRequestResolver = (parent, args, contextValue, _info) => {
     return true
 }
 
+const injectAgentMessageResolver = (parent, args, contextValue, _info) => {
+    const { requestId, message } = args;
+    const { requestState } = contextValue;
+    const existingState = requestState[requestId];
+
+    if (!existingState) {
+        return false;
+    }
+
+    const injectedMessages = Array.isArray(existingState.injectedMessages)
+        ? [...existingState.injectedMessages]
+        : [];
+    const entry = {
+        id: `inject:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`,
+        message,
+        createdAt: new Date().toISOString(),
+    };
+    injectedMessages.push(entry);
+    requestState[requestId] = {
+        ...existingState,
+        injectedMessages,
+    };
+
+    return true;
+}
+
 export {
-    resolver, rootResolver, cancelRequestResolver
+    resolver, rootResolver, cancelRequestResolver, injectAgentMessageResolver
 };

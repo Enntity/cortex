@@ -14,7 +14,9 @@ test('EntityRuntime.startRun builds an ephemeral durable run shape when storage 
         entityConfig: {
             id: 'entity-1',
             name: 'Jinx',
-            preferredModel: 'voice-model',
+            modelPolicy: {
+                primaryModel: 'voice-model',
+            },
         },
         args: {
             entityId: 'entity-1',
@@ -91,4 +93,49 @@ test('EntityRuntime.resumeRun can recover the latest open run by entity and orig
     t.is(updates.length, 1);
     t.is(updates[0].runId, 'run-123');
     t.truthy(resumed.lease?.expiresAt);
+});
+
+test('EntityRuntime.startRun does not hydrate sticky mode from storage without a context id', async t => {
+    let latestRunLookups = 0;
+    const runtime = new EntityRuntime({
+        store: {
+            isConfigured() {
+                return true;
+            },
+            async findLatestRun() {
+                latestRunLookups += 1;
+                return {
+                    id: 'run-older',
+                    conversationMode: 'nsfw',
+                    conversationModeConfidence: 'high',
+                };
+            },
+            async createRun(doc) {
+                return { ...doc, id: 'run-1' };
+            },
+        },
+    });
+
+    const run = await runtime.startRun({
+        entityConfig: {
+            id: 'entity-1',
+            modelPolicy: {
+                primaryModel: 'voice-model',
+            },
+        },
+        args: {
+            entityId: 'entity-1',
+            text: 'Hello there',
+            invocationType: 'chat',
+        },
+        resolver: {
+            requestId: 'req-3',
+            modelName: 'system-model',
+        },
+    });
+
+    t.is(latestRunLookups, 0);
+    t.is(run.conversationMode, 'chat');
+    t.is(run.conversationModeConfidence, 'low');
+    t.is(run.contextId, null);
 });

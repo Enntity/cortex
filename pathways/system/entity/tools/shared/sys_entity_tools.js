@@ -198,8 +198,6 @@ export const getAvailableEntities = async (options = {}) => {
                 activeTools: Object.keys(entityTools), // Just return array of tool names
                 // Additional fields for entity settings UI
                 tools: entity.tools || [], // Original tools array (may include '*' for legacy)
-                preferredModel: entity.preferredModel || null,
-                modelOverride: entity.modelOverride || null,
                 baseModel: entity.baseModel || null,
                 reasoningEffort: entity.reasoningEffort || 'medium',
                 modelPolicy: entity.modelPolicy || null,

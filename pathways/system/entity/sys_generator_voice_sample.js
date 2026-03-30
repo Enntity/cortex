@@ -26,11 +26,10 @@ Your voice communication system needs some examples to train it to sound like yo
     timeout: 60,
 
     executePathway: async ({args, runAllPrompts}) => {
-        // Load entity config to get name and model
+        // Load entity config to get name and policy-derived primary model
         const entityConfig = await loadEntityConfig(args.entityId);
         const aiName = entityConfig?.name || args.aiName || 'Assistant';
-        // Use entity's model if configured, otherwise use default from inputParameters
-        const model = entityConfig?.modelOverride || args.model;
+        const model = entityConfig?.modelPolicy?.primaryModel || args.model;
 
         const result = await runAllPrompts({
             ...args,

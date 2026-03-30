@@ -20,7 +20,7 @@ import logger from '../lib/logger.js';
 import { buildModelEndpoints } from '../lib/requestExecutor.js';
 import { startTestServer } from '../tests/helpers/server.js';
 import { requestState } from './requestState.js';
-import { cancelRequestResolver } from './resolver.js';
+import { cancelRequestResolver, injectAgentMessageResolver } from './resolver.js';
 import subscriptions from './subscriptions.js';
 import { getMessageTypeDefs } from './typeDef.js';
 import { buildRestEndpoints } from './rest.js';
@@ -77,6 +77,7 @@ const getTypedefs = (pathways, pathwayManager) => {
 
     type Mutation {
         cancelRequest(requestId: String!): Boolean
+        injectAgentMessage(requestId: String!, message: String!): Boolean
     }
 
     type RequestSubscription {
@@ -134,6 +135,7 @@ const getResolvers = (config, pathways, pathwayManager) => {
         },
         Mutation: {
             'cancelRequest': cancelRequestResolver,
+            'injectAgentMessage': injectAgentMessageResolver,
             ...mutationResolvers,
             ...pathwayManagerResolvers.Mutation
         },
@@ -285,4 +287,3 @@ export {
     build,
     getResolvers
 };
-

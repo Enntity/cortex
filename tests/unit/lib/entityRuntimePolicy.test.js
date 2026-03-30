@@ -2,6 +2,7 @@ import test from 'ava';
 import {
     buildSemanticToolKey,
     extractCompassFocus,
+    applyConversationModeAffiliationWithPolicy,
     resolveAuthorityEnvelope,
     resolveEntityModelPolicy,
 } from '../../../lib/entityRuntime/index.js';
@@ -17,66 +18,59 @@ test('resolveEntityModelPolicy keeps explicit stage overrides and prefers the sh
         },
         args: {
             modelPolicy: JSON.stringify({
-                planningModel: 'oai-gpt41-mini',
-                routingModel: 'oai-gpt54-nano',
+                planningModel: 'oai-gpt54-mini',
+                routingModel: 'oai-gpt54-mini',
                 verificationModel: 'oai-gpt41-nano',
             }),
         },
         resolver: { modelName: '' },
     });
 
-    t.is(policy.planningModel, 'oai-gpt41-mini');
+    t.is(policy.planningModel, 'oai-gpt54-mini');
     t.is(policy.synthesisModel, 'oai-gpt52');
     t.is(policy.verificationModel, 'oai-gpt41-nano');
     t.is(policy.researchModel, 'xai-grok-4-1-fast-non-reasoning');
-    t.is(policy.routingModel, 'oai-gpt54-nano');
+    t.is(policy.routingModel, 'oai-gpt54-mini');
 });
 
-test('resolveEntityModelPolicy defaults to cheap research while keeping planning and synthesis on the entity voice model', t => {
+test('resolveEntityModelPolicy defaults to cheap research while keeping planning and synthesis on the profile primary model', t => {
     const policy = resolveEntityModelPolicy({
-        entityConfig: {
-            preferredModel: 'oai-gpt41',
-        },
+        entityConfig: {},
         args: {},
         resolver: { modelName: 'oai-gpt41' },
     });
 
     t.is(policy.planningModel, 'oai-gpt41');
     t.not(policy.researchModel, 'oai-gpt41');
-    t.is(policy.routingModel, 'oai-gpt54-nano');
+    t.is(policy.routingModel, 'oai-gpt54-mini');
     t.is(policy.synthesisModel, 'oai-gpt41');
     t.is(policy.verificationModel, 'oai-gpt41');
     t.is(policy.primaryModel, 'oai-gpt41');
 });
 
-test('resolveEntityModelPolicy lets an explicit request model override voice slots but not operational slots', t => {
+test('resolveEntityModelPolicy ignores request model fields and stays on the configured profile', t => {
     const policy = resolveEntityModelPolicy({
         entityConfig: {
-            preferredModel: 'oai-gpt41',
             modelPolicy: {
-                planningModel: 'xai-grok-4-1-fast-non-reasoning',
+                primaryModel: 'oai-gpt41',
                 researchModel: 'xai-grok-4-1-fast-non-reasoning',
                 synthesisModel: 'oai-gpt52',
             },
         },
         args: {
-            model: 'oai-gpt41-mini',
+            model: 'oai-gpt54-mini',
         },
         resolver: { modelName: 'oai-gpt41' },
     });
 
-    // Voice slots — forcedPrimary wins
-    t.is(policy.synthesisModel, 'oai-gpt41-mini');
-    t.is(policy.verificationModel, 'oai-gpt41-mini');
-    t.is(policy.primaryModel, 'oai-gpt41-mini');
-    t.is(policy.forcedPrimaryModel, 'oai-gpt41-mini');
+    t.is(policy.synthesisModel, 'oai-gpt52');
+    t.is(policy.verificationModel, 'oai-gpt41');
+    t.is(policy.primaryModel, 'oai-gpt41');
 
-    // Planning is a voice slot — forcedPrimary wins
-    t.is(policy.planningModel, 'oai-gpt41-mini');
+    t.is(policy.planningModel, 'oai-gpt41');
 
-    // Research is operational — configured cheap model wins
     t.is(policy.researchModel, 'xai-grok-4-1-fast-non-reasoning');
-    t.is(policy.routingModel, 'oai-gpt54-nano');
+    t.is(policy.routingModel, 'oai-gpt54-mini');
 });
 
 test('resolveAuthorityEnvelope merges digest defaults with entity and request overrides', t => {
@@ -99,6 +93,25 @@ test('resolveAuthorityEnvelope merges digest defaults with entity and request ov
     t.is(envelope.maxFetchCalls, 4);
     t.is(envelope.maxSearchCalls, 3);
     t.is(envelope.maxResearchRounds, 10);
+});
+
+test('applyConversationModeAffiliationWithPolicy swaps to the NSFW profile policy when provided', t => {
+    const policy = applyConversationModeAffiliationWithPolicy(
+        {
+            primaryModel: 'oai-gpt54',
+            routingModel: 'oai-gpt54-mini',
+        },
+        'nsfw',
+        {
+            primaryModel: 'xai-grok-4-responses',
+            researchModel: 'xai-grok-4-responses',
+            routingModel: 'xai-grok-4-responses',
+        },
+    );
+
+    t.is(policy.primaryModel, 'xai-grok-4-responses');
+    t.is(policy.researchModel, 'xai-grok-4-responses');
+    t.is(policy.routingModel, 'xai-grok-4-responses');
 });
 
 test('buildSemanticToolKey normalizes search queries into a stable key', t => {

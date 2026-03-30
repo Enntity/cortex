@@ -21,7 +21,7 @@ import logger from '../../../../lib/logger.js';
 
 export default {
     prompt: [],
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     inputParameters: {
         aiName: ``,              // Entity name (e.g., "Luna")
         currentCompass: ``,      // Existing Internal Compass content (may be empty)
@@ -108,7 +108,7 @@ ${eidosMetrics ? '\nMirror: [1-2 sentences of self-observation]' : ''}`
         try {
             const result = await runAllPrompts({
                 ...args,
-                model: 'oai-gpt41-mini',
+                model: 'oai-gpt54-mini',
                 useMemory: false,
                 stream: false
             });

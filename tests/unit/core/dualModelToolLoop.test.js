@@ -81,7 +81,7 @@ test('insertSystemMessage does not remove messages with different requestId', t 
 test('toolLoopModel is null when model is not in config', t => {
     // Simulate config.get('models') not having TOOL_LOOP_MODEL
     const models = { 'oai-gpt41': { name: 'gpt-4.1' } };
-    const TOOL_LOOP_MODEL = 'oai-gpt5-mini';
+    const TOOL_LOOP_MODEL = 'oai-gpt54-mini';
     const toolLoopModel = models[TOOL_LOOP_MODEL] ? TOOL_LOOP_MODEL : null;
 
     t.is(toolLoopModel, null);
@@ -90,12 +90,12 @@ test('toolLoopModel is null when model is not in config', t => {
 test('toolLoopModel is set when model exists in config', t => {
     const models = {
         'oai-gpt41': { name: 'gpt-4.1' },
-        'oai-gpt5-mini': { name: 'gpt-4.1-mini' }
+        'oai-gpt54-mini': { name: 'gpt-5.4-mini' }
     };
-    const TOOL_LOOP_MODEL = 'oai-gpt5-mini';
+    const TOOL_LOOP_MODEL = 'oai-gpt54-mini';
     const toolLoopModel = models[TOOL_LOOP_MODEL] ? TOOL_LOOP_MODEL : null;
 
-    t.is(toolLoopModel, 'oai-gpt5-mini');
+    t.is(toolLoopModel, 'oai-gpt54-mini');
 });
 
 test('when toolLoopModel is null, fallback path uses primary model with auto tool_choice', t => {
@@ -114,8 +114,8 @@ test('when toolLoopModel is null, fallback path uses primary model with auto too
 test('dual-model loop uses cheap model with stream:false for both streaming and non-streaming', t => {
     // When toolLoopModel is set, the internal loop always uses stream:false
     // regardless of the original args.stream value
-    const streamingArgs = { toolLoopModel: 'oai-gpt5-mini', primaryModel: 'oai-gpt41', stream: true };
-    const nonStreamingArgs = { toolLoopModel: 'oai-gpt5-mini', primaryModel: 'oai-gpt41', stream: false };
+    const streamingArgs = { toolLoopModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt41', stream: true };
+    const nonStreamingArgs = { toolLoopModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt41', stream: false };
 
     // Internal loop always: stream:false, model: toolLoopModel
     // This is the same for both streaming and non-streaming
@@ -123,7 +123,7 @@ test('dual-model loop uses cheap model with stream:false for both streaming and 
     const loopModel = streamingArgs.toolLoopModel;
 
     t.false(loopStream);
-    t.is(loopModel, 'oai-gpt5-mini');
+    t.is(loopModel, 'oai-gpt54-mini');
 
     // Final synthesis preserves original stream setting
     t.true(streamingArgs.stream);  // streaming: synthesis streams
@@ -135,7 +135,7 @@ test('final synthesis uses primary model with original stream setting and SetGoa
     const synthesisTools = [SET_GOALS_TOOL];
 
     // Streaming request
-    const streamingArgs = { toolLoopModel: 'oai-gpt5-mini', primaryModel: 'oai-gpt41', stream: true };
+    const streamingArgs = { toolLoopModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt41', stream: true };
     const streamSynthesis = {
         modelOverride: streamingArgs.primaryModel,
         stream: streamingArgs.stream,
@@ -149,7 +149,7 @@ test('final synthesis uses primary model with original stream setting and SetGoa
     t.is(streamSynthesis.tool_choice, 'auto');
 
     // Non-streaming request
-    const nonStreamingArgs = { toolLoopModel: 'oai-gpt5-mini', primaryModel: 'oai-gpt41', stream: false };
+    const nonStreamingArgs = { toolLoopModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt41', stream: false };
     const nonStreamSynthesis = {
         modelOverride: nonStreamingArgs.primaryModel,
         stream: nonStreamingArgs.stream,
@@ -164,11 +164,11 @@ test('final synthesis uses primary model with original stream setting and SetGoa
 
 test('initial call always uses original stream setting', t => {
     // With toolLoopModel + streaming: initial call streams
-    const streaming = { toolLoopModel: 'oai-gpt5-mini', stream: true };
+    const streaming = { toolLoopModel: 'oai-gpt54-mini', stream: true };
     t.true(streaming.stream);
 
     // With toolLoopModel + non-streaming: initial call doesn't stream
-    const nonStreaming = { toolLoopModel: 'oai-gpt5-mini', stream: false };
+    const nonStreaming = { toolLoopModel: 'oai-gpt54-mini', stream: false };
     t.false(nonStreaming.stream);
 
     // Without toolLoopModel: initial call uses original setting
@@ -181,7 +181,7 @@ test('pathwayResolver.args snapshot includes toolLoopModel and primaryModel', t 
     // 1. Set model assignments on args
     // 2. Snapshot args onto pathwayResolver
     const args = { chatHistory: [], stream: true };
-    const toolLoopModel = 'oai-gpt5-mini';
+    const toolLoopModel = 'oai-gpt54-mini';
     const resolverModelName = 'oai-claude-45-opus';
 
     // Assignments BEFORE snapshot (the fix)
@@ -191,7 +191,7 @@ test('pathwayResolver.args snapshot includes toolLoopModel and primaryModel', t 
     const pathwayResolverArgs = { ...args };
 
     // Streaming plugin callback uses pathwayResolver.args
-    t.is(pathwayResolverArgs.toolLoopModel, 'oai-gpt5-mini');
+    t.is(pathwayResolverArgs.toolLoopModel, 'oai-gpt54-mini');
     t.is(pathwayResolverArgs.primaryModel, 'oai-claude-45-opus');
 });
 
@@ -226,7 +226,7 @@ test('SYNTHESIZE instruction is injected inside dual-model loop for both streami
     const messages = [{ role: 'user', content: 'Hello' }];
 
     // Streaming + toolLoopModel: inject (now works for streaming too!)
-    const streaming = { toolLoopModel: 'oai-gpt5-mini', stream: true };
+    const streaming = { toolLoopModel: 'oai-gpt54-mini', stream: true };
     let result;
     if (streaming.toolLoopModel) {
         result = insertSystemMessage([...messages],
@@ -238,7 +238,7 @@ test('SYNTHESIZE instruction is injected inside dual-model loop for both streami
     t.true(result[1].content.includes('SYNTHESIZE'));
 
     // Non-streaming + toolLoopModel: inject
-    const nonStreaming = { toolLoopModel: 'oai-gpt5-mini', stream: false };
+    const nonStreaming = { toolLoopModel: 'oai-gpt54-mini', stream: false };
     if (nonStreaming.toolLoopModel) {
         result = insertSystemMessage([...messages],
             'If you need more information, call tools. If you have gathered sufficient information to answer the user\'s request, respond with just: SYNTHESIZE',
@@ -263,7 +263,7 @@ test('final synthesis uses primary model with configured reasoning effort', t =>
     const SET_GOALS_TOOL = { type: 'function', function: { name: 'SetGoals' } };
     const synthesisTools = [SET_GOALS_TOOL];
     const args = {
-        toolLoopModel: 'oai-gpt5-mini',
+        toolLoopModel: 'oai-gpt54-mini',
         primaryModel: 'oai-gpt41',
         configuredReasoningEffort: 'high',
         stream: true
@@ -311,7 +311,7 @@ test('primaryModel uses explicit override when set', t => {
 
 test('final synthesis defaults to medium reasoning effort when not configured', t => {
     const args = {
-        toolLoopModel: 'oai-gpt5-mini',
+        toolLoopModel: 'oai-gpt54-mini',
         primaryModel: 'oai-gpt41',
         configuredReasoningEffort: undefined,
         stream: true
@@ -570,7 +570,7 @@ function simulateRehydration(args, chatHistory, store) {
 }
 
 test('dehydration toggle: toolLoopModel set — results stay full, store empty', t => {
-    const args = { toolLoopModel: 'oai-gpt5-mini' };
+    const args = { toolLoopModel: 'oai-gpt54-mini' };
     const store = new Map();
     const bigContent = 'x'.repeat(5000);
     const messages = [
@@ -608,7 +608,7 @@ test('dehydration toggle: no toolLoopModel — results are compressed', t => {
 });
 
 test('rehydration toggle: toolLoopModel set — chatHistory unchanged', t => {
-    const args = { toolLoopModel: 'oai-gpt5-mini' };
+    const args = { toolLoopModel: 'oai-gpt54-mini' };
     const store = new Map();
     const fullContent = 'y'.repeat(5000);
     store.set('tc1', { fullContent, compressed: true, round: 1 });
@@ -712,7 +712,7 @@ test('no depth cap on nested callbacks — only the tool budget limits recursion
 });
 
 test('dehydration toggle: full cycle with toolLoopModel — no compression, no rehydration', t => {
-    const args = { toolLoopModel: 'oai-gpt5-mini' };
+    const args = { toolLoopModel: 'oai-gpt54-mini' };
     const store = new Map();
     const bigContent = JSON.stringify({ title: 'Test', content: 'z'.repeat(5000) });
     const messages = [

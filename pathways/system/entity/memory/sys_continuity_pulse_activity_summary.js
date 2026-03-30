@@ -13,7 +13,7 @@ import { Prompt } from '../../../../server/prompt.js';
 
 export default {
     prompt: [],
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     inputParameters: {
         aiName: ``,
         toolActivity: ``,
@@ -46,7 +46,7 @@ export default {
 
         const result = await runAllPrompts({
             ...args,
-            model: 'oai-gpt41-mini',
+            model: 'oai-gpt54-mini',
             useMemory: false,
             stream: false
         });

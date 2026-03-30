@@ -28,7 +28,7 @@ import { config } from '../../../config.js';
 export default {
     prompt: [],
     inputParameters: {},
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     executePathway: async ({ args }) => {
         try {
             const matchmakerName = config.get('systemEntities.matchmakerName');

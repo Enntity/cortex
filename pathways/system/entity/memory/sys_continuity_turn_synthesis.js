@@ -63,7 +63,7 @@ function extractJsonText(raw) {
 
 export default {
     prompt: [],
-    model: 'oai-gpt5-mini',
+    model: 'oai-gpt54-mini',
     reasoningEffort: 'none',
     inputParameters: {
         aiName: ``,           // Entity name (e.g., "Luna")
@@ -180,7 +180,7 @@ Extract and return a JSON object with these categories (ALL in first person):
         try {
             const result = await runAllPrompts({
                 ...args,
-                model: 'oai-gpt5-mini',
+                model: 'oai-gpt54-mini',
                 reasoningEffort: 'none',
                 useMemory: false,
                 stream: false

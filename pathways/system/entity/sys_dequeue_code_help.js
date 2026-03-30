@@ -30,7 +30,7 @@ export default {
         filesChanged: ``, // comma-separated list or JSON array
         error: ``,        // error message if failed
     },
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     executePathway: async ({ args }) => {
         const { action } = args;
 

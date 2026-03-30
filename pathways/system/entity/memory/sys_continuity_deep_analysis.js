@@ -16,7 +16,7 @@ import logger from '../../../../lib/logger.js';
 
 export default {
     prompt: [],
-    model: 'oai-gpt41',  // Use stronger model for deep analysis
+    model: 'oai-gpt54-mini',
     inputParameters: {
         aiName: ``,           // Entity name (e.g., "Luna")
         memories: ``,         // JSON stringified array of memories to analyze
@@ -162,7 +162,7 @@ Return JSON:
         try {
             const result = await runAllPrompts({
                 ...args,
-                model: 'oai-gpt41',
+                model: 'oai-gpt54-mini',
                 useMemory: false,
                 stream: false
             });
@@ -196,4 +196,3 @@ Return JSON:
         }
     }
 };
-

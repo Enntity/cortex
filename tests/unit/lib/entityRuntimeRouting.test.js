@@ -33,45 +33,55 @@ test('extractRecentFileReferences scans prior chat content and tool arguments', 
     t.deepEqual(files, ['moodboard.webp', 'avatar-final.png', 'storyboard.jpg']);
 });
 
-test('shortlistInitialTools narrows a workspace question to the relevant tool family', t => {
+test('shortlistInitialTools returns an empty shortlist without heuristic routing', t => {
     const shortlist = shortlistInitialTools({
         text: 'Show me what files are in the workspace stash',
         availableToolNames: ['WorkspaceSSH', 'ViewImages', 'SearchInternet', 'CreateChart'],
     });
 
-    t.deepEqual(shortlist, ['WorkspaceSSH', 'ViewImages']);
+    t.deepEqual(shortlist, []);
 });
 
-test('routeEntityTurn picks the direct workspace fast path for inventory questions', t => {
+test('routeEntityTurn uses high-confidence chat mode to bias toward direct reply', t => {
     const route = routeEntityTurn({
         text: 'What other files do you see in the workspace?',
         availableToolNames: ['WorkspaceSSH', 'ViewImages'],
         invocationType: 'chat',
+        conversationMode: 'chat',
+        conversationModeConfidence: 'high',
     });
 
-    t.is(route.mode, 'direct_tool');
-    t.is(route.reason, 'workspace_inventory');
-    t.is(route.toolName, 'WorkspaceSSH');
-    t.true(route.toolArgs.command.includes('/workspace/files'));
+    t.is(route.mode, 'direct_reply');
+    t.is(route.reason, 'chat_mode');
+    t.deepEqual(route.initialToolNames, []);
 });
 
-test('routeEntityTurn picks direct avatar change when an explicit image file is given', t => {
+test('routeEntityTurn keeps low-confidence chat mode on plan until the router confirms intent', t => {
+    const route = routeEntityTurn({
+        text: 'Hey you. Miss me?',
+        availableToolNames: ['WorkspaceSSH', 'SearchInternet', 'ViewImages'],
+        invocationType: 'chat',
+        conversationMode: 'chat',
+        conversationModeConfidence: 'low',
+    });
+
+    t.is(route.mode, 'plan');
+    t.is(route.reason, 'chat_mode');
+});
+
+test('routeEntityTurn uses agentic mode to bias toward planning', t => {
     const route = routeEntityTurn({
         text: 'Try jinx_avatar.png as the base avatar',
         availableToolNames: ['SetBaseAvatar', 'ViewImages'],
         invocationType: 'chat',
+        conversationMode: 'agentic',
     });
 
-    t.is(route.mode, 'direct_tool');
-    t.is(route.reason, 'set_base_avatar');
-    t.is(route.toolName, 'SetBaseAvatar');
-    t.deepEqual(route.toolArgs, {
-        file: 'jinx_avatar.png',
-        userMessage: 'Switching the base avatar to jinx_avatar.png',
-    });
+    t.is(route.mode, 'plan');
+    t.is(route.reason, 'agentic_mode');
 });
 
-test('routeEntityTurn can inspect a recently referenced image without replanning', t => {
+test('routeEntityTurn uses research mode to bias toward planning', t => {
     const route = routeEntityTurn({
         text: 'Did you look at it?',
         chatHistory: [
@@ -80,23 +90,24 @@ test('routeEntityTurn can inspect a recently referenced image without replanning
         ],
         availableToolNames: ['ViewImages'],
         invocationType: 'chat',
+        conversationMode: 'research',
     });
 
-    t.is(route.mode, 'direct_tool');
-    t.is(route.reason, 'view_image');
-    t.is(route.toolName, 'ViewImages');
-    t.deepEqual(route.toolArgs.files, ['draft.png']);
+    t.is(route.mode, 'plan');
+    t.is(route.reason, 'research_mode');
 });
 
-test('routeEntityTurn picks direct reply for obvious casual chat', t => {
+test('routeEntityTurn keeps high-confidence casual chat in direct reply mode', t => {
     const route = routeEntityTurn({
         text: 'Hey you. Miss me?',
         availableToolNames: ['WorkspaceSSH', 'SearchInternet', 'ViewImages'],
         invocationType: 'chat',
+        conversationMode: 'chat',
+        conversationModeConfidence: 'high',
     });
 
     t.is(route.mode, 'direct_reply');
-    t.is(route.reason, 'casual_chat');
+    t.is(route.reason, 'chat_mode');
 });
 
 test('buildPromptCacheKey is stable and provider-agnostic', t => {

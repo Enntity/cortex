@@ -26,7 +26,7 @@ export default {
         entityId: ``,      // Entity UUID
         contextId: ``,    // User ID to disassociate
     },
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     isMutation: true, // Declaratively mark this as a Mutation
     executePathway: async ({ args }) => {
         try {

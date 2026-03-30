@@ -16,7 +16,7 @@ import logger from '../../../../lib/logger.js';
 
 export default {
     prompt: [],
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     inputParameters: {
         aiName: ``,
         entityContext: ``,
@@ -82,7 +82,7 @@ Write your Soul Report now. First person, honest, specific.`
         try {
             const result = await runAllPrompts({
                 ...args,
-                model: 'oai-gpt41-mini',
+                model: 'oai-gpt54-mini',
                 useMemory: false,
                 stream: false,
             });

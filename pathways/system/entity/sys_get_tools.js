@@ -26,7 +26,7 @@ export default {
     inputParameters: {
         includeDisabled: false  // Include disabled tools in the response
     },
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     executePathway: async ({ args }) => {
         try {
             const { includeDisabled } = args;

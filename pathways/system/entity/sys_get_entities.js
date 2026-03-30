@@ -38,7 +38,7 @@ export default {
         contextId: ``,        // User ID to filter entities
         includeSystem: false  // Include system entities like Enntity
     },
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     executePathway: async ({ args }) => {
         try {
             const { contextId, includeSystem } = args;

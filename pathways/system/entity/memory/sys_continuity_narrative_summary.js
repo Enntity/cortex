@@ -12,7 +12,7 @@ import { Prompt } from '../../../../server/prompt.js';
 
 export default {
     prompt: [], // Empty - we build the prompt dynamically in executePathway
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     inputParameters: {
         currentQuery: ``,
         memoriesText: ``,
@@ -62,7 +62,7 @@ Generate a narrative context summary that helps me respond appropriately to this
         // Execute the LLM call
         const result = await runAllPrompts({
             ...args,
-            model: 'oai-gpt41-mini',
+            model: 'oai-gpt54-mini',
             useMemory: false,
             stream: false
         });
@@ -71,4 +71,3 @@ Generate a narrative context summary that helps me respond appropriately to this
         return typeof result === 'string' ? result : (result?.output_text || result?.text || '');
     }
 };
-

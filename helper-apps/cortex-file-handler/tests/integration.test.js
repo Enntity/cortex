@@ -134,6 +134,20 @@ test.serial("listFolder for empty user returns empty array", async (t) => {
   t.deepEqual(res.data, []);
 });
 
+test.serial("listFolder without user context is rejected", async (t) => {
+  const error = await t.throwsAsync(() =>
+    axios.get(BASE, {
+      params: { operation: "listFolder", fileScope: "all" },
+    })
+  );
+
+  t.is(error.response?.status, 400);
+  t.is(
+    error.response?.data?.error,
+    "userId or contextId is required for listFolder"
+  );
+});
+
 test.serial("signUrl returns download URL", async (t) => {
   const form = makeFormData("Sign me!", "signme.txt", { userId: "user-1", fileScope: "global" });
   const uploadRes = await axios.post(BASE, form, { headers: form.getHeaders() });

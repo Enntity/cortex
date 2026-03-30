@@ -406,6 +406,12 @@ async function handleListFolder(params, res) {
   const chatId = params.chatId || null;
   const fileScope = params.fileScope || null;
 
+  if (!userId) {
+    return res.status(400).json({
+      error: "userId or contextId is required for listFolder",
+    });
+  }
+
   const folderPath = constructFolderPath({ userId, chatId, fileScope });
   const files = await listFolder(folderPath);
 

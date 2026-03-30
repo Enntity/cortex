@@ -16,7 +16,7 @@ import logger from '../../../../lib/logger.js';
 
 export default {
     prompt: [],
-    model: 'oai-gpt41-mini',
+    model: 'oai-gpt54-mini',
     inputParameters: {
         contents: [],  // Array of memory content strings to consolidate
     },
@@ -81,7 +81,7 @@ Return ONLY the consolidated memory, nothing else.`
         try {
             const result = await runAllPrompts({
                 ...args,
-                model: 'oai-gpt41-mini',
+                model: 'oai-gpt54-mini',
                 useMemory: false,
                 stream: false
             });
@@ -98,4 +98,3 @@ Return ONLY the consolidated memory, nothing else.`
         }
     }
 };
-

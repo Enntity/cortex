@@ -14,7 +14,7 @@ export default {
         chatHistory: [{role: '', content: []}],
         modelResponse: '',
     },
-    model: 'oai-gpt4o-mini',
+    model: 'oai-gpt54-mini',
     enableDuplicateRequests: false,
     json: true
 } 

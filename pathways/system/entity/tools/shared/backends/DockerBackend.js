@@ -72,6 +72,18 @@ function findFreePort() {
     });
 }
 
+function buildFuseHostConfig() {
+    return {
+        CapAdd: ['SYS_ADMIN'],
+        Devices: [{
+            PathOnHost: '/dev/fuse',
+            PathInContainer: '/dev/fuse',
+            CgroupPermissions: 'rwm',
+        }],
+        SecurityOpt: ['apparmor:unconfined'],
+    };
+}
+
 export default class DockerBackend extends ContainerBackend {
     constructor() {
         super();
@@ -164,6 +176,7 @@ export default class DockerBackend extends ContainerBackend {
         if (mode === 'local') {
             hostPort = await findFreePort();
         }
+        const enableFuseMounts = Boolean(config.get('gcsBucketName') && config.get('gcpServiceAccountKey'));
 
         const portBindings = usePortMapping
             ? { '3100/tcp': [{ HostPort: hostPort ? String(hostPort) : '0' }] }
@@ -182,6 +195,7 @@ export default class DockerBackend extends ContainerBackend {
                 ...(useStorageOpt ? { StorageOpt: { size: diskSize } } : {}),
                 RestartPolicy: { Name: 'unless-stopped' },
                 Binds: [`${volumeName}:/workspace`],
+                ...(enableFuseMounts ? buildFuseHostConfig() : {}),
                 ...(portBindings ? { PortBindings: portBindings } : {}),
             },
             ...(mode === 'docker' ? {

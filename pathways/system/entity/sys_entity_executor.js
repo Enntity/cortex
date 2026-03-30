@@ -13,6 +13,11 @@ const TOOL_LOOP_MODEL = 'xai-grok-4-1-fast-non-reasoning';
 const MAX_REPLAN_SAFETY_CAP = 10;
 const ROUTER_MAX_INPUT_CHARS = 280;
 const ROUTER_MAX_RECENT_FILES = 3;
+const FAST_CHAT_MAX_TURNS = 3;
+const FAST_TOOL_MAX_TURNS = 2;
+const FAST_TOOL_MAX_MESSAGES = 8;
+const FAST_CHAT_REASONING_EFFORT = 'high';
+const STREAM_SPECULATIVE_CLASSIFIER_GRACE_MS = 150;
 const TERMINAL_REPLAN_STOP_REASONS = new Set([
     'low_novelty',
     'evidence_cap',
@@ -28,6 +33,9 @@ const TERMINAL_REPLAN_STOP_REASONS = new Set([
 ]);
 
 const SET_GOALS_TOOL_NAME = 'setgoals';
+const ROUTER_DECISION_TOOL_NAME = 'SelectRoute';
+const ROUTER_ALLOWED_MODES = new Set(['plan', 'direct_reply', 'workspace_inventory', 'set_base_avatar', 'view_image']);
+const ROUTER_ALLOWED_TOOL_CATEGORIES = new Set(['general', 'workspace', 'images', 'web', 'memory', 'media', 'chart']);
 
 const SET_GOALS_OPENAI_DEF = {
     type: "function",
@@ -43,6 +51,54 @@ const SET_GOALS_OPENAI_DEF = {
             required: ["goal", "steps"]
         }
     }
+};
+
+const ROUTER_DECISION_OPENAI_DEF = {
+    type: 'function',
+    function: {
+        name: ROUTER_DECISION_TOOL_NAME,
+        description: 'Return the route classification for the current user turn.',
+        parameters: {
+            type: 'object',
+            properties: {
+                mode: {
+                    type: 'string',
+                    enum: ['plan', 'direct_reply', 'workspace_inventory', 'set_base_avatar', 'view_image'],
+                },
+                confidence: {
+                    type: 'string',
+                    enum: ['low', 'medium', 'high'],
+                },
+                toolCategory: {
+                    type: 'string',
+                    enum: ['general', 'workspace', 'images', 'web', 'memory', 'media', 'chart'],
+                },
+                planningEffort: {
+                    type: 'string',
+                    enum: ['low', 'medium', 'high'],
+                },
+                synthesisEffort: {
+                    type: 'string',
+                    enum: ['low', 'medium', 'high'],
+                },
+                conversationMode: {
+                    type: 'string',
+                    enum: ['chat', 'agentic', 'creative', 'research', 'nsfw'],
+                },
+                modeAction: {
+                    type: 'string',
+                    enum: ['stay', 'switch'],
+                },
+                reason: {
+                    type: 'string',
+                },
+                modeReason: {
+                    type: 'string',
+                },
+            },
+            required: ['mode', 'confidence', 'toolCategory', 'planningEffort', 'synthesisEffort', 'conversationMode', 'modeAction', 'reason', 'modeReason'],
+        },
+    },
 };
 
 const VOICE_FALLBACKS = {
@@ -65,19 +121,23 @@ import { logEvent, logEventError, logEventDebug } from '../../../lib/requestLogg
 import { config } from '../../../config.js';
 import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
 import { Prompt } from '../../../server/prompt.js';
+import { requestState } from '../../../server/requestState.js';
 import { getToolsForEntity, loadEntityConfig } from './tools/shared/sys_entity_tools.js';
 import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults, dehydrateToolHistory } from './tools/shared/tool_result_compression.js';
 import CortexResponse from '../../../lib/cortexResponse.js';
 import { getContinuityMemoryService } from '../../../lib/continuity/index.js';
 import {
+    applyConversationModeAffiliation,
     buildPromptCacheHint,
     buildSemanticToolKey,
     DIRECT_ROUTE_WORKSPACE_COMMAND,
     extractFilenameMentions,
     extractRecentFileReferences,
+    getConversationModeAffiliationPolicy,
     getEntityRuntime,
     getEntityRuntimeStore,
     isEntityRuntimeEnabled,
+    normalizeConversationMode,
     normalizeToolFamily,
     routeEntityTurn,
     resolveAuthorityEnvelope,
@@ -92,6 +152,80 @@ import {
 
 function getRequestId(resolver) {
     return resolver.rootRequestId || resolver.requestId;
+}
+
+function getConversationModeLabel(mode = '') {
+    const normalized = normalizeConversationMode(mode);
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function publishConversationModeMessage({ resolver, previousMode = '', nextMode = '', reason = '', source = 'router' } = {}) {
+    const previous = normalizeConversationMode(previousMode);
+    const next = normalizeConversationMode(nextMode);
+    if (!resolver || previous === next) return;
+
+    const requestId = getRequestId(resolver);
+    const modeMessage = {
+        type: 'conversation_mode',
+        previousMode: previous,
+        mode: next,
+        reason: reason || 'mode_switch',
+        source,
+        label: getConversationModeLabel(next),
+    };
+
+    publishRequestProgress({
+        requestId,
+        progress: 0.15,
+        data: '',
+        error: '',
+        info: JSON.stringify({
+            ...(resolver.pathwayResultData || {}),
+            modeMessage,
+        }),
+    });
+
+    resolver.pathwayResultData = {
+        ...(resolver.pathwayResultData || {}),
+        entityRuntime: {
+            ...(resolver.pathwayResultData?.entityRuntime || {}),
+            conversationMode: next,
+            modeMessage,
+        },
+    };
+}
+
+function normalizeModeConfidence(value = '') {
+    return String(value || '').trim().toLowerCase() === 'high' ? 'high' : 'low';
+}
+
+function applyResolverPromptOverride(resolver, promptOverride) {
+    if (!resolver || promptOverride === undefined) return resolver;
+
+    const promptList = Array.isArray(promptOverride) ? promptOverride : [promptOverride];
+    resolver.prompts = promptList.map((prompt) => (
+        prompt instanceof Prompt ? prompt : new Prompt({ prompt })
+    ));
+
+    if (typeof resolver.getChunkMaxTokenLength === 'function') {
+        resolver.chunkMaxTokenLength = resolver.getChunkMaxTokenLength();
+    }
+
+    return resolver;
+}
+
+function createShadowResolver(resolver, overrides = {}) {
+    if (!resolver || typeof resolver !== 'object') return { ...overrides };
+    const { pathwayPrompt, prompts, ...restOverrides } = overrides;
+    const shadow = Object.create(Object.getPrototypeOf(resolver) || Object.prototype);
+    Object.defineProperties(shadow, Object.getOwnPropertyDescriptors(resolver));
+    Object.assign(shadow, restOverrides);
+    if (pathwayPrompt !== undefined) {
+        applyResolverPromptOverride(shadow, pathwayPrompt);
+    } else if (prompts !== undefined) {
+        applyResolverPromptOverride(shadow, prompts);
+    }
+    return shadow;
 }
 
 function cloneMessages(msgs) {
@@ -117,6 +251,46 @@ function buildToolCallEntry(toolCall, args) {
 
 function safeParse(str) {
     try { return JSON.parse(str); } catch { return undefined; }
+}
+
+function consumeInjectedAgentMessages(args, resolver) {
+    const requestId = getRequestId(resolver);
+    const state = requestState[requestId];
+    const queuedMessages = Array.isArray(state?.injectedMessages)
+        ? state.injectedMessages.splice(0)
+        : [];
+
+    if (queuedMessages.length === 0) {
+        return false;
+    }
+
+    if (!Array.isArray(args.chatHistory)) {
+        args.chatHistory = [];
+    }
+
+    for (const queued of queuedMessages) {
+        const content = typeof queued?.message === 'string'
+            ? queued.message.trim()
+            : '';
+        if (!content) continue;
+
+        args.chatHistory.push({ role: 'user', content });
+        publishRequestProgress({
+            requestId,
+            info: JSON.stringify({
+                toolMessage: {
+                    type: 'finish',
+                    callId: queued.id || `inject:${Date.now()}`,
+                    icon: '💬',
+                    userMessage: content,
+                    success: true,
+                    presentation: 'inline_user',
+                },
+            }),
+        });
+    }
+
+    return true;
 }
 
 function hasOnlySetGoalsToolCalls(toolCalls = []) {
@@ -345,6 +519,32 @@ function normalizeRouterConfidence(value = '') {
     return 'low';
 }
 
+function normalizeRouterMode(value = '') {
+    const normalized = String(value || '').trim().toLowerCase();
+    return ROUTER_ALLOWED_MODES.has(normalized) ? normalized : 'plan';
+}
+
+function normalizeRouterToolCategory(value = '') {
+    const normalized = String(value || '').trim().toLowerCase();
+    return ROUTER_ALLOWED_TOOL_CATEGORIES.has(normalized) ? normalized : 'general';
+}
+
+function normalizeRouterModeAction(value = '') {
+    return String(value || '').trim().toLowerCase() === 'switch' ? 'switch' : 'stay';
+}
+
+function normalizeRouterReason(value = '', fallback = 'model_route') {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+    if (!normalized) return fallback;
+    if (normalized.length > 32) return fallback;
+    if (normalized.split('_').filter(Boolean).length > 4) return fallback;
+    return normalized;
+}
+
 function stripJsonCodeFence(text = '') {
     const trimmed = String(text || '').trim();
     if (!trimmed.startsWith('```')) return trimmed;
@@ -356,17 +556,24 @@ function stripJsonCodeFence(text = '') {
 
 function shouldUseModelRouter({ text = '', invocationType = '', initialRoute = null } = {}) {
     if (!text || invocationType === 'pulse') return false;
-    if (!initialRoute || initialRoute.mode !== 'plan') return false;
+    if (!initialRoute) return false;
     if (text.length > ROUTER_MAX_INPUT_CHARS) return false;
     if (text.includes('\n') || text.includes('```')) return false;
     return true;
 }
 
-function buildRoutingPrompt({ text = '', recentFiles = [], availableToolNames = [], initialRoute = null } = {}) {
+function buildRoutingPrompt({ text = '', recentFiles = [], availableToolNames = [], initialRoute = null, currentMode = 'chat' } = {}) {
     return [
         {
             role: 'system',
-            content: `You are a latency router for an agent runtime. Pick the cheapest safe route.
+            content: `You are a latency router for an agent runtime. Maintain sticky conversation mode unless the user's intent clearly changed.
+
+Current sticky conversation modes:
+- "chat": casual back-and-forth, acknowledgements, personal conversation
+- "agentic": requests that imply tools, files, code execution, actions, or stepwise work
+- "creative": roleplay, ideation, prose, expressive generation
+- "research": fact gathering, current info, reading/synthesis
+- "nsfw": explicitly sexual or erotic conversation
 
 Allowed modes:
 - "direct_reply": casual chat or a simple acknowledgement that needs no tools
@@ -385,19 +592,22 @@ Tool categories:
 - "general": no strong category
 
 Rules:
+- Keep the current conversationMode unless the user intent clearly shifts.
 - Prefer "direct_reply" only when tools, files, current info, or deep reasoning are unnecessary.
 - Prefer "workspace_inventory" when the user is effectively asking what is present in /workspace or /workspace/files even if the phrasing is casual.
 - Use "plan" if there is any real ambiguity or multi-step work.
 - planningEffort: "low" for straightforward inspection/reporting/tool-routing turns, "medium" for normal tasks, "high" for broad research or complex problem-solving.
 - synthesisEffort: "low" for short direct answers or simple summaries, otherwise "medium" unless nuanced synthesis clearly needs "high".
-
-Return JSON only with this exact shape:
-{"mode":"plan|direct_reply|workspace_inventory|set_base_avatar|view_image","confidence":"low|medium|high","toolCategory":"general|workspace|images|web|memory|media|chart","planningEffort":"low|medium|high","synthesisEffort":"low|medium|high","reason":"short_snake_case_reason"}`,
+- modeAction: "stay" if the current sticky mode still fits, otherwise "switch".
+- reason and modeReason must be short snake_case codes, 1-4 words max. Good examples: casual_chat, current_info, workspace_inventory, agentic_task, avatar_change, mode_stay, research_request.
+- Call the "${ROUTER_DECISION_TOOL_NAME}" function exactly once.
+- Do not reply with plain text.`,
         },
         {
             role: 'user',
             content: JSON.stringify({
                 userText: text,
+                currentMode,
                 recentFiles: recentFiles.slice(0, ROUTER_MAX_RECENT_FILES),
                 availableTools: availableToolNames,
                 heuristic: {
@@ -410,23 +620,98 @@ Return JSON only with this exact shape:
     ];
 }
 
-function parseRoutingDecision(response) {
-    const raw = stripJsonCodeFence(extractResponseText(response));
-    if (!raw) return null;
-    try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-        return {
-            mode: String(parsed.mode || 'plan'),
-            confidence: normalizeRouterConfidence(parsed.confidence),
-            toolCategory: String(parsed.toolCategory || 'general').toLowerCase(),
-            planningEffort: normalizeReasoningEffort(parsed.planningEffort, 'medium'),
-            synthesisEffort: normalizeReasoningEffort(parsed.synthesisEffort, 'medium'),
-            reason: String(parsed.reason || 'model_route').trim() || 'model_route',
-        };
-    } catch {
-        return null;
+function extractJsonObjectCandidate(text = '') {
+    const trimmed = stripJsonCodeFence(text);
+    if (!trimmed) return '';
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed;
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+        return trimmed.slice(firstBrace, lastBrace + 1);
     }
+    return trimmed;
+}
+
+function extractRoutingDecisionPayload(response) {
+    const toolCalls = extractToolCalls(response);
+    const routeToolCall = toolCalls.find((toolCall) => (
+        String(toolCall?.function?.name || '').trim() === ROUTER_DECISION_TOOL_NAME
+    ));
+    const toolArgs = routeToolCall?.function?.arguments;
+    const parsedToolArgs = toolArgs ? safeParse(toolArgs) : null;
+    if (parsedToolArgs && typeof parsedToolArgs === 'object' && !Array.isArray(parsedToolArgs)) {
+        return parsedToolArgs;
+    }
+
+    const raw = extractJsonObjectCandidate(extractResponseText(response));
+    const parsedText = raw ? safeParse(raw) : null;
+    if (parsedText && typeof parsedText === 'object' && !Array.isArray(parsedText)) {
+        return parsedText;
+    }
+
+    return null;
+}
+
+function parseRoutingDecision(response) {
+    const parsed = extractRoutingDecisionPayload(response);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const mode = normalizeRouterMode(parsed.mode);
+    const toolCategory = normalizeRouterToolCategory(parsed.toolCategory);
+    const conversationMode = normalizeConversationMode(parsed.conversationMode || 'chat');
+    const modeAction = normalizeRouterModeAction(parsed.modeAction);
+    const defaultReason = (
+        mode === 'direct_reply' ? 'casual_chat' :
+        mode === 'workspace_inventory' ? 'workspace_inventory' :
+        mode === 'set_base_avatar' ? 'set_base_avatar' :
+        mode === 'view_image' ? 'view_image' :
+        toolCategory === 'web' ? 'current_info' :
+        toolCategory === 'workspace' ? 'workspace_task' :
+        toolCategory === 'images' ? 'image_task' :
+        toolCategory === 'memory' ? 'memory_task' :
+        toolCategory === 'media' ? 'media_task' :
+        toolCategory === 'chart' ? 'chart_task' :
+        'agentic_task'
+    );
+    const defaultModeReason = modeAction === 'switch'
+        ? `${conversationMode}_request`
+        : 'mode_stay';
+    return {
+        mode,
+        confidence: normalizeRouterConfidence(parsed.confidence),
+        toolCategory,
+        planningEffort: normalizeReasoningEffort(parsed.planningEffort, 'medium'),
+        synthesisEffort: normalizeReasoningEffort(parsed.synthesisEffort, 'medium'),
+        conversationMode,
+        modeAction,
+        reason: normalizeRouterReason(parsed.reason, defaultReason),
+        modeReason: normalizeRouterReason(parsed.modeReason || parsed.reason, defaultModeReason),
+    };
+}
+
+function trimFastPathHistory(messages = [], maxTurns = FAST_CHAT_MAX_TURNS, maxMessages = null) {
+    const sliced = sliceByTurns(cloneMessages(messages || []), maxTurns) || [];
+    if (!maxMessages || sliced.length <= maxMessages) return sliced;
+    return sliced.slice(-maxMessages);
+}
+
+function getFastPathModel(args = {}) {
+    return args.modelPolicyResolved?.researchModel
+        || args.modelPolicyResolved?.routingModel
+        || args.modelPolicy?.researchModel
+        || args.modelPolicy?.routingModel
+        || args.synthesisModel
+        || args.primaryModel;
+}
+
+function hasUsableFastPathResult(result) {
+    if (result === null || result === undefined) return false;
+    if (typeof result === 'string') return result.trim().length > 0;
+    const extracted = extractResponseText(result);
+    if (typeof extracted === 'string') return extracted.trim().length > 0;
+    if (result instanceof CortexResponse) {
+        return typeof result.output_text === 'string' && result.output_text.trim().length > 0;
+    }
+    return true;
 }
 
 function buildDirectRouteFromDecision(decision, { text = '', chatHistory = [], availableToolNames = [] } = {}) {
@@ -485,7 +770,7 @@ function buildDirectRouteFromDecision(decision, { text = '', chatHistory = [], a
     return null;
 }
 
-async function maybeRefineRouteWithModel({
+async function classifyRouteWithModel({
     initialRoute,
     text = '',
     chatHistory = [],
@@ -493,55 +778,63 @@ async function maybeRefineRouteWithModel({
     args,
     resolver,
     modelPolicy = {},
+    currentMode = 'chat',
 }) {
-    if (!shouldUseModelRouter({ text, invocationType: args.invocationType, initialRoute })) {
-        return initialRoute;
-    }
+    if (!shouldUseModelRouter({ text, invocationType: args.invocationType, initialRoute })) return null;
 
     const routingModel = modelPolicy.routingModel;
-    if (!routingModel) return initialRoute;
+    if (!routingModel) return null;
 
-    const rid = getRequestId(resolver);
-    const previousPrompt = resolver.pathwayPrompt;
     const recentFiles = extractRecentFileReferences(chatHistory);
-
-    try {
-        resolver.pathwayPrompt = [new Prompt({
+    const shadowResolver = createShadowResolver(resolver, {
+        pathwayPrompt: [new Prompt({
             messages: buildRoutingPrompt({
                 text,
                 recentFiles,
                 availableToolNames,
                 initialRoute,
+                currentMode,
             }),
-        })];
+        })],
+    });
 
-        const routeResponse = await callModelLogged(resolver, withVisibleModel({
+    try {
+        const routeResponse = await callModelLogged(shadowResolver, withVisibleModel({
             ...args,
             chatHistory: [],
             stream: false,
             useMemory: false,
             skipMemoryLoad: true,
-            tools: [],
-            reasoningEffort: 'low',
+            tools: [ROUTER_DECISION_OPENAI_DEF],
+            tool_choice: {
+                type: 'function',
+                function: {
+                    name: ROUTER_DECISION_TOOL_NAME,
+                },
+            },
+            max_output_tokens: 180,
+            reasoningEffort: 'none',
             latencyRouteMode: 'route_classifier',
         }, routingModel), 'route', {
             model: routingModel,
         });
 
         const decision = parseRoutingDecision(routeResponse);
-        if (!decision) {
-            logEvent(rid, 'route.classifier_invalid', {
-                model: routingModel,
-                contentChars: extractResponseText(routeResponse)?.length || 0,
-            });
-            return initialRoute;
-        }
+        if (!decision) return { status: 'invalid', model: routingModel, contentChars: extractResponseText(routeResponse)?.length || 0 };
 
         const confidence = normalizeRouterConfidence(decision.confidence);
+        const nextConversationMode = normalizeConversationMode(
+            decision.modeAction === 'switch'
+                ? decision.conversationMode
+                : currentMode
+        );
         const nextRoute = {
             ...initialRoute,
+            mode: decision.mode === 'direct_reply' ? 'direct_reply' : 'plan',
             routeSource: 'model',
-            reason: initialRoute.reason === 'default' ? decision.reason : initialRoute.reason,
+            reason: ['default', 'chat_mode', 'agentic_mode', 'creative_mode', 'research_mode', 'nsfw_mode'].includes(initialRoute.reason)
+                ? decision.reason
+                : initialRoute.reason,
             planningReasoningEffort: decision.planningEffort,
             synthesisReasoningEffort: decision.synthesisEffort,
         };
@@ -551,6 +844,7 @@ async function maybeRefineRouteWithModel({
             nextRoute.initialToolNames = categoryTools;
         }
 
+        let selectedRoute = confidence === 'low' ? initialRoute : nextRoute;
         if (confidence === 'high') {
             const directRoute = buildDirectRouteFromDecision(decision, {
                 text,
@@ -558,16 +852,7 @@ async function maybeRefineRouteWithModel({
                 availableToolNames,
             });
             if (directRoute) {
-                logEvent(rid, 'route.classifier_selected', {
-                    model: routingModel,
-                    mode: directRoute.mode,
-                    reason: directRoute.reason,
-                    confidence,
-                    toolCategory: decision.toolCategory,
-                    planningEffort: decision.planningEffort,
-                    synthesisEffort: decision.synthesisEffort,
-                });
-                return {
+                selectedRoute = {
                     ...directRoute,
                     routeSource: 'model',
                     planningReasoningEffort: 'low',
@@ -576,22 +861,118 @@ async function maybeRefineRouteWithModel({
             }
         }
 
-        logEvent(rid, 'route.classifier_selected', {
+        return {
+            status: 'ok',
             model: routingModel,
-            mode: nextRoute.mode,
-            reason: nextRoute.reason,
+            decision,
             confidence,
-            toolCategory: decision.toolCategory,
-            planningEffort: nextRoute.planningReasoningEffort,
-            synthesisEffort: nextRoute.synthesisReasoningEffort,
-        });
-        return confidence === 'low' ? initialRoute : nextRoute;
+            nextConversationMode,
+            selectedRoute,
+            currentMode,
+        };
     } catch (error) {
-        logEventError(rid, 'route.classifier_error', { model: routingModel, error: error.message });
-        return initialRoute;
-    } finally {
-        resolver.pathwayPrompt = previousPrompt;
+        return { status: 'error', model: routingModel, error };
     }
+}
+
+function applyRouteClassificationOutcome({
+    classification,
+    initialRoute,
+    args,
+    resolver,
+}) {
+    const rid = getRequestId(resolver);
+    if (!classification || classification.status !== 'ok') {
+        if (classification?.status === 'invalid') {
+            logEvent(rid, 'route.classifier_invalid', {
+                model: classification.model,
+                contentChars: classification.contentChars || 0,
+            });
+        } else if (classification?.status === 'error') {
+            logEventError(rid, 'route.classifier_error', { model: classification.model, error: classification.error?.message || String(classification.error) });
+        }
+        if (resolver.entityRuntimeState) {
+            resolver.entityRuntimeState.conversationModeConfidence = 'low';
+        }
+        args.runtimeConversationModeConfidence = 'low';
+        if (initialRoute?.mode === 'direct_reply') {
+            return {
+                ...initialRoute,
+                mode: 'plan',
+                reason: 'router_invalid',
+                routeSource: 'router_fallback',
+            };
+        }
+        return initialRoute;
+    }
+
+    const {
+        model,
+        confidence,
+        nextConversationMode,
+        selectedRoute,
+        currentMode,
+        decision,
+    } = classification;
+
+    logEvent(rid, 'route.classifier_selected', {
+        model,
+        mode: selectedRoute.mode,
+        reason: selectedRoute.reason,
+        confidence,
+        conversationMode: nextConversationMode,
+        modeAction: decision.modeAction,
+        modeReason: decision.modeReason,
+        toolCategory: decision.toolCategory,
+        planningEffort: selectedRoute.planningReasoningEffort,
+        synthesisEffort: selectedRoute.synthesisReasoningEffort,
+    });
+
+    if (resolver.entityRuntimeState) {
+        resolver.entityRuntimeState.conversationModeConfidence = 'high';
+    }
+    args.runtimeConversationModeConfidence = 'high';
+
+    if (nextConversationMode !== currentMode) {
+        args.runtimeConversationMode = nextConversationMode;
+        if (resolver.entityRuntimeState) {
+            resolver.entityRuntimeState.conversationMode = nextConversationMode;
+            resolver.entityRuntimeState.modeUpdatedAt = new Date().toISOString();
+            resolver.entityRuntimeState.conversationModeConfidence = 'high';
+        }
+        publishConversationModeMessage({
+            resolver,
+            previousMode: currentMode,
+            nextMode: nextConversationMode,
+            reason: decision.modeReason,
+            source: 'router',
+        });
+    }
+
+    return selectedRoute;
+}
+
+async function maybeRefineRouteWithModel({
+    initialRoute,
+    text = '',
+    chatHistory = [],
+    availableToolNames = [],
+    args,
+    resolver,
+    modelPolicy = {},
+    currentMode = 'chat',
+}) {
+    const classification = await classifyRouteWithModel({
+        initialRoute,
+        text,
+        chatHistory,
+        availableToolNames,
+        args,
+        resolver,
+        modelPolicy,
+        currentMode,
+    });
+    return applyRouteClassificationOutcome({ classification, initialRoute, args, resolver });
 }
 
 function buildDirectToolResponseInstruction(route) {
@@ -639,6 +1020,7 @@ async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
 
 async function runDirectToolFastPath(route, args, resolver, entityTools, handlePromptError) {
     const rid = getRequestId(resolver);
+    const fastPathModel = getFastPathModel(args);
     const directToolCall = {
         id: `fast-route-${Date.now()}`,
         type: 'function',
@@ -656,7 +1038,7 @@ async function runDirectToolFastPath(route, args, resolver, entityTools, handleP
     try {
         await processToolCallRound([directToolCall], args, resolver, entityTools);
         const forcedHistory = [
-            ...(args.chatHistory || []),
+            ...trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
             {
                 role: 'user',
                 content: `[system message: ${rid}:fast-route] ${buildDirectToolResponseInstruction(route)}`,
@@ -671,8 +1053,8 @@ async function runDirectToolFastPath(route, args, resolver, entityTools, handleP
             reasoningEffort: 'low',
             skipMemoryLoad: true,
             latencyRouteMode: route.reason,
-        }, args.synthesisModel || args.primaryModel), 'fast_finalize', {
-            model: args.synthesisModel || args.primaryModel,
+        }, fastPathModel), 'fast_finalize', {
+            model: fastPathModel,
             route: route.reason,
         });
 
@@ -688,14 +1070,15 @@ async function runDirectToolFastPath(route, args, resolver, entityTools, handleP
 
 async function runDirectReplyFastPath(route, args, resolver, handlePromptError) {
     const rid = getRequestId(resolver);
+    const fastPathModel = getFastPathModel(args);
 
     await markRuntimeStage(resolver, 'synthesize', 'Executing conversational fast path', {
-        model: args.synthesisModel || args.primaryModel,
+        model: fastPathModel,
         route: route.reason,
     });
 
     const forcedHistory = [
-        ...(args.chatHistory || []),
+        ...trimFastPathHistory(args.chatHistory || [], FAST_CHAT_MAX_TURNS),
         {
             role: 'user',
             content: `[system message: ${rid}:fast-reply] This turn is purely conversational and does not require tools. Respond directly to the user in your normal voice. Keep it concise unless the user asked for depth.`,
@@ -708,11 +1091,11 @@ async function runDirectReplyFastPath(route, args, resolver, handlePromptError) 
             chatHistory: forcedHistory,
             stream: args.stream,
             tools: [],
-            reasoningEffort: 'low',
+            reasoningEffort: FAST_CHAT_REASONING_EFFORT,
             skipMemoryLoad: true,
             latencyRouteMode: route.reason,
-        }, args.synthesisModel || args.primaryModel), 'fast_chat', {
-            model: args.synthesisModel || args.primaryModel,
+        }, fastPathModel), 'fast_chat', {
+            model: fastPathModel,
             route: route.reason,
         });
 
@@ -724,6 +1107,103 @@ async function runDirectReplyFastPath(route, args, resolver, handlePromptError) 
     } catch (error) {
         return await handlePromptError(error);
     }
+}
+
+async function runSpeculativeDirectReplyFastPath(route, args, resolver) {
+    const rid = getRequestId(resolver);
+    const fastPathModel = getFastPathModel(args);
+    const forcedHistory = [
+        ...trimFastPathHistory(args.chatHistory || [], FAST_CHAT_MAX_TURNS),
+        {
+            role: 'user',
+            content: `[system message: ${rid}:fast-reply] This turn is purely conversational and does not require tools. Respond directly to the user in your normal voice. Keep it concise unless the user asked for depth.`,
+        },
+    ];
+
+    const shadowResolver = createShadowResolver(resolver);
+    return callModelLogged(shadowResolver, withVisibleModel({
+        ...args,
+        chatHistory: forcedHistory,
+        stream: false,
+        tools: [],
+        reasoningEffort: FAST_CHAT_REASONING_EFFORT,
+        skipMemoryLoad: true,
+        latencyRouteMode: route.reason,
+    }, fastPathModel), 'fast_chat_speculative', {
+        model: fastPathModel,
+        route: route.reason,
+    });
+}
+
+function shouldSpeculateChatFastPath({
+    args,
+    initialRoute,
+    currentConversationMode = 'chat',
+    currentConversationModeConfidence = 'low',
+    text = '',
+}) {
+    if (args.invocationType === 'pulse') return false;
+    if (normalizeConversationMode(currentConversationMode) !== 'chat') return false;
+    if (normalizeModeConfidence(currentConversationModeConfidence) !== 'high') return false;
+    if (!initialRoute || initialRoute.mode !== 'direct_reply') return false;
+    if (!text || text.length > ROUTER_MAX_INPUT_CHARS || text.includes('\n') || text.includes('```')) return false;
+    return true;
+}
+
+function logFastPathRouteSelection({
+    resolver,
+    args,
+    entityId,
+    invocationType,
+    toolLoopModel,
+    reasoningEffort,
+    modelPolicy,
+    authorityEnvelope,
+    route,
+    conversationMode,
+}) {
+    const rid = getRequestId(resolver);
+    const responseModel = route.mode === 'direct_reply' || route.mode === 'direct_tool'
+        ? getFastPathModel(args)
+        : args.primaryModel;
+    syncRuntimeResultData(resolver, args);
+    logEvent(rid, 'request.start', {
+        entity: entityId,
+        model: responseModel,
+        stream: args.stream,
+        invocationType,
+        ...(toolLoopModel && { toolLoopModel }),
+        reasoningEffort,
+        routingModel: modelPolicy.routingModel,
+        conversationMode,
+        planningReasoningEffort: args.planningReasoningEffort || 'low',
+        synthesisReasoningEffort: args.synthesisReasoningEffort || 'low',
+        entityToolCount: args.entityToolsOpenAiFormat?.length || 0,
+        entityToolNames: summarizeToolNames(args.entityToolsOpenAiFormat),
+        planningToolCount: 0,
+        planningToolNames: [],
+        ...(isEntityRuntimeEnabled(args) && {
+            runtimeRunId: args.runtimeRunId,
+            runtimeStage: args.runtimeStage || 'plan',
+            modelPolicy: args.modelPolicyResolved || modelPolicy,
+            authorityEnvelope,
+        }),
+    });
+    logEvent(rid, 'route.selected', {
+        mode: route.mode,
+        reason: route.reason,
+        routeSource: route.routeSource || 'speculative',
+        conversationMode,
+        planningToolNames: [],
+        planningReasoningEffort: args.planningReasoningEffort || 'low',
+        synthesisReasoningEffort: args.synthesisReasoningEffort || 'low',
+    });
+    logEvent(rid, 'route.preflight_skipped', {
+        mode: route.mode,
+        reason: route.reason,
+        skipped: ['file_sync', 'context_compression'],
+    });
+    publishRuntimeModeStatus({ resolver, args });
 }
 
 function makeErrorHandler(args, resolver) {
@@ -783,6 +1263,41 @@ function getRuntimeBudgetState(resolver) {
         childRuns: state.childRuns || 0,
         evidenceItems: state.evidenceItems || 0,
     };
+}
+
+function syncRuntimeResultData(resolver, args = {}) {
+    const state = resolver.entityRuntimeState;
+    if (!state) return null;
+
+    const entityRuntime = {
+        ...(resolver.pathwayResultData?.entityRuntime || {}),
+        runId: state.runId,
+        conversationMode: normalizeConversationMode(state.conversationMode || args.runtimeConversationMode || 'chat'),
+        conversationModeConfidence: normalizeModeConfidence(state.conversationModeConfidence || args.runtimeConversationModeConfidence || 'low'),
+        stopReason: state.stopReason,
+        budgetState: getRuntimeBudgetState(resolver),
+    };
+
+    resolver.pathwayResultData = {
+        ...(resolver.pathwayResultData || {}),
+        entityRuntime,
+    };
+
+    return entityRuntime;
+}
+
+function publishRuntimeModeStatus({ resolver, args = {}, progress = 0.15 } = {}) {
+    if (!resolver || !args.stream) return;
+    const entityRuntime = syncRuntimeResultData(resolver, args);
+    if (!entityRuntime) return;
+
+    publishRequestProgress({
+        requestId: getRequestId(resolver),
+        progress,
+        data: '',
+        error: '',
+        info: JSON.stringify(resolver.pathwayResultData || {}),
+    });
 }
 
 function registerRuntimeStop(resolver, reason) {
@@ -933,6 +1448,8 @@ async function finalizeRuntimeRun(args, resolver, response) {
     const resultText = (resolver.streamedContent || extractResponseText(response) || '').trim();
     const stopReason = state.stopReason || 'completed';
     const resultData = resolver.pathwayResultData || null;
+    const conversationMode = normalizeConversationMode(state.conversationMode || args.runtimeConversationMode || 'chat');
+    const conversationModeConfidence = normalizeModeConfidence(state.conversationModeConfidence || args.runtimeConversationModeConfidence || 'low');
     const isPulse = args.invocationType === 'pulse';
     const shouldPause = isPulse && stopReason !== 'completed';
     const finalStage = shouldPause ? 'rest' : 'done';
@@ -954,6 +1471,9 @@ async function finalizeRuntimeRun(args, resolver, response) {
             budgetState,
             reflection: resultText.slice(0, 2000),
             resultData,
+            conversationMode,
+            conversationModeConfidence,
+            modeUpdatedAt: state.modeUpdatedAt || new Date().toISOString(),
         });
         return;
     }
@@ -964,6 +1484,9 @@ async function finalizeRuntimeRun(args, resolver, response) {
         stopReason,
         budgetState,
         resultData,
+        conversationMode,
+        conversationModeConfidence,
+        modeUpdatedAt: state.modeUpdatedAt || new Date().toISOString(),
     });
 }
 
@@ -1608,6 +2131,7 @@ function preservePriorText(message, args) {
 }
 
 async function runFallbackPath(currentToolCalls, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
+    consumeInjectedAgentMessages(args, resolver);
     await markRuntimeStage(resolver, 'plan', 'Running fallback single-model path', {
         model: args.planningModel || args.primaryModel,
     });
@@ -1658,6 +2182,7 @@ async function enforceGate(currentToolCalls, args, resolver, entityToolsOpenAiFo
 async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
     const researchTools = filterToolsForExecutor(entityToolsOpenAiFormat);
     while (resolver.toolBudgetUsed < getToolBudgetLimit(args, resolver) && (resolver.toolCallRound || 0) < getResearchRoundLimit(resolver)) {
+        consumeInjectedAgentMessages(args, resolver);
         const rid = getRequestId(resolver);
         await markRuntimeStage(resolver, 'research_batch', 'Running bounded research loop', {
             model: args.toolLoopModel,
@@ -1709,6 +2234,7 @@ function prepareForSynthesis(args, resolver) {
 }
 
 async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError) {
+    consumeInjectedAgentMessages(args, resolver);
     await say(getRequestId(resolver), `\n`, 1000, false, false);
     await markRuntimeStage(resolver, 'synthesize', 'Synthesizing response from gathered evidence', {
         model: args.synthesisModel || args.primaryModel,
@@ -1867,13 +2393,12 @@ function loadEntityContext(entityConfig, args, resolver) {
     const entityAllowsMemory = entityConfig?.useMemory !== false;
     const inputAllowsMemory = args.useMemory !== false;
     const useContinuityMemory = entityAllowsMemory && inputAllowsMemory;
-    const modelOverride = entityConfig?.modelOverride ?? args.modelOverride;
     const modelPolicy = resolveEntityModelPolicy({ entityConfig, args, resolver });
     const authorityEnvelope = resolveAuthorityEnvelope({ entityConfig, args, origin: args.invocationType || args.runtimeOrigin });
     const toolLoopModel = isEntityRuntimeEnabled(args)
         ? modelPolicy.researchModel
         : (config.get('models')?.[TOOL_LOOP_MODEL] ? TOOL_LOOP_MODEL : null);
-    return { entityName, entityInstructions, useContinuityMemory, modelOverride, toolLoopModel, modelPolicy, authorityEnvelope };
+    return { entityName, entityInstructions, useContinuityMemory, toolLoopModel, modelPolicy, authorityEnvelope };
 }
 
 function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse, runtimeContext = null, promptContext = {}) {
@@ -2078,7 +2603,6 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         entityName,
         entityInstructions,
         useContinuityMemory,
-        modelOverride,
         toolLoopModel,
         modelPolicy,
         authorityEnvelope,
@@ -2113,21 +2637,254 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
     };
     resolver.args = {...args};
 
+    const currentConversationMode = normalizeConversationMode(args.runtimeConversationMode || 'chat');
+    const currentConversationModeConfidence = normalizeModeConfidence(args.runtimeConversationModeConfidence || 'low');
+    const currentModeAffiliationPolicy = await getConversationModeAffiliationPolicy(currentConversationMode);
+    const currentModeModelPolicy = applyConversationModeAffiliation(
+        modelPolicy,
+        currentConversationMode,
+        currentModeAffiliationPolicy,
+    );
+    const reasoningEffort = entityConfig?.reasoningEffort || 'low';
+    args.configuredReasoningEffort = reasoningEffort;
+    args.modelPolicyResolved = currentModeModelPolicy;
+    args.authorityEnvelopeResolved = authorityEnvelope;
+    args.runtimeConversationMode = currentConversationMode;
+    args.runtimeConversationModeConfidence = currentConversationModeConfidence;
+    args.primaryModel = currentModeModelPolicy.primaryModel;
+    args.planningModel = currentModeModelPolicy.planningModel;
+    args.synthesisModel = currentModeModelPolicy.synthesisModel;
+    args.verificationModel = currentModeModelPolicy.verificationModel;
+    resolver.args = {...args};
+
+    const rid = getRequestId(resolver);
+    const requestStartTime = Date.now();
+    resolver.requestStartTime = requestStartTime;
+
+    if (isEntityRuntimeEnabled(args) && args.runtimeRunId) {
+        resolver.entityRuntimeState = {
+            runId: args.runtimeRunId,
+            authorityEnvelope,
+            modelPolicy: currentModeModelPolicy,
+            store: getEntityRuntimeStore(),
+            conversationMode: currentConversationMode,
+            conversationModeConfidence: currentConversationModeConfidence,
+            modeUpdatedAt: new Date().toISOString(),
+            searchCalls: 0,
+            fetchCalls: 0,
+            childRuns: 0,
+            evidenceItems: 0,
+            semanticToolCounts: new Map(),
+            semanticEvidenceKeys: new Set(),
+            noveltyHistory: [],
+            stopReason: null,
+            currentStage: args.runtimeStage || 'plan',
+            _finalized: false,
+        };
+    }
+
     let runtimeRoute = routeEntityTurn({
         text: extractUserMessage(args),
         chatHistory: args.chatHistory || [],
         availableToolNames: entityToolsOpenAiFormat.map(tool => tool.function?.name || ''),
         invocationType,
+        conversationMode: currentConversationMode,
+        conversationModeConfidence: currentConversationModeConfidence,
     });
-    runtimeRoute = await maybeRefineRouteWithModel({
-        initialRoute: runtimeRoute,
-        text: extractUserMessage(args),
-        chatHistory: args.chatHistory || [],
-        availableToolNames: entityToolsOpenAiFormat.map(tool => tool.function?.name || ''),
+    const userText = extractUserMessage(args);
+    const availableToolNames = entityToolsOpenAiFormat.map(tool => tool.function?.name || '');
+    const shouldSpeculateChat = shouldSpeculateChatFastPath({
         args,
-        resolver,
-        modelPolicy,
+        initialRoute: runtimeRoute,
+        currentConversationMode,
+        currentConversationModeConfidence,
+        text: userText,
     });
+    if (shouldSpeculateChat) {
+        const classificationPromise = classifyRouteWithModel({
+            initialRoute: runtimeRoute,
+            text: userText,
+            chatHistory: args.chatHistory || [],
+            availableToolNames,
+            args,
+            resolver,
+            modelPolicy,
+            currentMode: currentConversationMode,
+        }).catch(error => ({ status: 'error', model: modelPolicy.routingModel, error }));
+        const speculativeChatPromise = runSpeculativeDirectReplyFastPath(runtimeRoute, args, resolver);
+        const firstResolved = await Promise.race([
+            classificationPromise.then(classification => ({ type: 'classification', classification })),
+            speculativeChatPromise.then(result => ({ type: 'chat', result })),
+        ]);
+
+        if (firstResolved.type === 'classification') {
+            const appliedRoute = applyRouteClassificationOutcome({
+                classification: firstResolved.classification,
+                initialRoute: runtimeRoute,
+                args,
+                resolver,
+            });
+            const classifierVetoed = appliedRoute.mode !== 'direct_reply'
+                || normalizeConversationMode(args.runtimeConversationMode || currentConversationMode) !== 'chat';
+            runtimeRoute = appliedRoute;
+            if (!classifierVetoed) {
+                args.planningReasoningEffort = runtimeRoute.planningReasoningEffort || 'low';
+                args.synthesisReasoningEffort = runtimeRoute.synthesisReasoningEffort || 'low';
+                logFastPathRouteSelection({
+                    resolver,
+                    args,
+                    entityId,
+                    invocationType,
+                    toolLoopModel,
+                    reasoningEffort,
+                    modelPolicy,
+                    authorityEnvelope,
+                    route: runtimeRoute,
+                    conversationMode: normalizeConversationMode(args.runtimeConversationMode || currentConversationMode),
+                });
+                const fastResult = await speculativeChatPromise;
+                if (hasUsableFastPathResult(fastResult)) {
+                    if (isPulse && useContinuityMemory && resolver.continuityEntityId) {
+                        await recordPulseMemory(resolver, args, fastResult, entityName, entityInstructions);
+                    } else if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
+                        await recordConversationMemory(resolver, args, fastResult, entityName, entityInstructions);
+                    }
+                    logRequestEnd(resolver);
+                    await finalizeRuntimeRun(args, resolver, fastResult);
+                    return fastResult;
+                }
+                logEvent(getRequestId(resolver), 'route.speculative_chat_empty', {
+                    conversationMode: normalizeConversationMode(args.runtimeConversationMode || currentConversationMode),
+                    reason: runtimeRoute.reason,
+                    source: 'classifier_approved',
+                });
+            }
+            void speculativeChatPromise.catch(() => {});
+        } else {
+            if (!hasUsableFastPathResult(firstResolved.result)) {
+                logEvent(getRequestId(resolver), 'route.speculative_chat_empty', {
+                    conversationMode: currentConversationMode,
+                    reason: runtimeRoute.reason,
+                    source: 'race_winner',
+                });
+                const classification = await classificationPromise.catch(error => ({ status: 'error', model: modelPolicy.routingModel, error }));
+                runtimeRoute = applyRouteClassificationOutcome({
+                    classification,
+                    initialRoute: runtimeRoute,
+                    args,
+                    resolver,
+                });
+                void speculativeChatPromise.catch(() => {});
+            } else {
+            const graceClassification = args.stream
+                ? await Promise.race([
+                    classificationPromise.then(classification => ({ type: 'classification', classification })),
+                    new Promise(resolve => setTimeout(() => resolve({ type: 'timeout' }), STREAM_SPECULATIVE_CLASSIFIER_GRACE_MS)),
+                ])
+                : { type: 'timeout' };
+
+            if (graceClassification.type === 'classification') {
+                const appliedRoute = applyRouteClassificationOutcome({
+                    classification: graceClassification.classification,
+                    initialRoute: runtimeRoute,
+                    args,
+                    resolver,
+                });
+                const classifierVetoed = appliedRoute.mode !== 'direct_reply'
+                    || normalizeConversationMode(args.runtimeConversationMode || currentConversationMode) !== 'chat';
+                runtimeRoute = appliedRoute;
+                if (classifierVetoed) {
+                    void speculativeChatPromise.catch(() => {});
+                } else {
+                    if (resolver.entityRuntimeState) {
+                        resolver.entityRuntimeState.conversationModeConfidence = 'high';
+                    }
+                    args.runtimeConversationModeConfidence = 'high';
+                    args.planningReasoningEffort = 'low';
+                    args.synthesisReasoningEffort = FAST_CHAT_REASONING_EFFORT;
+                    logEvent(getRequestId(resolver), 'route.speculative_chat_win', {
+                        conversationMode: normalizeConversationMode(args.runtimeConversationMode || currentConversationMode),
+                        confidence: currentConversationModeConfidence,
+                    });
+                    logFastPathRouteSelection({
+                        resolver,
+                        args,
+                        entityId,
+                        invocationType,
+                        toolLoopModel,
+                        reasoningEffort,
+                        modelPolicy,
+                        authorityEnvelope,
+                        route: {
+                            ...runtimeRoute,
+                            routeSource: 'speculative',
+                        },
+                        conversationMode: normalizeConversationMode(args.runtimeConversationMode || currentConversationMode),
+                    });
+                    const fastResult = firstResolved.result;
+                    if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
+                        await recordConversationMemory(resolver, args, fastResult, entityName, entityInstructions);
+                    }
+                    logRequestEnd(resolver);
+                    await finalizeRuntimeRun(args, resolver, fastResult);
+                    return fastResult;
+                }
+            } else {
+                void classificationPromise.catch(() => {});
+                if (resolver.entityRuntimeState) {
+                    resolver.entityRuntimeState.conversationModeConfidence = 'high';
+                }
+                args.runtimeConversationModeConfidence = 'high';
+                args.planningReasoningEffort = 'low';
+                args.synthesisReasoningEffort = FAST_CHAT_REASONING_EFFORT;
+                logEvent(getRequestId(resolver), 'route.speculative_chat_win', {
+                    conversationMode: currentConversationMode,
+                    confidence: currentConversationModeConfidence,
+                });
+                logFastPathRouteSelection({
+                    resolver,
+                    args,
+                    entityId,
+                    invocationType,
+                    toolLoopModel,
+                    reasoningEffort,
+                    modelPolicy,
+                    authorityEnvelope,
+                    route: {
+                        ...runtimeRoute,
+                        routeSource: 'speculative',
+                    },
+                    conversationMode: currentConversationMode,
+                });
+                const fastResult = firstResolved.result;
+                if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
+                    await recordConversationMemory(resolver, args, fastResult, entityName, entityInstructions);
+                }
+                logRequestEnd(resolver);
+                await finalizeRuntimeRun(args, resolver, fastResult);
+                return fastResult;
+            }
+            }
+        }
+    } else {
+        runtimeRoute = await maybeRefineRouteWithModel({
+            initialRoute: runtimeRoute,
+            text: userText,
+            chatHistory: args.chatHistory || [],
+            availableToolNames,
+            args,
+            resolver,
+            modelPolicy,
+            currentMode: currentConversationMode,
+        });
+    }
+    const effectiveConversationMode = normalizeConversationMode(args.runtimeConversationMode || currentConversationMode);
+    const effectiveModeAffiliationPolicy = await getConversationModeAffiliationPolicy(effectiveConversationMode);
+    const effectiveModelPolicy = applyConversationModeAffiliation(
+        modelPolicy,
+        effectiveConversationMode,
+        effectiveModeAffiliationPolicy,
+    );
     const planningToolNames = runtimeRoute.initialToolNames || [];
     const planningToolsOpenAiFormat = planningToolNames.length > 0
         ? entityToolsOpenAiFormat.filter(tool => planningToolNames.includes(tool.function?.name))
@@ -2177,49 +2934,38 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
     );
     resolver.pathwayPrompt = [new Prompt({ messages: promptMessages })];
 
-    const reasoningEffort = entityConfig?.reasoningEffort || 'low';
-
     args.configuredReasoningEffort = reasoningEffort;
     args.planningReasoningEffort = runtimeRoute.planningReasoningEffort || reasoningEffort || 'medium';
     args.synthesisReasoningEffort = runtimeRoute.synthesisReasoningEffort || reasoningEffort || 'medium';
+    if (runtimeRoute.mode === 'direct_reply') {
+        args.synthesisReasoningEffort = FAST_CHAT_REASONING_EFFORT;
+    }
     args.toolLoopModel = toolLoopModel;
-    args.modelPolicyResolved = modelPolicy;
+    args.modelPolicyResolved = effectiveModelPolicy;
     args.authorityEnvelopeResolved = authorityEnvelope;
-    args.primaryModel = isEntityRuntimeEnabled(args)
-        ? modelPolicy.primaryModel
-        : (modelOverride || resolver.modelName);
-    args.planningModel = isEntityRuntimeEnabled(args) ? modelPolicy.planningModel : args.primaryModel;
-    args.synthesisModel = isEntityRuntimeEnabled(args) ? modelPolicy.synthesisModel : args.primaryModel;
-    args.verificationModel = isEntityRuntimeEnabled(args) ? modelPolicy.verificationModel : args.primaryModel;
+    args.runtimeConversationMode = effectiveConversationMode;
+    args.primaryModel = effectiveModelPolicy.primaryModel;
+    args.planningModel = effectiveModelPolicy.planningModel;
+    args.synthesisModel = effectiveModelPolicy.synthesisModel;
+    args.verificationModel = effectiveModelPolicy.verificationModel;
     args.chatHistory = sliceByTurns(args.messages && args.messages.length > 0 ? args.messages : args.chatHistory);
     resolver.args = {...args};
 
     if (isEntityRuntimeEnabled(args) && args.runtimeRunId) {
-        resolver.entityRuntimeState = {
-            runId: args.runtimeRunId,
-            authorityEnvelope,
-            modelPolicy,
-            store: getEntityRuntimeStore(),
-            searchCalls: 0,
-            fetchCalls: 0,
-            childRuns: 0,
-            evidenceItems: 0,
-            semanticToolCounts: new Map(),
-            semanticEvidenceKeys: new Set(),
-            noveltyHistory: [],
-            stopReason: null,
-            currentStage: args.runtimeStage || 'plan',
-            _finalized: false,
-        };
+        resolver.entityRuntimeState.modelPolicy = effectiveModelPolicy;
+        resolver.entityRuntimeState.conversationMode = effectiveConversationMode;
+        resolver.entityRuntimeState.conversationModeConfidence = normalizeModeConfidence(args.runtimeConversationModeConfidence || currentConversationModeConfidence);
     }
+    syncRuntimeResultData(resolver, args);
+    const requestModel = runtimeRoute.mode === 'direct_reply' || runtimeRoute.mode === 'direct_tool'
+        ? getFastPathModel(args)
+        : args.primaryModel;
 
-    const rid = getRequestId(resolver);
-    const requestStartTime = Date.now();
-    resolver.requestStartTime = requestStartTime;
     logEvent(rid, 'request.start', {
-        entity: entityId, model: args.primaryModel, stream: args.stream, invocationType,
+        entity: entityId, model: requestModel, stream: args.stream, invocationType,
         ...(toolLoopModel && { toolLoopModel }), reasoningEffort,
         routingModel: modelPolicy.routingModel,
+        conversationMode: effectiveConversationMode,
         planningReasoningEffort: args.planningReasoningEffort,
         synthesisReasoningEffort: args.synthesisReasoningEffort,
         entityToolCount: entityToolsOpenAiFormat.length, entityToolNames: summarizeToolNames(entityToolsOpenAiFormat),
@@ -2228,21 +2974,24 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         ...(isEntityRuntimeEnabled(args) && {
             runtimeRunId: args.runtimeRunId,
             runtimeStage: args.runtimeStage || 'plan',
-            modelPolicy,
+            modelPolicy: effectiveModelPolicy,
             authorityEnvelope,
         }),
     });
 
     try {
+        consumeInjectedAgentMessages(args, resolver);
         logEvent(rid, 'route.selected', {
             mode: runtimeRoute.mode,
             reason: runtimeRoute.reason,
             routeSource: runtimeRoute.routeSource || 'heuristic',
+            conversationMode: effectiveConversationMode,
             planningToolNames: summarizeToolNames(planningToolsOpenAiFormat),
             planningReasoningEffort: args.planningReasoningEffort,
             synthesisReasoningEffort: args.synthesisReasoningEffort,
             ...(runtimeRoute.toolName && { directTool: runtimeRoute.toolName }),
         });
+        publishRuntimeModeStatus({ resolver, args });
 
         if (runtimeRoute.mode === 'direct_tool') {
             logEvent(rid, 'route.preflight_skipped', {
@@ -2355,16 +3104,7 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
             await recordConversationMemory(resolver, args, response, entityName, entityInstructions);
         }
 
-        if (resolver.entityRuntimeState) {
-            resolver.pathwayResultData = {
-                ...(resolver.pathwayResultData || {}),
-                entityRuntime: {
-                    runId: resolver.entityRuntimeState.runId,
-                    stopReason: resolver.entityRuntimeState.stopReason,
-                    budgetState: getRuntimeBudgetState(resolver),
-                },
-            };
-        }
+        syncRuntimeResultData(resolver, args);
 
         const isStreamObject = response && typeof response.on === 'function';
         if (!isStreamObject && !extractResponseText(response).trim()) {
