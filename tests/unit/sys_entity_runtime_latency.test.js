@@ -272,10 +272,79 @@ test.serial('executeEntityAgentCore uses the model router to narrow planning too
   t.is(result, 'planner answer');
   t.truthy(initialPromptArgs);
   t.truthy(initialPromptArgs.promptCache?.key);
+  t.is(initialPromptArgs.styleNeutralizationPatch, '');
   t.deepEqual(
     initialPromptArgs.tools.map((tool) => tool.function?.name),
     ['SearchInternet', 'FetchWebPageContentJina', 'CreateChart', 'SetGoals'],
   );
+});
+
+test.serial('executeEntityAgentCore neutralizes final user-facing text when the initial planning pass returns a direct answer', async (t) => {
+  const originals = setupConfig({
+    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
+      q: { type: 'string' },
+      userMessage: { type: 'string' },
+    }),
+  });
+  t.teardown(() => restoreConfig(originals));
+
+  let initialPromptArgs;
+  let finalizePromptArgs;
+  const resolver = buildResolver({
+    promptAndParse: async (args) => {
+      if (isRouteCall(args)) {
+        return JSON.stringify({
+          mode: 'plan',
+          confidence: 'high',
+          toolCategory: 'general',
+          planningEffort: 'low',
+          synthesisEffort: 'medium',
+          reason: 'current_info',
+        });
+      }
+      finalizePromptArgs = args;
+      return 'neutralized final answer';
+    },
+  });
+
+  const result = await executeEntityAgentCore({
+    args: {
+      text: 'Should a startup rewrite a stable Rails app in Rust? Answer pragmatically.',
+      chatHistory: [{ role: 'user', content: 'Should a startup rewrite a stable Rails app in Rust? Answer pragmatically.' }],
+      agentContext: [],
+      entityId: originals.entityId,
+      invocationType: 'chat',
+      stream: true,
+      useMemory: false,
+      runtimeMode: 'entity-runtime',
+      runtimeRunId: 'run-test-initial-finalize',
+      runtimeStage: 'research_batch',
+      runtimeConversationMode: 'chat',
+      runtimeConversationModeConfidence: 'low',
+      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
+      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
+    },
+    runAllPrompts: async (args) => {
+      initialPromptArgs = args;
+      return 'A verbose drafted answer with bullets:\n- First point\n- Second point';
+    },
+    resolver,
+  });
+
+  t.is(result, 'neutralized final answer');
+  t.truthy(initialPromptArgs);
+  t.is(initialPromptArgs.styleNeutralizationPatch, '');
+  t.truthy(finalizePromptArgs);
+  t.deepEqual(finalizePromptArgs.tools, []);
+  t.false(finalizePromptArgs.stream);
+  t.is(finalizePromptArgs.styleNeutralizationPatch, 'anti_tell_v1');
+  t.is(finalizePromptArgs.styleNeutralizationKey, 'anti_tell_v1');
+  t.true(finalizePromptArgs.styleNeutralizationInstructions.includes('Preserve the entity identity, relationship context, and natural voice.'));
+  t.truthy(finalizePromptArgs.promptCache?.key);
+  t.true(finalizePromptArgs.promptCache?.descriptor.includes('anti_tell_v1'));
+  t.true(finalizePromptArgs.chatHistory.some((message) => (
+    message.role === 'assistant' && String(message.content).includes('A verbose drafted answer with bullets')
+  )));
 });
 
 test.serial('executeEntityAgentCore routes direct conversational replies through the model router fast path', async (t) => {
@@ -316,12 +385,17 @@ test.serial('executeEntityAgentCore routes direct conversational replies through
       entityId: originals.entityId,
       invocationType: 'chat',
       stream: false,
-      useMemory: false,
+      useMemory: true,
       runtimeMode: 'entity-runtime',
       runtimeRunId: 'run-test-direct-reply',
       runtimeStage: 'research_batch',
       runtimeConversationMode: 'chat',
       runtimeConversationModeConfidence: 'low',
+      runtimeOrientationPacket: {
+        identity: 'I am Jinx. Neon, sharp, a little dangerous, and very much alive.',
+        continuityContext: 'Jason likes fast signal, neon flair, and a real sense of relationship instead of generic assistant talk.',
+        currentFocus: [],
+      },
       authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
       modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
     },
@@ -341,8 +415,19 @@ test.serial('executeEntityAgentCore routes direct conversational replies through
   t.deepEqual(finalPromptArgs.tools, []);
   t.is(finalPromptArgs.modelOverride, 'oai-gpt54-mini');
   t.is(finalPromptArgs.latencyRouteMode, 'casual_chat');
+  t.true(finalPromptArgs.skipMemoryLoad);
+  t.is(finalPromptArgs.styleNeutralizationPatch, 'none');
+  t.is(finalPromptArgs.styleNeutralizationKey, 'none');
+  t.is(finalPromptArgs.styleNeutralizationInstructions, '');
   t.truthy(finalPromptArgs.promptCache?.key);
+  t.false(finalPromptArgs.promptCache?.descriptor.includes('anti_tell_v1'));
   t.true(finalPromptArgs.chatHistory.length <= 4);
+  t.is(finalPromptArgs.aiName, 'Latency Test Entity');
+  t.truthy(resolver.pathwayPrompt?.[0]?.messages?.[1]?.content);
+  t.true(resolver.pathwayPrompt[0].messages[1].content.includes('## Entity DNA'));
+  t.true(resolver.pathwayPrompt[0].messages[1].content.includes('Neon, sharp, a little dangerous'));
+  t.true(resolver.pathwayPrompt[0].messages[1].content.includes('## Narrative Context'));
+  t.true(resolver.pathwayPrompt[0].messages[1].content.includes('Jason likes fast signal'));
   t.is(resolver.pathwayResultData?.entityRuntime?.conversationMode, 'chat');
   t.is(resolver.pathwayResultData?.entityRuntime?.conversationModeConfidence, 'high');
 });
@@ -698,6 +783,7 @@ test.serial('executeEntityAgentCore fails safe to plan when a high-confidence ch
       runtimeStage: 'research_batch',
       runtimeConversationMode: 'chat',
       runtimeConversationModeConfidence: 'high',
+      styleNeutralizationPatch: 'none',
       authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
       modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
     },
@@ -763,6 +849,7 @@ test.serial('executeEntityAgentCore lets speculative chat win for high-confidenc
       runtimeStage: 'research_batch',
       runtimeConversationMode: 'chat',
       runtimeConversationModeConfidence: 'high',
+      styleNeutralizationPatch: 'none',
       authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
       modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
     },
@@ -926,7 +1013,7 @@ test.serial('executeEntityAgentCore avoids returning speculative chat when route
         });
       }
       chatCalls += 1;
-      await new Promise(resolve => setTimeout(resolve, 25));
+      await new Promise(resolve => setTimeout(resolve, 100));
       return 'speculative chat answer';
     },
   });
@@ -946,6 +1033,7 @@ test.serial('executeEntityAgentCore avoids returning speculative chat when route
       runtimeStage: 'research_batch',
       runtimeConversationMode: 'chat',
       runtimeConversationModeConfidence: 'high',
+      styleNeutralizationPatch: 'none',
       authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
       modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
     },

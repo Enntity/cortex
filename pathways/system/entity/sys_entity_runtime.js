@@ -37,7 +37,7 @@ export default {
         agentContext: [{ contextId: ``, contextKey: ``, default: true }],
         chatId: ``,
         language: "English",
-        aiName: "Jarvis",
+        aiName: "",
         title: ``,
         messages: [],
         voiceResponse: false,
@@ -56,6 +56,9 @@ export default {
         authorityEnvelope: undefined,
         modelPolicy: undefined,
         parentRunId: '',
+        styleNeutralizationProfile: undefined,
+        styleNeutralizationPatch: '',
+        styleNeutralizationText: '',
     },
     timeout: 600,
 

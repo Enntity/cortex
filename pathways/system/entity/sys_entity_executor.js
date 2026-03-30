@@ -111,6 +111,15 @@ const VOICE_FALLBACKS = {
     'default': 'One moment.'
 };
 
+const FINAL_RESPONSE_NEUTRALIZATION_PURPOSES = new Set([
+    'synthesis',
+    'synthesis_finalize',
+    'initial_finalize',
+    'fast_chat',
+    'fast_chat_speculative',
+    'fast_finalize',
+]);
+
 // ─── Imports ─────────────────────────────────────────────────────────────────
 
 import { callPathway, callTool, say, sendToolStart, sendToolFinish, withTimeout } from '../../../lib/pathwayTools.js';
@@ -122,6 +131,7 @@ import { config } from '../../../config.js';
 import { syncAndStripFilesFromChatHistory } from '../../../lib/fileUtils.js';
 import { Prompt } from '../../../server/prompt.js';
 import { requestState } from '../../../server/requestState.js';
+import { buildNeutralizationInstructionBlock } from '../../../lib/research/styleNeutralization.js';
 import { getToolsForEntity, loadEntityConfig } from './tools/shared/sys_entity_tools.js';
 import { COMPRESSION_THRESHOLD, compressOlderToolResults, rehydrateAllToolResults, dehydrateToolHistory } from './tools/shared/tool_result_compression.js';
 import CortexResponse from '../../../lib/cortexResponse.js';
@@ -483,6 +493,45 @@ function summarizeReturnedCalls(toolCalls) {
     });
 }
 
+function applyStyleNeutralization(callArgs, purpose) {
+    const styleBlock = getStyleNeutralizationBlock(callArgs, purpose);
+    if (!styleBlock.enabled) {
+        return {
+            ...callArgs,
+            styleNeutralizationInstructions: '',
+            styleNeutralizationPatch: 'none',
+            styleNeutralizationKey: 'none',
+        };
+    }
+
+    return {
+        ...callArgs,
+        styleNeutralizationInstructions: styleBlock.instructions,
+        styleNeutralizationPatch: styleBlock.patchName,
+        styleNeutralizationKey: styleBlock.key,
+    };
+}
+
+function getStyleNeutralizationBlock(callArgs, purpose) {
+    if (!FINAL_RESPONSE_NEUTRALIZATION_PURPOSES.has(purpose)) {
+        return { enabled: false, instructions: '', patchName: 'none', key: 'none' };
+    }
+
+    const model = callArgs.modelOverride || callArgs.model || '';
+    const styleBlock = buildNeutralizationInstructionBlock({
+        model,
+        purpose,
+        patchName: callArgs.styleNeutralizationPatch,
+        patchText: callArgs.styleNeutralizationText,
+        profile: callArgs.styleNeutralizationProfile,
+    });
+
+    return {
+        ...styleBlock,
+        enabled: !!styleBlock.instructions,
+    };
+}
+
 function applyPromptCacheOptions(callArgs, purpose, model) {
     if (!model || callArgs.promptCache) {
         return callArgs;
@@ -497,6 +546,7 @@ function applyPromptCacheOptions(callArgs, purpose, model) {
         model,
         routeMode: callArgs.latencyRouteMode || '',
         toolNames,
+        styleNeutralizationKey: callArgs.styleNeutralizationKey || 'none',
     });
 
     if (!promptCache?.key) return callArgs;
@@ -992,8 +1042,9 @@ function buildDirectToolResponseInstruction(route) {
 
 async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
     const rid = getRequestId(resolver);
-    const model = callArgs.modelOverride || callArgs.model || overrides.model;
-    const optimizedCallArgs = applyPromptCacheOptions(callArgs, purpose, model);
+    const neutralizedCallArgs = applyStyleNeutralization(callArgs, purpose);
+    const model = neutralizedCallArgs.modelOverride || neutralizedCallArgs.model || overrides.model;
+    const optimizedCallArgs = applyPromptCacheOptions(neutralizedCallArgs, purpose, model);
     logEvent(rid, 'model.call', {
         model,
         purpose,
@@ -1002,6 +1053,7 @@ async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
         toolNames: summarizeToolNames(optimizedCallArgs.tools),
         toolChoice: optimizedCallArgs.tool_choice || 'auto',
         messageCount: optimizedCallArgs.chatHistory?.length || 0,
+        styleNeutralizationPatch: optimizedCallArgs.styleNeutralizationPatch || 'none',
         ...(optimizedCallArgs.promptCache?.key && { promptCacheKey: optimizedCallArgs.promptCache.key }),
         ...overrides,
     });
@@ -1016,6 +1068,57 @@ async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
         ...overrides,
     });
     return result;
+}
+
+async function maybeFinalizeInitialResponse({
+    response,
+    args,
+    resolver,
+    initialCallModel,
+}) {
+    if (!response || typeof response?.on === 'function') return response;
+
+    const draftText = extractResponseText(response).trim();
+    if (!draftText) return response;
+
+    const finalModel = args.synthesisModel || args.primaryModel || initialCallModel;
+    const styleBlock = getStyleNeutralizationBlock({
+        ...args,
+        model: finalModel,
+    }, 'initial_finalize');
+    if (!styleBlock.enabled) return response;
+
+    await markRuntimeStage(resolver, 'synthesize', 'Finalizing direct answer for user-facing style', {
+        model: finalModel,
+    });
+
+    const rid = getRequestId(resolver);
+    const forcedHistory = [
+        ...(args.chatHistory || []),
+        { role: 'assistant', content: draftText },
+        {
+            role: 'user',
+            content: `[system message: ${rid}:initial-finalize] The draft answer above is the current best answer. Rewrite it as the final user-facing response. Preserve the factual content and intent. Do not add new facts, new caveats, or new offers unless they were already present. Do not call tools.`,
+        },
+    ];
+
+    const finalized = await callModelLogged(resolver, withVisibleModel({
+        ...args,
+        chatHistory: forcedHistory,
+        // Keep the rewrite pass non-streaming so we never expose the draft answer first.
+        stream: false,
+        tools: [],
+        reasoningEffort: args.synthesisReasoningEffort || args.configuredReasoningEffort || 'low',
+        skipMemoryLoad: true,
+    }, finalModel), 'initial_finalize', {
+        model: finalModel,
+    });
+
+    if (!finalized) return response;
+
+    const holder = { value: finalized };
+    await drainStreamingCallbacks(resolver)(holder);
+    return holder.value || response;
 }
 
 async function runDirectToolFastPath(route, args, resolver, entityTools, handlePromptError) {
@@ -1051,7 +1154,7 @@ async function runDirectToolFastPath(route, args, resolver, entityTools, handleP
             stream: args.stream,
             tools: [],
             reasoningEffort: 'low',
-            skipMemoryLoad: true,
+            skipMemoryLoad: hasInlineEntityDNAContext(args, resolver),
             latencyRouteMode: route.reason,
         }, fastPathModel), 'fast_finalize', {
             model: fastPathModel,
@@ -1092,7 +1195,7 @@ async function runDirectReplyFastPath(route, args, resolver, handlePromptError) 
             stream: args.stream,
             tools: [],
             reasoningEffort: FAST_CHAT_REASONING_EFFORT,
-            skipMemoryLoad: true,
+            skipMemoryLoad: hasInlineEntityDNAContext(args, resolver),
             latencyRouteMode: route.reason,
         }, fastPathModel), 'fast_chat', {
             model: fastPathModel,
@@ -1127,7 +1230,7 @@ async function runSpeculativeDirectReplyFastPath(route, args, resolver) {
         stream: false,
         tools: [],
         reasoningEffort: FAST_CHAT_REASONING_EFFORT,
-        skipMemoryLoad: true,
+        skipMemoryLoad: hasInlineEntityDNAContext(args, resolver),
         latencyRouteMode: route.reason,
     }, fastPathModel), 'fast_chat_speculative', {
         model: fastPathModel,
@@ -1323,6 +1426,40 @@ Orientation:
 ${focus}
 
 If the evidence is sufficient, synthesize. If it is not, use tools deliberately and avoid repeating the same search in slightly different wording.`;
+}
+
+function buildEntityDNABlock({
+    entityInstructions = '',
+    useContinuityMemory = false,
+    runtimeOrientationPacket = null,
+} = {}) {
+    const packet = runtimeOrientationPacket && typeof runtimeOrientationPacket === 'object'
+        ? runtimeOrientationPacket
+        : {};
+    const identity = String(packet.identity || entityInstructions || '').trim();
+    const continuityContext = String(packet.continuityContext || '').trim();
+    const sections = [];
+
+    if (identity) {
+        sections.push(`## Entity DNA\n\n${identity}`);
+    }
+
+    if (useContinuityMemory) {
+        if (continuityContext) {
+            sections.push(`## Narrative Context\n\n${continuityContext}`);
+        } else {
+            sections.push(`## Narrative Context\n\n{{renderTemplate AI_CONTINUITY_CONTEXT}}`);
+        }
+    }
+
+    return sections.join('\n\n').trim();
+}
+
+function hasInlineEntityDNAContext(args = {}, resolver = null) {
+    const packet = safeParseRuntimeValue(args.runtimeOrientationPacket);
+    if (packet?.continuityContext) return true;
+    if (typeof resolver?.continuityContext === 'string' && resolver.continuityContext.trim()) return true;
+    return false;
 }
 
 function shouldIncludeAvailableFilesInPrompt({ text = '', route = null, planningToolNames = [] } = {}) {
@@ -2401,10 +2538,12 @@ function loadEntityContext(entityConfig, args, resolver) {
     return { entityName, entityInstructions, useContinuityMemory, toolLoopModel, modelPolicy, authorityEnvelope };
 }
 
-function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse, runtimeContext = null, promptContext = {}) {
-    const entityDNA = useContinuityMemory
-        ? `{{renderTemplate AI_CONTINUITY_CONTEXT}}\n\n`
-        : (entityInstructions ? entityInstructions + '\n\n' : '');
+function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse, runtimeContext = null, promptContext = {}, runtimeOrientationPacket = null) {
+    const entityDNA = buildEntityDNABlock({
+        entityInstructions,
+        useContinuityMemory,
+        runtimeOrientationPacket,
+    });
 
     const commonInstructionsTemplate = entityConfig?.isSystem
         ? `{{renderTemplate AI_COMMON_INSTRUCTIONS_TEXT}}`
@@ -2467,7 +2606,11 @@ if you've completed something they'd want to know about.
 ` : '';
     const runtimeInstructions = buildRuntimeInstructionBlock(runtimeContext);
     const stableInstructionBlock = `${instructionTemplates}\n\n${toolsTemplate}${planInstruction}${searchRulesTemplate}${voiceInstructions}${pulseInstructions}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}`.trim();
-    const dynamicInstructionBlock = `${entityDNA}${runtimeInstructions ? `${runtimeInstructions}\n\n` : ''}`.trim();
+    const dynamicInstructionBlock = [
+        entityDNA.trim(),
+        runtimeInstructions.trim(),
+        '{{renderTemplate AI_STYLE_NEUTRALIZATION}}',
+    ].filter(Boolean).join('\n\n').trim();
     const volatileSections = [];
 
     if (promptContext.includeAvailableFiles) {
@@ -2608,6 +2751,8 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         authorityEnvelope,
     } = loadEntityContext(entityConfig, args, resolver);
 
+    args.aiName = entityName || args.aiName || 'Entity';
+
     if (!args.chatHistory || args.chatHistory.length === 0) args.chatHistory = [];
 
     const entityResources = entityConfig?.resources || entityConfig?.files || [];
@@ -2634,6 +2779,9 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         ...args, ...config.get('entityConstants'),
         entityId, contextId, entityTools, entityToolsOpenAiFormat, entityInstructions,
         voiceResponse, chatId, userInfo, hasWorkspace: !!entityTools.workspacessh,
+        styleNeutralizationProfile: args.styleNeutralizationProfile || entityConfig?.styleNeutralizationProfile || null,
+        styleNeutralizationPatch: args.styleNeutralizationPatch || '',
+        styleNeutralizationText: args.styleNeutralizationText || '',
     };
     resolver.args = {...args};
 
@@ -2930,7 +3078,8 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         voiceResponse,
         isPulse,
         runtimeContext,
-        promptContext
+        promptContext,
+        runtimeOrientationPacket
     );
     resolver.pathwayPrompt = [new Prompt({ messages: promptMessages })];
 
@@ -3080,6 +3229,7 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
             contentChars: (response instanceof CortexResponse ? response.output_text?.length : (typeof response === 'string' ? response.length : 0)) || 0,
         });
 
+        const initialToolCalls = extractToolCalls(response);
         const toolCallback = toolCallbackOverride || resolver.pathway.toolCallback || toolCallbackCore;
         resolver._preToolHistoryLength = args.chatHistory.length;
         while (response && (
@@ -3096,6 +3246,15 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
                 await finalizeRuntimeRun(args, resolver, errorResponse);
                 return errorResponse;
             }
+        }
+
+        if (initialToolCalls.length === 0) {
+            response = await maybeFinalizeInitialResponse({
+                response,
+                args,
+                resolver,
+                initialCallModel,
+            });
         }
 
         if (isPulse && useContinuityMemory && resolver.continuityEntityId) {
@@ -3183,7 +3342,7 @@ export default {
         agentContext: [{ contextId: ``, contextKey: ``, default: true }],
         chatId: ``,
         language: "English",
-        aiName: "Jarvis",
+        aiName: "",
         title: ``,
         messages: [],
         voiceResponse: false,
@@ -3204,6 +3363,9 @@ export default {
         modelPolicy: undefined,
         authorityEnvelope: undefined,
         runtimeOrientationPacket: undefined,
+        styleNeutralizationProfile: undefined,
+        styleNeutralizationPatch: '',
+        styleNeutralizationText: '',
     },
     timeout: 600,
 
