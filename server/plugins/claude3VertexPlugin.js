@@ -513,19 +513,24 @@ class Claude3VertexPlugin extends OpenAIVisionPlugin {
       }
     }
 
-    // If there are function calls in messages, generate tools block
-    if (modifiedMessages?.some(msg => 
-      Array.isArray(msg.content) && msg.content.some(item => item.type === 'tool_use')
-    )) {
+    // Claude requires any tool_use entries present in message history to also
+    // appear in the active tools array. Union explicit tools with any retained
+    // historical tool uses so the request stays protocol-valid.
+    if (
+      modifiedMessages?.some(msg =>
+        Array.isArray(msg.content) && msg.content.some(item => item.type === 'tool_use')
+      )
+    ) {
       const toolsMap = new Map();
-      
-      // First add any existing tools from parameters to the map
-      if (requestParameters.tools) {
-        requestParameters.tools.forEach(tool => {
-          toolsMap.set(tool.name, tool);
+
+      if (Array.isArray(requestParameters.tools)) {
+        requestParameters.tools.forEach((tool) => {
+          if (tool?.name && !toolsMap.has(tool.name)) {
+            toolsMap.set(tool.name, tool);
+          }
         });
       }
-      
+
       // Collect all unique tool uses from messages, only adding if not already present
       modifiedMessages.forEach(msg => {
         if (Array.isArray(msg.content)) {

@@ -67,3 +67,39 @@ test('buildModels adds models to config', (t) => {
 test('buildModels sets defaultModelName if not provided', (t) => {
     t.truthy(config.get('defaultModelName'));
 });
+
+test('buildModels includes adopted reasoning effort maps for shared Gemini and router models', (t) => {
+    const models = config.get('models');
+
+    t.deepEqual(models['oai-router'].reasoningEffortMap, {
+        none: 'low',
+        low: 'low',
+        medium: 'medium',
+        high: 'high',
+        xhigh: 'high',
+    });
+
+    t.deepEqual(models['gemini-pro-31-vision'].reasoningEffortMap, {
+        none: 'low',
+        low: 'low',
+        medium: 'high',
+        high: 'high',
+        xhigh: 'high',
+    });
+
+    t.deepEqual(models['gemini-flash-3-vision'].reasoningEffortMap, {
+        none: 'minimal',
+        low: 'low',
+        medium: 'medium',
+        high: 'high',
+        xhigh: 'high',
+    });
+
+    t.deepEqual(models['gemini-flash-31-lite-vision'].reasoningEffortMap, {
+        none: 'minimal',
+        low: 'low',
+        medium: 'medium',
+        high: 'high',
+        xhigh: 'high',
+    });
+});

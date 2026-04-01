@@ -12,6 +12,7 @@ test('listNeutralizationPatches exposes builtin patches', (t) => {
 
     t.true(patches.some(patch => patch.name === 'none'));
     t.true(patches.some(patch => patch.name === 'neutral_icl_v2'));
+    t.true(patches.some(patch => patch.name === 'anti_tell_gemini_v1'));
 });
 
 test('buildNeutralizedPrompt returns original text when patch is none', (t) => {
@@ -73,6 +74,29 @@ test('resolveNeutralizationSelection picks the default synthesis patch for GPT-5
 test('resolveNeutralizationSelection disables fast chat neutralization by default for GPT-5.4', (t) => {
     const selection = resolveNeutralizationSelection({
         model: 'oai-gpt54',
+        purpose: 'fast_chat',
+    });
+
+    t.is(selection.patchName, 'none');
+    t.is(selection.text, '');
+});
+
+test('resolveNeutralizationSelection picks the Gemini anti-tell patch by default', (t) => {
+    const selection = resolveNeutralizationSelection({
+        model: 'gemini-flash-3-vision',
+        purpose: 'synthesis',
+    });
+
+    t.is(selection.patchName, 'anti_tell_gemini_v1');
+    t.true(selection.text.includes('Gemini-style over-expansion'));
+    t.true(selection.text.includes('Start with the answer itself. Do not start by restating instructions, rules, or what you are about to do.'));
+    t.true(selection.text.includes('If search grounding is needed, place :cd_source[searchResultId] immediately after the supported sentence. Do not explain citation formatting.'));
+    t.true(selection.text.includes('Do not restate or translate prompt rules, citation rules, tool rules, or process notes into user-visible text.'));
+});
+
+test('resolveNeutralizationSelection disables fast chat neutralization by default for Gemini', (t) => {
+    const selection = resolveNeutralizationSelection({
+        model: 'gemini-flash-3-vision',
         purpose: 'fast_chat',
     });
 

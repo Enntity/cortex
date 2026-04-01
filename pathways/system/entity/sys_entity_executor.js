@@ -17,7 +17,7 @@ const FAST_CHAT_MAX_TURNS = 3;
 const FAST_TOOL_MAX_TURNS = 2;
 const FAST_TOOL_MAX_MESSAGES = 8;
 const FAST_CHAT_REASONING_EFFORT = 'high';
-const STREAM_SPECULATIVE_CLASSIFIER_GRACE_MS = 150;
+const SYNTHESIS_REVIEW_MARKER = '[runtime review]';
 const TERMINAL_REPLAN_STOP_REASONS = new Set([
     'low_novelty',
     'evidence_cap',
@@ -28,13 +28,13 @@ const TERMINAL_REPLAN_STOP_REASONS = new Set([
     'child_cap',
     'repeated_search_cap',
     'per_round_tool_cap',
-    'stage_tool_block',
     'tool_envelope_cap',
 ]);
 
 const SET_GOALS_TOOL_NAME = 'setgoals';
+const DELEGATE_RESEARCH_TOOL_NAME = 'delegateresearch';
 const ROUTER_DECISION_TOOL_NAME = 'SelectRoute';
-const ROUTER_ALLOWED_MODES = new Set(['plan', 'direct_reply', 'workspace_inventory', 'set_base_avatar', 'view_image']);
+const ROUTER_ALLOWED_MODES = new Set(['plan', 'direct_reply', 'direct_search']);
 const ROUTER_ALLOWED_TOOL_CATEGORIES = new Set(['general', 'workspace', 'images', 'web', 'memory', 'media', 'chart']);
 
 const SET_GOALS_OPENAI_DEF = {
@@ -53,6 +53,22 @@ const SET_GOALS_OPENAI_DEF = {
     }
 };
 
+const DELEGATE_RESEARCH_OPENAI_DEF = {
+    type: "function",
+    function: {
+        name: "DelegateResearch",
+        description: "Request another bounded worker research pass when the current evidence is not enough to answer yet.",
+        parameters: {
+            type: "object",
+            properties: {
+                goal: { type: "string", description: "What the worker pass must resolve before the supervisor can answer" },
+                tasks: { type: "array", items: { type: "string" }, description: "2-5 concrete missing findings or checks for the worker pass" },
+            },
+            required: ["goal", "tasks"]
+        }
+    }
+};
+
 const ROUTER_DECISION_OPENAI_DEF = {
     type: 'function',
     function: {
@@ -63,7 +79,7 @@ const ROUTER_DECISION_OPENAI_DEF = {
             properties: {
                 mode: {
                     type: 'string',
-                    enum: ['plan', 'direct_reply', 'workspace_inventory', 'set_base_avatar', 'view_image'],
+                    enum: ['plan', 'direct_reply', 'direct_search'],
                 },
                 confidence: {
                     type: 'string',
@@ -116,7 +132,6 @@ const FINAL_RESPONSE_NEUTRALIZATION_PURPOSES = new Set([
     'synthesis_finalize',
     'initial_finalize',
     'fast_chat',
-    'fast_chat_speculative',
     'fast_finalize',
 ]);
 
@@ -140,8 +155,6 @@ import {
     applyConversationModeAffiliation,
     buildPromptCacheHint,
     buildSemanticToolKey,
-    DIRECT_ROUTE_WORKSPACE_COMMAND,
-    extractFilenameMentions,
     extractRecentFileReferences,
     getConversationModeAffiliationPolicy,
     getEntityRuntime,
@@ -242,11 +255,345 @@ function cloneMessages(msgs) {
     return JSON.parse(JSON.stringify(msgs));
 }
 
+function isGeminiModel(model = '') {
+    return /^gemini-/i.test(String(model || '').trim());
+}
+
+function hasToolName(tools = [], toolName = '') {
+    const needle = String(toolName || '').trim().toLowerCase();
+    if (!needle) return false;
+    return (tools || []).some((tool) => String(tool?.function?.name || '').trim().toLowerCase() === needle);
+}
+
+function escapeRegExp(text = '') {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripMarkdownSections(text = '', headings = []) {
+    let result = String(text || '');
+    for (const heading of headings) {
+        const escapedHeading = escapeRegExp(heading);
+        result = result.replace(
+            new RegExp(`(?:^|\\n)## ${escapedHeading}\\n[\\s\\S]*?(?=(?:\\n## [^\\n]+\\n)|$)`, 'g'),
+            '',
+        );
+    }
+    return result.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+export function pruneGeminiFinalContinuityContext(context = '') {
+    return stripMarkdownSections(context, [
+        'Current Expression State',
+        'My Internal Compass',
+    ]);
+}
+
+function buildLeanResponsePromptTemplate({
+    isSystem = false,
+    entityInstructions = '',
+    useContinuityMemory = false,
+    resolvedContinuityContext = '',
+    runtimeContext = null,
+    promptContext = {},
+    purpose = '',
+    allowReplan = false,
+    replanOnly = false,
+    delegateToolName = '',
+} = {}) {
+    const entityContext = buildEntityContextBlock({
+        entityInstructions,
+        useContinuityMemory,
+        resolvedContinuityContext,
+    });
+    const runtimeInstructions = buildRuntimeInstructionBlock(runtimeContext);
+
+    const commonInstructionsTemplate = isSystem
+        ? `{{renderTemplate AI_COMMON_INSTRUCTIONS_TEXT}}`
+        : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}`;
+    const stableInstructionBlock = `${commonInstructionsTemplate}\n\n{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}`.trim();
+    const effectiveDelegateToolName = delegateToolName || 'SetGoals';
+    const purposeInstruction = allowReplan
+        ? (replanOnly
+            ? `If the evidence is insufficient, call ${effectiveDelegateToolName} only with the missing outcomes. Do not call search/fetch or any other tools directly in this step. Otherwise answer directly. Any factual answer you give from search/tool evidence must appear explicitly in the evidence above. Do not infer or guess missing facts.`
+            : `If the evidence is insufficient, call ${effectiveDelegateToolName} with the missing outcomes. Otherwise answer directly. Any factual answer you give from search/tool evidence must appear explicitly in the evidence above. Do not infer or guess missing facts.`)
+        : '';
+    const styleInstructionBlock = '{{renderTemplate AI_STYLE_NEUTRALIZATION}}';
+
+    const messages = [
+        { role: 'system', content: stableInstructionBlock },
+        ...(styleInstructionBlock ? [{ role: 'system', content: styleInstructionBlock }] : []),
+        ...(entityContext.trim() ? [{ role: 'system', content: entityContext.trim() }] : []),
+        ...(runtimeInstructions.trim() ? [{ role: 'system', content: runtimeInstructions.trim() }] : []),
+        ...(purposeInstruction ? [{ role: 'system', content: purposeInstruction }] : []),
+    ];
+
+    if (purpose === 'fast_chat' || purpose === 'fast_finalize') {
+        messages.push({
+            role: 'system',
+            content: 'Answer directly in your normal voice. Start with the answer itself. Keep it concise unless the user asked for depth.',
+        });
+    }
+
+    if (promptContext.includeDateTime) {
+        messages.push({ role: 'system', content: '{{renderTemplate AI_DATETIME}}' });
+    }
+
+    return [
+        ...messages,
+        '{{chatHistory}}',
+    ];
+}
+
+function buildFastSearchPromptTemplate({
+    isSystem = false,
+    entityInstructions = '',
+    useContinuityMemory = false,
+    resolvedContinuityContext = '',
+    runtimeContext = null,
+    promptContext = {},
+} = {}) {
+    const entityContext = buildEntityContextBlock({
+        entityInstructions,
+        useContinuityMemory,
+        resolvedContinuityContext,
+    }).trim();
+    const runtimeInstructions = buildRuntimeInstructionBlock(runtimeContext).trim();
+    const commonInstructionsTemplate = isSystem
+        ? `{{renderTemplate AI_COMMON_INSTRUCTIONS_TEXT}}`
+        : `{{renderTemplate AI_COMMON_INSTRUCTIONS}}`;
+    const searchInstructionBlock = [
+        commonInstructionsTemplate,
+        '{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}',
+        'This is a simple current-information turn.',
+        'Call the search/fetch tools you need in a single response, then stop. Do not call SetGoals.',
+        'Bundle complementary web lookups together when one query is likely ambiguous or easy to confuse with unrelated results.',
+        'If the target is unnamed, rumored, newly opened, or could be confused with unrelated venues/topics, use at least two complementary lookups before you stop.',
+        'Prefer the minimum search set that reaches a confident identification, not the fewest possible queries.',
+    ].join('\n\n').trim();
+
+    return [
+        { role: 'system', content: searchInstructionBlock },
+        { role: 'system', content: '{{renderTemplate AI_STYLE_NEUTRALIZATION}}' },
+        ...(entityContext ? [{ role: 'system', content: entityContext }] : []),
+        ...(runtimeInstructions ? [{ role: 'system', content: runtimeInstructions }] : []),
+        ...(promptContext.includeDateTime ? [{ role: 'system', content: '{{renderTemplate AI_DATETIME}}' }] : []),
+        '{{chatHistory}}',
+    ];
+}
+
+export function buildPurposePromptOverride(callArgs = {}, purpose = '') {
+    const promptMeta = callArgs.promptTemplateMeta || {};
+    if (!promptMeta || typeof promptMeta !== 'object') return null;
+    const delegateToolName = hasToolName(callArgs.tools, 'DelegateResearch')
+        ? 'DelegateResearch'
+        : (hasToolName(callArgs.tools, 'SetGoals') ? 'SetGoals' : '');
+
+    const templateArgs = {
+        ...promptMeta,
+        promptContext: promptMeta.promptContext || {},
+        resolvedContinuityContext: promptMeta.resolvedContinuityContext || '',
+        runtimeContext: callArgs.runtimeContext || null,
+        purpose,
+        delegateToolName,
+    };
+
+    switch (purpose) {
+    case 'synthesis':
+        return buildLeanResponsePromptTemplate({
+            ...templateArgs,
+            allowReplan: Boolean(delegateToolName),
+            replanOnly: Boolean(delegateToolName) && isEntityRuntimeEnabled(callArgs),
+        });
+    case 'synthesis_finalize':
+    case 'initial_finalize':
+    case 'fast_chat':
+    case 'fast_finalize':
+        return buildLeanResponsePromptTemplate(templateArgs);
+    case 'fast_search':
+        return buildFastSearchPromptTemplate(templateArgs);
+    default:
+        return null;
+    }
+}
+
 function extractResponseText(response) {
     if (response instanceof CortexResponse) return response.output_text || response.content || '';
     if (typeof response === 'string') return response;
     if (response) return response.output_text || response.content || '';
     return '';
+}
+
+function hasSignedUrlParams(url = '') {
+    return typeof url === 'string'
+        && (
+            url.includes('X-Goog-Algorithm=')
+            || url.includes('X-Goog-Signature=')
+            || url.includes('GoogleAccessId=')
+            || url.includes('Signature=')
+        );
+}
+
+function extractManagedBlobPathFromUrl(url) {
+    if (!url || typeof url !== 'string') return null;
+
+    if (url.startsWith('gs://')) {
+        const withoutProtocol = url.slice(5);
+        const slashIndex = withoutProtocol.indexOf('/');
+        return slashIndex === -1 ? null : decodeURIComponent(withoutProtocol.slice(slashIndex + 1));
+    }
+
+    try {
+        const urlObj = new URL(url);
+        const pathnameParts = urlObj.pathname.split('/').filter(Boolean);
+
+        if (
+            urlObj.hostname === 'storage.googleapis.com'
+            || urlObj.hostname === 'storage.cloud.google.com'
+        ) {
+            if (pathnameParts.length >= 2) {
+                return decodeURIComponent(pathnameParts.slice(1).join('/'));
+            }
+            return null;
+        }
+
+        if (
+            pathnameParts.length >= 5
+            && pathnameParts[0] === 'storage'
+            && pathnameParts[1] === 'v1'
+            && pathnameParts[2] === 'b'
+        ) {
+            const objectIndex = pathnameParts.indexOf('o');
+            if (objectIndex !== -1 && pathnameParts.length > objectIndex + 1) {
+                return decodeURIComponent(pathnameParts.slice(objectIndex + 1).join('/'));
+            }
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
+}
+
+function collectSignedManagedMediaUrls(value, signedUrlsByBlobPath) {
+    if (!value) return;
+
+    if (typeof value === 'string') {
+        const parsed = safeParse(value);
+        if (parsed !== undefined) {
+            collectSignedManagedMediaUrls(parsed, signedUrlsByBlobPath);
+        }
+        return;
+    }
+
+    if (Array.isArray(value)) {
+        value.forEach((item) => collectSignedManagedMediaUrls(item, signedUrlsByBlobPath));
+        return;
+    }
+
+    if (typeof value !== 'object') {
+        return;
+    }
+
+    const directUrl = typeof value.url === 'string' ? value.url : null;
+    const nestedImageUrl = typeof value.image_url?.url === 'string' ? value.image_url.url : null;
+    const candidateUrl = directUrl || nestedImageUrl;
+    const candidateBlobPath = typeof value.blobPath === 'string'
+        ? value.blobPath
+        : extractManagedBlobPathFromUrl(candidateUrl);
+
+    if (candidateBlobPath && candidateUrl && hasSignedUrlParams(candidateUrl)) {
+        signedUrlsByBlobPath.set(candidateBlobPath, candidateUrl);
+    }
+
+    Object.values(value).forEach((nested) => {
+        collectSignedManagedMediaUrls(nested, signedUrlsByBlobPath);
+    });
+}
+
+export function repairManagedMediaUrlsInText(text = '', messages = []) {
+    if (!text || typeof text !== 'string') {
+        return text;
+    }
+
+    const normalizedText = text.replace(
+        /:cd_source\[([^\]]+)\]((?:\[[^\]]+\])+)/g,
+        (_match, firstId, trailingIds) => {
+            const ids = [firstId];
+            const extraMatches = trailingIds.matchAll(/\[([^\]]+)\]/g);
+
+            for (const extraMatch of extraMatches) {
+                if (extraMatch?.[1]) {
+                    ids.push(extraMatch[1]);
+                }
+            }
+
+            return ids.map((id) => `:cd_source[${id}]`).join(' ');
+        },
+    );
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return normalizedText;
+    }
+
+    const signedUrlsByBlobPath = new Map();
+    collectSignedManagedMediaUrls(messages, signedUrlsByBlobPath);
+
+    if (signedUrlsByBlobPath.size === 0) {
+        return normalizedText;
+    }
+
+    return normalizedText.replace(/https?:\/\/[^\s<>"')\]]+/g, (matchedUrl) => {
+        if (hasSignedUrlParams(matchedUrl)) {
+            return matchedUrl;
+        }
+
+        const blobPath = extractManagedBlobPathFromUrl(matchedUrl);
+        if (!blobPath) {
+            return matchedUrl;
+        }
+
+        return signedUrlsByBlobPath.get(blobPath) || matchedUrl;
+    });
+}
+
+function repairManagedMediaUrlsInResponse(response, resolver, messages = []) {
+    const repairedStreamedContent = repairManagedMediaUrlsInText(
+        resolver?.streamedContent || '',
+        messages,
+    );
+
+    if (resolver && repairedStreamedContent !== (resolver.streamedContent || '')) {
+        resolver.streamedContent = repairedStreamedContent;
+    }
+
+    const originalText = extractResponseText(response);
+    const repairedText = repairManagedMediaUrlsInText(originalText, messages);
+
+    if (!originalText || repairedText === originalText) {
+        return response;
+    }
+
+    if (response instanceof CortexResponse) {
+        response.output_text = repairedText;
+        if (typeof response.content === 'string') {
+            response.content = repairedText;
+        }
+        return response;
+    }
+
+    if (typeof response === 'string') {
+        return repairedText;
+    }
+
+    if (response && typeof response === 'object') {
+        if (typeof response.output_text === 'string') {
+            response.output_text = repairedText;
+        } else if (typeof response.content === 'string') {
+            response.content = repairedText;
+        }
+    }
+
+    return response;
 }
 
 function buildToolCallEntry(toolCall, args) {
@@ -303,10 +650,66 @@ function consumeInjectedAgentMessages(args, resolver) {
     return true;
 }
 
-function hasOnlySetGoalsToolCalls(toolCalls = []) {
+function hasOnlyToolCallsByName(toolCalls = [], toolName = '') {
+    const needle = String(toolName || '').trim().toLowerCase();
+    if (!needle) return false;
     return Array.isArray(toolCalls)
         && toolCalls.length > 0
-        && toolCalls.every(tc => tc.function?.name?.toLowerCase() === SET_GOALS_TOOL_NAME);
+        && toolCalls.every(tc => tc.function?.name?.toLowerCase() === needle);
+}
+
+function hasOnlySetGoalsToolCalls(toolCalls = []) {
+    return hasOnlyToolCallsByName(toolCalls, SET_GOALS_TOOL_NAME);
+}
+
+function extractDelegateResearchPlan(toolCall) {
+    if (toolCall?.function?.name?.toLowerCase() !== DELEGATE_RESEARCH_TOOL_NAME) return null;
+    const planArgs = safeParse(toolCall.function.arguments);
+    if (!planArgs?.goal || !Array.isArray(planArgs.tasks)) return null;
+    return {
+        goal: String(planArgs.goal).trim(),
+        steps: planArgs.tasks.map(step => String(step).trim()).filter(Boolean),
+    };
+}
+
+function extractPlanFromToolCall(toolCall) {
+    return extractSetGoalsPlan(toolCall) || extractDelegateResearchPlan(toolCall);
+}
+
+function buildToolPlanFromToolCalls(toolCalls = [], args = {}) {
+    if (!toolCalls || toolCalls.length === 0) return null;
+    const goal = args.runGoal || extractUserMessage(args) || 'Complete the active request.';
+    const steps = [];
+    const seen = new Set();
+    for (const toolCall of toolCalls) {
+        const step = describeToolIntent(toolCall);
+        if (!step || seen.has(step)) continue;
+        seen.add(step);
+        steps.push(step);
+        if (steps.length >= 5) break;
+    }
+    return {
+        goal,
+        steps: steps.length > 0 ? steps : ['Finish the request using the evidence gathered so far.'],
+    };
+}
+
+function applyToolPlan(plan, resolver, { source = 'runtime_synthesized' } = {}) {
+    if (!plan?.goal || !Array.isArray(plan.steps)) return null;
+    resolver.toolPlan = plan;
+    logEvent(getRequestId(resolver), 'plan.created', {
+        goal: resolver.toolPlan.goal,
+        steps: resolver.toolPlan.steps.length,
+        stepList: resolver.toolPlan.steps,
+        source,
+    });
+    return resolver.toolPlan;
+}
+
+function synthesizeServerPlan(toolCalls, args, resolver, { force = false, source = 'runtime_synthesized' } = {}) {
+    if (!force && resolver.toolPlan) return resolver.toolPlan;
+    const plan = buildToolPlanFromToolCalls(toolCalls, args);
+    return applyToolPlan(plan, resolver, { source });
 }
 
 function extractSetGoalsPlan(toolCall) {
@@ -419,6 +822,17 @@ export function insertSystemMessage(messages, text, requestId = null) {
         return !content.startsWith(marker);
     });
     filtered.push({ role: "user", content: `${marker} ${text}` });
+    return filtered;
+}
+
+function insertTaggedSystemTurn(messages, text, { requestId = null, marker = SYNTHESIS_REVIEW_MARKER } = {}) {
+    const prefix = requestId ? `${marker} ${requestId}` : marker;
+    const filtered = (messages || []).filter((msg) => {
+        if (msg.role !== 'system') return true;
+        const content = typeof msg.content === 'string' ? msg.content : '';
+        return !content.startsWith(prefix);
+    });
+    filtered.push({ role: 'system', content: `${prefix}\n${text}` });
     return filtered;
 }
 
@@ -621,20 +1035,18 @@ function buildRoutingPrompt({ text = '', recentFiles = [], availableToolNames = 
 Current sticky conversation modes:
 - "chat": casual back-and-forth, acknowledgements, personal conversation
 - "agentic": requests that imply tools, files, code execution, actions, or stepwise work
-- "creative": roleplay, ideation, prose, expressive generation
+- "creative": ideation, prose, expressive generation
 - "research": fact gathering, current info, reading/synthesis
 - "nsfw": explicitly sexual or erotic conversation
 
-Allowed modes:
+Execution routes:
 - "direct_reply": casual chat or a simple acknowledgement that needs no tools
-- "workspace_inventory": inspecting what files/directories exist in the workspace
-- "set_base_avatar": switching the base avatar to a named image file
-- "view_image": looking at a named or recently referenced image
-- "plan": anything else
+- "direct_search": a simple, deterministic current-info/news/search turn that can be handled with one bundled search round and one answer
+- "plan": anything that may require tools, file/workspace handling, ambiguity resolution, or iterative multi-step work
 
 Tool categories:
-- "workspace": workspace/files inspection, local files, avatar/file operations
-- "images": image inspection or avatar/image-specific work
+- "workspace": workspace/files inspection, local files, shell checks
+- "images": image inspection, avatar/image-specific work, choosing or applying image assets
 - "web": current info, search, news, web reading
 - "memory": narrative memory recall/store
 - "media": image/video/slides generation or editing
@@ -643,13 +1055,16 @@ Tool categories:
 
 Rules:
 - Keep the current conversationMode unless the user intent clearly shifts.
-- Prefer "direct_reply" only when tools, files, current info, or deep reasoning are unnecessary.
-- Prefer "workspace_inventory" when the user is effectively asking what is present in /workspace or /workspace/files even if the phrasing is casual.
-- Use "plan" if there is any real ambiguity or multi-step work.
+- Prefer "direct_reply" only when you can answer confidently from the existing conversation, entity context, and stable knowledge alone.
+- If the user is asking for intel, identification, verification, or any real-world referent that may require lookup or disambiguation, do not choose "direct_reply".
+- If a direct reply would require guessing, choose "direct_search" or "plan" instead.
+- Prefer "direct_search" only for simple, deterministic current-info questions where one bundled search round should be enough to answer confidently.
+- Use "plan" if the turn has real ambiguity, entity-identification uncertainty, multiple plausible targets, broad or comparative scope, likely follow-on searches/fetches, likely iterative research, action-taking, or file/workspace handling.
+- If you suspect the model may need a second research round to be reliable, choose "plan", not "direct_search".
 - planningEffort: "low" for straightforward inspection/reporting/tool-routing turns, "medium" for normal tasks, "high" for broad research or complex problem-solving.
 - synthesisEffort: "low" for short direct answers or simple summaries, otherwise "medium" unless nuanced synthesis clearly needs "high".
 - modeAction: "stay" if the current sticky mode still fits, otherwise "switch".
-- reason and modeReason must be short snake_case codes, 1-4 words max. Good examples: casual_chat, current_info, workspace_inventory, agentic_task, avatar_change, mode_stay, research_request.
+- reason and modeReason must be short snake_case codes, 1-4 words max. Good examples: casual_chat, current_info, workspace_task, image_task, mode_stay, research_request.
 - Call the "${ROUTER_DECISION_TOOL_NAME}" function exactly once.
 - Do not reply with plain text.`,
         },
@@ -711,9 +1126,6 @@ function parseRoutingDecision(response) {
     const modeAction = normalizeRouterModeAction(parsed.modeAction);
     const defaultReason = (
         mode === 'direct_reply' ? 'casual_chat' :
-        mode === 'workspace_inventory' ? 'workspace_inventory' :
-        mode === 'set_base_avatar' ? 'set_base_avatar' :
-        mode === 'view_image' ? 'view_image' :
         toolCategory === 'web' ? 'current_info' :
         toolCategory === 'workspace' ? 'workspace_task' :
         toolCategory === 'images' ? 'image_task' :
@@ -753,6 +1165,17 @@ function getFastPathModel(args = {}) {
         || args.primaryModel;
 }
 
+function getFastFinalizeModel(args = {}) {
+    if (args.useMemory === false) {
+        return getFastPathModel(args);
+    }
+    return args.modelPolicyResolved?.synthesisModel
+        || args.modelPolicyResolved?.primaryModel
+        || args.synthesisModel
+        || args.primaryModel
+        || getFastPathModel(args);
+}
+
 function hasUsableFastPathResult(result) {
     if (result === null || result === undefined) return false;
     if (typeof result === 'string') return result.trim().length > 0;
@@ -765,56 +1188,23 @@ function hasUsableFastPathResult(result) {
 }
 
 function buildDirectRouteFromDecision(decision, { text = '', chatHistory = [], availableToolNames = [] } = {}) {
-    const explicitFiles = extractFilenameMentions(text);
-    const recentFiles = extractRecentFileReferences(chatHistory);
-    const targetImageFile = explicitFiles[0] || recentFiles[0] || null;
-
-    if (decision.mode === 'workspace_inventory' && availableToolNames.includes('WorkspaceSSH')) {
-        return {
-            mode: 'direct_tool',
-            reason: 'workspace_inventory',
-            toolName: 'WorkspaceSSH',
-            toolArgs: {
-                command: DIRECT_ROUTE_WORKSPACE_COMMAND,
-                userMessage: 'Checking the workspace files directly',
-                timeoutSeconds: 60,
-            },
-            initialToolNames: shortlistToolsForCategory('workspace', availableToolNames),
-        };
-    }
-
-    if (decision.mode === 'set_base_avatar' && explicitFiles[0] && availableToolNames.includes('SetBaseAvatar')) {
-        return {
-            mode: 'direct_tool',
-            reason: 'set_base_avatar',
-            toolName: 'SetBaseAvatar',
-            toolArgs: {
-                file: explicitFiles[0],
-                userMessage: `Switching the base avatar to ${explicitFiles[0]}`,
-            },
-            initialToolNames: shortlistToolsForCategory('images', availableToolNames),
-        };
-    }
-
-    if (decision.mode === 'view_image' && targetImageFile && availableToolNames.includes('ViewImages')) {
-        return {
-            mode: 'direct_tool',
-            reason: 'view_image',
-            toolName: 'ViewImages',
-            toolArgs: {
-                files: [targetImageFile],
-                userMessage: `Looking at ${targetImageFile}`,
-            },
-            initialToolNames: shortlistToolsForCategory('images', availableToolNames),
-        };
-    }
-
     if (decision.mode === 'direct_reply') {
         return {
             mode: 'direct_reply',
             reason: decision.reason || 'casual_chat',
             initialToolNames: [],
         };
+    }
+
+    if (decision.mode === 'direct_search') {
+        const webTools = shortlistToolsForCategory('web', availableToolNames);
+        if (webTools.length > 0) {
+            return {
+                mode: 'direct_search',
+                reason: decision.reason || 'current_info',
+                initialToolNames: webTools,
+            };
+        }
     }
 
     return null;
@@ -880,7 +1270,7 @@ async function classifyRouteWithModel({
         );
         const nextRoute = {
             ...initialRoute,
-            mode: decision.mode === 'direct_reply' ? 'direct_reply' : 'plan',
+            mode: ['direct_reply', 'direct_search'].includes(decision.mode) ? decision.mode : 'plan',
             routeSource: 'model',
             reason: ['default', 'chat_mode', 'agentic_mode', 'creative_mode', 'research_mode', 'nsfw_mode'].includes(initialRoute.reason)
                 ? decision.reason
@@ -945,7 +1335,7 @@ function applyRouteClassificationOutcome({
             resolver.entityRuntimeState.conversationModeConfidence = 'low';
         }
         args.runtimeConversationModeConfidence = 'low';
-        if (initialRoute?.mode === 'direct_reply') {
+        if (['direct_reply', 'direct_search'].includes(initialRoute?.mode)) {
             return {
                 ...initialRoute,
                 mode: 'plan',
@@ -964,26 +1354,41 @@ function applyRouteClassificationOutcome({
         currentMode,
         decision,
     } = classification;
+    const normalizedConfidence = confidence === 'high' ? 'high' : 'low';
+    const lowConfidenceFastPath = (
+        normalizedConfidence !== 'high'
+        && ['direct_reply', 'direct_search'].includes(initialRoute?.mode)
+    );
+    const effectiveRoute = lowConfidenceFastPath
+        ? {
+            ...initialRoute,
+            mode: 'plan',
+            reason: 'router_low_confidence',
+            routeSource: 'router_fallback',
+            planningReasoningEffort: decision.planningEffort,
+            synthesisReasoningEffort: decision.synthesisEffort,
+        }
+        : selectedRoute;
 
     logEvent(rid, 'route.classifier_selected', {
         model,
-        mode: selectedRoute.mode,
-        reason: selectedRoute.reason,
+        mode: effectiveRoute.mode,
+        reason: effectiveRoute.reason,
         confidence,
         conversationMode: nextConversationMode,
         modeAction: decision.modeAction,
         modeReason: decision.modeReason,
         toolCategory: decision.toolCategory,
-        planningEffort: selectedRoute.planningReasoningEffort,
-        synthesisEffort: selectedRoute.synthesisReasoningEffort,
+        planningEffort: effectiveRoute.planningReasoningEffort,
+        synthesisEffort: effectiveRoute.synthesisReasoningEffort,
     });
 
     if (resolver.entityRuntimeState) {
-        resolver.entityRuntimeState.conversationModeConfidence = 'high';
+        resolver.entityRuntimeState.conversationModeConfidence = normalizedConfidence;
     }
-    args.runtimeConversationModeConfidence = 'high';
+    args.runtimeConversationModeConfidence = normalizedConfidence;
 
-    if (nextConversationMode !== currentMode) {
+    if (normalizedConfidence === 'high' && nextConversationMode !== currentMode) {
         args.runtimeConversationMode = nextConversationMode;
         if (resolver.entityRuntimeState) {
             resolver.entityRuntimeState.conversationMode = nextConversationMode;
@@ -999,7 +1404,7 @@ function applyRouteClassificationOutcome({
         });
     }
 
-    return selectedRoute;
+    return effectiveRoute;
 }
 
 async function maybeRefineRouteWithModel({
@@ -1025,19 +1430,6 @@ async function maybeRefineRouteWithModel({
     return applyRouteClassificationOutcome({ classification, initialRoute, args, resolver });
 }
 
-function buildDirectToolResponseInstruction(route) {
-    if (route.reason === 'workspace_inventory') {
-        return 'The workspace listing above is authoritative. Answer directly from it. Be explicit about which files were found under /workspace and /workspace/files, and say when a location is empty.';
-    }
-    if (route.reason === 'set_base_avatar') {
-        return 'The avatar update result above is authoritative. If it succeeded, confirm the new avatar filename. If it failed, explain exactly what blocked the change.';
-    }
-    if (route.reason === 'view_image') {
-        return 'Use the viewed image context above to answer the user directly. Do not ask to inspect it again.';
-    }
-    return 'The relevant tool result is already in the conversation. Respond directly to the user and do not call tools again.';
-}
-
 // ─── Model Calling ───────────────────────────────────────────────────────────
 
 async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
@@ -1045,6 +1437,12 @@ async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
     const neutralizedCallArgs = applyStyleNeutralization(callArgs, purpose);
     const model = neutralizedCallArgs.modelOverride || neutralizedCallArgs.model || overrides.model;
     const optimizedCallArgs = applyPromptCacheOptions(neutralizedCallArgs, purpose, model);
+    const promptOverride = buildPurposePromptOverride(optimizedCallArgs, purpose);
+    const activeResolver = promptOverride
+        ? createShadowResolver(resolver, {
+            pathwayPrompt: [new Prompt({ messages: promptOverride })],
+        })
+        : resolver;
     logEvent(rid, 'model.call', {
         model,
         purpose,
@@ -1058,7 +1456,7 @@ async function callModelLogged(resolver, callArgs, purpose, overrides = {}) {
         ...overrides,
     });
     const start = Date.now();
-    const result = await resolver.promptAndParse(optimizedCallArgs);
+    const result = await activeResolver.promptAndParse(optimizedCallArgs);
     const toolCalls = extractToolCalls(result);
     logEvent(rid, 'model.result', {
         model,
@@ -1121,30 +1519,53 @@ async function maybeFinalizeInitialResponse({
     return holder.value || response;
 }
 
-async function runDirectToolFastPath(route, args, resolver, entityTools, handlePromptError) {
+async function runDirectSearchFastPath(route, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
     const rid = getRequestId(resolver);
     const fastPathModel = getFastPathModel(args);
-    const directToolCall = {
-        id: `fast-route-${Date.now()}`,
-        type: 'function',
-        function: {
-            name: route.toolName,
-            arguments: JSON.stringify(route.toolArgs || {}),
-        },
-    };
+    const finalizeModel = getFastFinalizeModel(args);
+    const searchTools = (entityToolsOpenAiFormat || []).filter((tool) => (
+        (route.initialToolNames || []).includes(tool.function?.name)
+    ));
 
-    await markRuntimeStage(resolver, 'research_batch', 'Executing direct latency fast path', {
-        model: null,
+    await markRuntimeStage(resolver, 'research_batch', 'Executing direct search fast path', {
+        model: fastPathModel,
         route: route.reason,
     });
 
     try {
-        await processToolCallRound([directToolCall], args, resolver, entityTools);
+        const searchStep = await callModelLogged(resolver, withVisibleModel({
+            ...args,
+            chatHistory: trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
+            stream: false,
+            tools: searchTools,
+            tool_choice: 'auto',
+            reasoningEffort: 'low',
+            skipMemoryLoad: hasInlineContinuityContext(args, resolver),
+            latencyRouteMode: route.reason,
+        }, fastPathModel), 'fast_search', {
+            model: fastPathModel,
+            route: route.reason,
+        });
+
+        if (!searchStep) return await handlePromptError(null);
+
+        const searchToolCalls = extractToolCalls(searchStep);
+        if (searchToolCalls.length > 0) {
+            await processToolCallRound(searchToolCalls, args, resolver, entityTools);
+        } else if (hasUsableFastPathResult(searchStep)) {
+            return await maybeFinalizeInitialResponse({
+                response: searchStep,
+                args,
+                resolver,
+                initialCallModel: fastPathModel,
+            });
+        }
+
         const forcedHistory = [
             ...trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
             {
                 role: 'user',
-                content: `[system message: ${rid}:fast-route] ${buildDirectToolResponseInstruction(route)}`,
+                content: `[system message: ${rid}:fast-search-finalize] The search results above are authoritative enough for a direct answer. Answer the user now in your normal voice. Start with the answer itself. Do not call tools again.`,
             },
         ];
 
@@ -1154,10 +1575,10 @@ async function runDirectToolFastPath(route, args, resolver, entityTools, handleP
             stream: args.stream,
             tools: [],
             reasoningEffort: 'low',
-            skipMemoryLoad: hasInlineEntityDNAContext(args, resolver),
+            skipMemoryLoad: hasInlineContinuityContext(args, resolver),
             latencyRouteMode: route.reason,
-        }, fastPathModel), 'fast_finalize', {
-            model: fastPathModel,
+        }, finalizeModel), 'fast_finalize', {
+            model: finalizeModel,
             route: route.reason,
         });
 
@@ -1173,7 +1594,7 @@ async function runDirectToolFastPath(route, args, resolver, entityTools, handleP
 
 async function runDirectReplyFastPath(route, args, resolver, handlePromptError) {
     const rid = getRequestId(resolver);
-    const fastPathModel = getFastPathModel(args);
+    const fastPathModel = getFastFinalizeModel(args);
 
     await markRuntimeStage(resolver, 'synthesize', 'Executing conversational fast path', {
         model: fastPathModel,
@@ -1195,7 +1616,7 @@ async function runDirectReplyFastPath(route, args, resolver, handlePromptError) 
             stream: args.stream,
             tools: [],
             reasoningEffort: FAST_CHAT_REASONING_EFFORT,
-            skipMemoryLoad: hasInlineEntityDNAContext(args, resolver),
+            skipMemoryLoad: hasInlineContinuityContext(args, resolver),
             latencyRouteMode: route.reason,
         }, fastPathModel), 'fast_chat', {
             model: fastPathModel,
@@ -1212,47 +1633,6 @@ async function runDirectReplyFastPath(route, args, resolver, handlePromptError) 
     }
 }
 
-async function runSpeculativeDirectReplyFastPath(route, args, resolver) {
-    const rid = getRequestId(resolver);
-    const fastPathModel = getFastPathModel(args);
-    const forcedHistory = [
-        ...trimFastPathHistory(args.chatHistory || [], FAST_CHAT_MAX_TURNS),
-        {
-            role: 'user',
-            content: `[system message: ${rid}:fast-reply] This turn is purely conversational and does not require tools. Respond directly to the user in your normal voice. Keep it concise unless the user asked for depth.`,
-        },
-    ];
-
-    const shadowResolver = createShadowResolver(resolver);
-    return callModelLogged(shadowResolver, withVisibleModel({
-        ...args,
-        chatHistory: forcedHistory,
-        stream: false,
-        tools: [],
-        reasoningEffort: FAST_CHAT_REASONING_EFFORT,
-        skipMemoryLoad: hasInlineEntityDNAContext(args, resolver),
-        latencyRouteMode: route.reason,
-    }, fastPathModel), 'fast_chat_speculative', {
-        model: fastPathModel,
-        route: route.reason,
-    });
-}
-
-function shouldSpeculateChatFastPath({
-    args,
-    initialRoute,
-    currentConversationMode = 'chat',
-    currentConversationModeConfidence = 'low',
-    text = '',
-}) {
-    if (args.invocationType === 'pulse') return false;
-    if (normalizeConversationMode(currentConversationMode) !== 'chat') return false;
-    if (normalizeModeConfidence(currentConversationModeConfidence) !== 'high') return false;
-    if (!initialRoute || initialRoute.mode !== 'direct_reply') return false;
-    if (!text || text.length > ROUTER_MAX_INPUT_CHARS || text.includes('\n') || text.includes('```')) return false;
-    return true;
-}
-
 function logFastPathRouteSelection({
     resolver,
     args,
@@ -1266,10 +1646,10 @@ function logFastPathRouteSelection({
     conversationMode,
 }) {
     const rid = getRequestId(resolver);
-    const responseModel = route.mode === 'direct_reply' || route.mode === 'direct_tool'
-        ? getFastPathModel(args)
+    const responseModel = route.mode === 'direct_reply' || route.mode === 'direct_search'
+        ? getFastFinalizeModel(args)
         : args.primaryModel;
-    syncRuntimeResultData(resolver, args);
+    updateRuntimeRouteState(resolver, args, route);
     logEvent(rid, 'request.start', {
         entity: entityId,
         model: responseModel,
@@ -1295,7 +1675,7 @@ function logFastPathRouteSelection({
     logEvent(rid, 'route.selected', {
         mode: route.mode,
         reason: route.reason,
-        routeSource: route.routeSource || 'speculative',
+        routeSource: route.routeSource || 'direct',
         conversationMode,
         planningToolNames: [],
         planningReasoningEffort: args.planningReasoningEffort || 'low',
@@ -1377,6 +1757,10 @@ function syncRuntimeResultData(resolver, args = {}) {
         runId: state.runId,
         conversationMode: normalizeConversationMode(state.conversationMode || args.runtimeConversationMode || 'chat'),
         conversationModeConfidence: normalizeModeConfidence(state.conversationModeConfidence || args.runtimeConversationModeConfidence || 'low'),
+        routeMode: state.routeMode || args.runtimeRouteMode || '',
+        routeReason: state.routeReason || args.runtimeRouteReason || '',
+        routeSource: state.routeSource || args.runtimeRouteSource || '',
+        ...(state.directTool || args.runtimeDirectTool ? { directTool: state.directTool || args.runtimeDirectTool } : {}),
         stopReason: state.stopReason,
         budgetState: getRuntimeBudgetState(resolver),
     };
@@ -1403,14 +1787,26 @@ function publishRuntimeModeStatus({ resolver, args = {}, progress = 0.15 } = {})
     });
 }
 
+function updateRuntimeRouteState(resolver, args = {}, route = {}) {
+    if (!resolver?.entityRuntimeState) return;
+    resolver.entityRuntimeState.routeMode = route.mode || args.runtimeRouteMode || '';
+    resolver.entityRuntimeState.routeReason = route.reason || args.runtimeRouteReason || '';
+    resolver.entityRuntimeState.routeSource = route.routeSource || args.runtimeRouteSource || '';
+    resolver.entityRuntimeState.directTool = route.toolName || route.directTool || args.runtimeDirectTool || '';
+    syncRuntimeResultData(resolver, args);
+}
+
 function registerRuntimeStop(resolver, reason) {
     if (!resolver.entityRuntimeState || resolver.entityRuntimeState.stopReason) return;
     resolver.entityRuntimeState.stopReason = reason;
+    syncRuntimeResultData(resolver, resolver.args || {});
 }
 
 function buildRuntimeInstructionBlock(runtimeContext) {
     if (!runtimeContext?.enabled) return '';
-    const focus = runtimeContext.orientationSummary || 'No current focus provided.';
+    const orientationBlock = runtimeContext.orientationSummary
+        ? `\n\nOrientation:\n${runtimeContext.orientationSummary}`
+        : '';
     return `## Current Run
 
 You are operating inside a durable entity runtime.
@@ -1421,64 +1817,123 @@ Requested output: ${runtimeContext.requestedOutput || 'No special output constra
 Energy envelope: ${runtimeContext.envelopeSummary}
 
 You control tactics, pacing, and whether to keep researching, synthesize now, narrow the scope, or ask for more budget. Respect the visible envelope above; do not hide extra work inside repeated low-yield searches.
-
-Orientation:
-${focus}
+${orientationBlock}
 
 If the evidence is sufficient, synthesize. If it is not, use tools deliberately and avoid repeating the same search in slightly different wording.`;
 }
 
-function buildEntityDNABlock({
-    entityInstructions = '',
-    useContinuityMemory = false,
-    runtimeOrientationPacket = null,
-} = {}) {
-    const packet = runtimeOrientationPacket && typeof runtimeOrientationPacket === 'object'
-        ? runtimeOrientationPacket
-        : {};
-    const identity = String(packet.identity || entityInstructions || '').trim();
-    const continuityContext = String(packet.continuityContext || '').trim();
+function extractMarkdownSection(text = '', heading = '') {
+    if (!text || !heading) return { body: '', remainder: String(text || '') };
+    const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`(?:^|\\n)## ${escapedHeading}\\n([\\s\\S]*?)(?=\\n## [^\\n]+\\n|$)`);
+    const match = String(text).match(pattern);
+    if (!match) return { body: '', remainder: String(text || '') };
+
+    const fullMatch = match[0];
+    const body = match[1].trim();
+    const remainder = String(text).replace(fullMatch, '').trim();
+    return { body, remainder };
+}
+
+function normalizeEntityIdentityForPrompt(entityInstructions = '') {
+    let working = String(entityInstructions || '').trim();
+    if (!working) return { identity: '', relationshipContext: '' };
+
+    const expressionBodies = [];
+    const relationshipBodies = [];
+
+    const explicitExpression = extractMarkdownSection(working, 'Expression Profile');
+    if (explicitExpression.body) {
+        expressionBodies.push(explicitExpression.body);
+        working = explicitExpression.remainder;
+    }
+
+    const explicitRelationship = extractMarkdownSection(working, 'Relationship Context');
+    if (explicitRelationship.body) {
+        relationshipBodies.push(explicitRelationship.body);
+        working = explicitRelationship.remainder;
+    }
+
+    const explicitUserContext = extractMarkdownSection(working, 'User Context');
+    if (explicitUserContext.body) {
+        relationshipBodies.push(explicitUserContext.body);
+        working = explicitUserContext.remainder;
+    }
+
+    const legacyUserPreferences = extractMarkdownSection(working, 'User Preferences');
+    if (legacyUserPreferences.body) {
+        const expressionLines = [];
+        const relationshipLines = [];
+        const lines = legacyUserPreferences.body
+            .split('\n')
+            .map(line => line.trim())
+            .filter(Boolean);
+
+        for (const line of lines) {
+            if (line.startsWith('Personality Traits:') || line.startsWith('Communication Style:')) {
+                expressionLines.push(line);
+                continue;
+            }
+            relationshipLines.push(line);
+        }
+
+        if (expressionLines.length > 0) expressionBodies.push(expressionLines.join('\n'));
+        if (relationshipLines.length > 0) relationshipBodies.push(relationshipLines.join('\n'));
+        working = legacyUserPreferences.remainder;
+    }
+
+    const identityParts = [working.trim()];
+    if (expressionBodies.length > 0) {
+        identityParts.push(`## Expression Profile\n${expressionBodies.join('\n')}`);
+    }
+
+    return {
+        identity: identityParts.filter(Boolean).join('\n\n').trim(),
+        relationshipContext: relationshipBodies.length > 0
+            ? `## Relationship Context\n${relationshipBodies.join('\n')}`.trim()
+            : '',
+    };
+}
+
+function buildStaticEntityDefaultsBlock(entityInstructions = '') {
+    const normalized = normalizeEntityIdentityForPrompt(entityInstructions);
+    const identity = normalized.identity;
     const sections = [];
 
     if (identity) {
         sections.push(`## Entity DNA\n\n${identity}`);
     }
 
-    if (useContinuityMemory) {
-        if (continuityContext) {
-            sections.push(`## Narrative Context\n\n${continuityContext}`);
-        } else {
-            sections.push(`## Narrative Context\n\n{{renderTemplate AI_CONTINUITY_CONTEXT}}`);
-        }
+    if (normalized.relationshipContext) {
+        sections.push(normalized.relationshipContext);
     }
 
     return sections.join('\n\n').trim();
 }
 
-function hasInlineEntityDNAContext(args = {}, resolver = null) {
-    const packet = safeParseRuntimeValue(args.runtimeOrientationPacket);
-    if (packet?.continuityContext) return true;
+function buildEntityContextBlock({
+    entityInstructions = '',
+    useContinuityMemory = false,
+    resolvedContinuityContext = '',
+} = {}) {
+    if (useContinuityMemory) {
+        return String(resolvedContinuityContext || '').trim();
+    }
+    return buildStaticEntityDefaultsBlock(entityInstructions);
+}
+
+function hasInlineContinuityContext(_args = {}, resolver = null) {
     if (typeof resolver?.continuityContext === 'string' && resolver.continuityContext.trim()) return true;
     return false;
 }
 
-function shouldIncludeAvailableFilesInPrompt({ text = '', route = null, planningToolNames = [] } = {}) {
-    if (route?.mode === 'direct_tool') return true;
-    if (/\b(file|files|workspace|stash|folder|directory|avatar|image|images|photo|photos|picture|pictures|video|videos|audio|pdf|upload|screenshot)\b/.test(text)) {
-        return true;
-    }
-
+function shouldIncludeAvailableFilesInPrompt({ route = null, planningToolNames = [] } = {}) {
     const fileCentricTools = new Set(['AnalyzePDF', 'AnalyzeVideo', 'CreateMedia', 'SetBaseAvatar', 'ViewImages', 'WorkspaceSSH']);
     return planningToolNames.some(toolName => fileCentricTools.has(toolName));
 }
 
-function shouldIncludeDateTimeInPrompt({ text = '', route = null, planningToolNames = [] } = {}) {
-    if (/\b(today|tonight|tomorrow|yesterday|current|currently|latest|recent|news|weather|now|date|time|this morning|this afternoon|this evening)\b/.test(text)) {
-        return true;
-    }
-
-    const recencyTools = new Set(['FetchWebPageContentJina', 'SearchInternet', 'SearchXPlatform']);
-    return route?.mode === 'plan' && planningToolNames.some(toolName => recencyTools.has(toolName));
+function shouldIncludeDateTimeInPrompt() {
+    return true;
 }
 
 function withVisibleModel(callArgs, model) {
@@ -1497,6 +1952,7 @@ async function markRuntimeStage(resolver, stage, note = '', meta = {}) {
     const state = resolver.entityRuntimeState;
     if (!state) return;
     state.currentStage = stage;
+    syncRuntimeResultData(resolver, resolver.args || {});
     logEvent(getRequestId(resolver), 'runtime.stage', {
         runId: state.runId,
         stage,
@@ -1515,16 +1971,19 @@ async function markRuntimeStage(resolver, stage, note = '', meta = {}) {
 // These are creative, mutation, or side-effect tools — the synthesis model
 // can invoke them after reviewing evidence.
 const EXECUTOR_BLOCKED_TOOLS = new Set([
-    'createmedia', 'setbaseavatar', 'showoverlay', 'createchart',
+    'createmedia', 'showoverlay', 'createchart',
     'generateslides', 'sendpushnotification', 'storecontinuitymemory',
 ]);
 
 function isToolAllowedForRuntimeStage(toolName = '', stage = '') {
     if (!stage) return true;
-    // During synthesis only SetGoals is allowed (for replan).
+    // During supervisor/finalize review, worker tools are not executed directly.
     // All other stages allow any tool — the executor loop's filtered tool list
     // (filterToolsForExecutor) is what keeps creative tools away from the cheap model.
-    if (stage === 'synthesize') return toolName.toLowerCase() === SET_GOALS_TOOL_NAME;
+    if (stage === 'synthesize') {
+        const normalizedToolName = toolName.toLowerCase();
+        return normalizedToolName === SET_GOALS_TOOL_NAME || normalizedToolName === DELEGATE_RESEARCH_TOOL_NAME;
+    }
     return true;
 }
 
@@ -1549,30 +2008,6 @@ function describeToolIntent(toolCall) {
     if (toolName === 'SearchMemory') return 'Check continuity memory for relevant prior context.';
     if (toolName === 'WorkspaceSSH') return 'Use the workspace to complete the task safely.';
     return `Use ${toolName} to progress the request.`;
-}
-
-function synthesizeServerPlan(toolCalls, args, resolver) {
-    if (resolver.toolPlan || !toolCalls || toolCalls.length === 0) return;
-    const goal = args.runGoal || extractUserMessage(args) || 'Complete the active request.';
-    const steps = [];
-    const seen = new Set();
-    for (const toolCall of toolCalls) {
-        const step = describeToolIntent(toolCall);
-        if (!step || seen.has(step)) continue;
-        seen.add(step);
-        steps.push(step);
-        if (steps.length >= 5) break;
-    }
-    resolver.toolPlan = {
-        goal,
-        steps: steps.length > 0 ? steps : ['Finish the request using the evidence gathered so far.'],
-    };
-    logEvent(getRequestId(resolver), 'plan.created', {
-        goal: resolver.toolPlan.goal,
-        steps: resolver.toolPlan.steps.length,
-        stepList: resolver.toolPlan.steps,
-        source: 'runtime_synthesized',
-    });
 }
 
 async function finalizeRuntimeRun(args, resolver, response) {
@@ -1775,6 +2210,38 @@ function interceptSetGoals(setGoalsCalls, preToolCallMessages, resolver) {
     });
 }
 
+function interceptDelegateResearch(delegateCalls, preToolCallMessages, resolver) {
+    return delegateCalls.map((delegateCall) => {
+        const plan = extractDelegateResearchPlan(delegateCall);
+        const appliedPlan = plan
+            ? applyToolPlan(plan, resolver, { source: 'supervisor_delegate_stream' })
+            : null;
+        const delegateMessages = cloneMessages(preToolCallMessages);
+        delegateMessages.push({
+            role: "assistant",
+            content: "",
+            tool_calls: [buildToolCallEntry(delegateCall, delegateCall.function.arguments)],
+        });
+        delegateMessages.push({
+            role: "tool",
+            tool_call_id: delegateCall.id,
+            name: delegateCall.function.name,
+            content: JSON.stringify({
+                success: !!appliedPlan,
+                message: appliedPlan ? 'Worker delegation acknowledged.' : 'Worker delegation could not be parsed.',
+            }),
+        });
+        return {
+            success: !!appliedPlan,
+            toolCall: delegateCall,
+            toolArgs: plan || {},
+            toolFunction: DELEGATE_RESEARCH_TOOL_NAME,
+            messages: delegateMessages,
+            skipBudget: true,
+        };
+    });
+}
+
 async function executeSingleTool(toolCall, preToolCallMessages, args, resolver, entityTools) {
     const toolFunction = toolCall?.function?.name?.toLowerCase() || 'unknown';
     const toolCallId = toolCall?.id;
@@ -1912,21 +2379,32 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
 
     const validToolCalls = toolCalls.filter(tc => tc && tc.function && tc.function.name);
     const setGoalsCalls = validToolCalls.filter(tc => tc.function.name.toLowerCase() === SET_GOALS_TOOL_NAME);
-    const proposedToolCalls = validToolCalls.filter(tc => tc.function.name.toLowerCase() !== SET_GOALS_TOOL_NAME);
+    const delegateResearchCalls = validToolCalls.filter(tc => tc.function.name.toLowerCase() === DELEGATE_RESEARCH_TOOL_NAME);
+    const proposedToolCalls = validToolCalls.filter(tc => ![SET_GOALS_TOOL_NAME, DELEGATE_RESEARCH_TOOL_NAME].includes(tc.function.name.toLowerCase()));
     const { allowedToolCalls, skippedToolCalls, stopReason } = applyRuntimeToolEnvelope(proposedToolCalls, resolver);
     const realToolCalls = allowedToolCalls;
+    const benignSynthesisReplanBlock = (
+        stopReason === 'stage_tool_block'
+        && getRuntimeStage(resolver) === 'synthesize'
+        && (setGoalsCalls.length > 0 || delegateResearchCalls.length > 0)
+    );
     resolver._cycleExecutedToolCount = (resolver._cycleExecutedToolCount || 0) + realToolCalls.length;
 
     const setGoalsResults = interceptSetGoals(setGoalsCalls, preToolCallMessages, resolver);
+    const delegateResearchResults = interceptDelegateResearch(delegateResearchCalls, preToolCallMessages, resolver);
     const toolResults = await Promise.all(realToolCalls.map(tc => executeSingleTool(tc, preToolCallMessages, args, resolver, entityTools)));
-    const allToolResults = [...setGoalsResults, ...toolResults];
+    const allToolResults = [...setGoalsResults, ...delegateResearchResults, ...toolResults];
 
     finalMessages.push(...mergeParallelToolResults(allToolResults, preToolCallMessages));
-    if (skippedToolCalls.length > 0) {
-        registerRuntimeStop(resolver, stopReason || 'tool_envelope_cap');
+    if (skippedToolCalls.length > 0 && !benignSynthesisReplanBlock) {
+        if (stopReason !== 'stage_tool_block') {
+            registerRuntimeStop(resolver, stopReason || 'tool_envelope_cap');
+        }
         finalMessages = insertSystemMessage(
             finalMessages,
-            `The runtime held back ${skippedToolCalls.length} tool call(s) because the current energy envelope was reached. Synthesize from the evidence you have, narrow the scope, or explicitly say you need more budget.`,
+            stopReason === 'stage_tool_block'
+                ? `The runtime held back ${skippedToolCalls.length} tool call(s) because they are not available in this stage. Synthesize from the evidence you have or change strategy.`
+                : `The runtime held back ${skippedToolCalls.length} tool call(s) because the current energy envelope was reached. Synthesize from the evidence you have, narrow the scope, or explicitly say you need more budget.`,
             rid
         );
     }
@@ -1953,6 +2431,7 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     }, 0);
     resolver.toolBudgetUsed = (resolver.toolBudgetUsed || 0) + budgetCost;
     resolver.toolCallRound = (resolver.toolCallRound || 0) + 1;
+    syncRuntimeResultData(resolver, args);
 
     logEvent(rid, 'tool.round', {
         round: resolver.toolCallRound,
@@ -1961,7 +2440,11 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
         failed: allToolResults.filter(r => r && !r.success).length,
         budgetUsed: resolver.toolBudgetUsed,
         budgetTotal: toolBudgetLimit,
-        ...(skippedToolCalls.length > 0 && { skippedToolCalls: skippedToolCalls.length, stopReason }),
+        ...(skippedToolCalls.length > 0 && {
+            skippedToolCalls: skippedToolCalls.length,
+            stopReason,
+            ...(benignSynthesisReplanBlock && { blockedDuringSynthesisReplan: true }),
+        }),
     });
 
     // Pulse tool activity
@@ -2020,7 +2503,7 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
 
     return {
         messages: args.chatHistory,
-        budgetExhausted: resolver.toolBudgetUsed >= toolBudgetLimit || skippedToolCalls.length > 0 || lowNovelty,
+        budgetExhausted: resolver.toolBudgetUsed >= toolBudgetLimit || (skippedToolCalls.length > 0 && !benignSynthesisReplanBlock) || lowNovelty,
         endPulseCalled,
     };
 }
@@ -2245,6 +2728,122 @@ function stripSetGoalsFromHistory(chatHistory) {
     }).filter(Boolean);
 }
 
+function isClaudeModel(model = '') {
+    return String(model || '').toLowerCase().includes('claude');
+}
+
+function stringifyToolHistoryContent(content) {
+    if (typeof content === 'string') return content;
+    if (content == null) return '';
+    if (Array.isArray(content)) {
+        return content.map((item) => {
+            if (typeof item === 'string') return item;
+            if (item?.type === 'text' && typeof item.text === 'string') return item.text;
+            try {
+                return JSON.stringify(item);
+            } catch {
+                return String(item);
+            }
+        }).filter(Boolean).join('\n');
+    }
+    try {
+        return JSON.stringify(content);
+    } catch {
+        return String(content);
+    }
+}
+
+function appendSanitizedMessage(messages, role, content) {
+    const text = String(content || '').trim();
+    if (!text) return;
+    const prior = messages[messages.length - 1];
+    if (prior && prior.role === role && typeof prior.content === 'string' && !prior.tool_calls) {
+        prior.content = `${prior.content}\n${text}`;
+        return;
+    }
+    messages.push({ role, content: text });
+}
+
+function summarizePriorToolCall(toolCall) {
+    const name = toolCall?.function?.name || 'UnknownTool';
+    const rawArgs = toolCall?.function?.arguments;
+    const parsedArgs = typeof rawArgs === 'string' ? safeParse(rawArgs) : rawArgs;
+    const argsText = stringifyToolHistoryContent(parsedArgs ?? rawArgs);
+    return argsText
+        ? `[Prior tool call: ${name}] ${argsText}`
+        : `[Prior tool call: ${name}]`;
+}
+
+function summarizePriorToolResult(toolName, content) {
+    const body = stringifyToolHistoryContent(content);
+    return body
+        ? `[Prior tool result: ${toolName}]\n${body}`
+        : `[Prior tool result: ${toolName}]`;
+}
+
+function sanitizeToolHistoryForRestrictedTools(chatHistory, activeToolNames = []) {
+    const allowedNames = new Set(
+        (activeToolNames || []).map((name) => String(name || '').trim().toLowerCase()).filter(Boolean)
+    );
+    const toolNameById = new Map();
+
+    for (const msg of chatHistory || []) {
+        if (!Array.isArray(msg?.tool_calls)) continue;
+        for (const toolCall of msg.tool_calls) {
+            if (!toolCall?.id) continue;
+            toolNameById.set(toolCall.id, String(toolCall?.function?.name || '').trim().toLowerCase());
+        }
+    }
+
+    const sanitized = [];
+    for (const msg of chatHistory || []) {
+        if (Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0) {
+            const allowedCalls = [];
+            const blockedSummaries = [];
+
+            for (const toolCall of msg.tool_calls) {
+                const toolName = String(toolCall?.function?.name || '').trim().toLowerCase();
+                if (allowedNames.has(toolName)) {
+                    allowedCalls.push(toolCall);
+                } else {
+                    blockedSummaries.push(summarizePriorToolCall(toolCall));
+                }
+            }
+
+            if (allowedCalls.length > 0 || msg.content) {
+                sanitized.push({
+                    ...msg,
+                    ...(allowedCalls.length > 0 ? { tool_calls: allowedCalls } : {}),
+                    ...(allowedCalls.length === 0 ? { tool_calls: undefined } : {}),
+                });
+            }
+
+            if (blockedSummaries.length > 0) {
+                appendSanitizedMessage(sanitized, 'assistant', blockedSummaries.join('\n'));
+            }
+            continue;
+        }
+
+        if (msg?.role === 'tool') {
+            const toolName = String(
+                msg.name
+                || toolNameById.get(msg.tool_call_id)
+                || 'UnknownTool'
+            ).trim();
+            if (allowedNames.has(toolName.toLowerCase())) {
+                sanitized.push(msg);
+            } else {
+                appendSanitizedMessage(sanitized, 'user', summarizePriorToolResult(toolName, msg.content));
+            }
+            continue;
+        }
+
+        sanitized.push(msg);
+    }
+
+    return sanitized;
+}
+
 // ─── Error Handling ──────────────────────────────────────────────────────────
 
 async function generateErrorResponse(error, args, resolver) {
@@ -2261,7 +2860,9 @@ async function generateErrorResponse(error, args, resolver) {
 // ─── Tool Callback ───────────────────────────────────────────────────────────
 
 function preservePriorText(message, args) {
-    const priorText = message instanceof CortexResponse ? message.output_text : (typeof message?.content === 'string' ? message.content : '');
+    const priorText = message instanceof CortexResponse
+        ? message.output_text
+        : (typeof message?.content === 'string' ? message.content : '');
     if (priorText?.trim()) {
         args.chatHistory = [...(args.chatHistory || []), { role: 'assistant', content: priorText }];
     }
@@ -2290,7 +2891,7 @@ async function runFallbackPath(currentToolCalls, args, resolver, entityTools, en
 
         let fallbackResult = await callModelLogged(resolver, withVisibleModel({
             ...args, stream: args.stream, tools: entityToolsOpenAiFormat,
-            tool_choice: "auto", reasoningEffort: args.configuredReasoningEffort || 'low', skipMemoryLoad: true,
+            tool_choice: "auto", reasoningEffort: args.planningReasoningEffort || args.configuredReasoningEffort || 'low', skipMemoryLoad: true,
         }, args.planningModel || args.primaryModel), 'fallback', { model: args.planningModel || args.primaryModel });
 
         if (!fallbackResult) return await handlePromptError(null);
@@ -2331,7 +2932,7 @@ async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat
         try {
             const result = await callModelLogged(resolver, withVisibleModel({
                 ...args, stream: false, tools: researchTools,
-                tool_choice: "auto", reasoningEffort: 'low', skipMemoryLoad: true,
+                tool_choice: "auto", reasoningEffort: args.researchReasoningEffort || args.configuredReasoningEffort || 'low', skipMemoryLoad: true,
             }, args.toolLoopModel), 'tool_loop', { model: args.toolLoopModel, round: resolver.toolCallRound, hasPlan: !!resolver.toolPlan });
 
             if (!result) return await handlePromptError(null);
@@ -2353,36 +2954,138 @@ async function executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat
     return null;
 }
 
-function prepareForSynthesis(args, resolver) {
+async function runSingleWorkerRound(args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
+    const researchTools = filterToolsForExecutor(entityToolsOpenAiFormat);
     const rid = getRequestId(resolver);
-    // Strip SYNTHESIZE hints
-    args.chatHistory = args.chatHistory.filter(msg => {
-        if (msg.role !== 'user') return true;
-        const content = typeof msg.content === 'string' ? msg.content : '';
-        return !content.startsWith(`[system message: ${rid}]`);
+
+    consumeInjectedAgentMessages(args, resolver);
+    await markRuntimeStage(resolver, 'research_batch', 'Running delegated worker pass', {
+        model: args.toolLoopModel,
+        round: (resolver.toolCallRound || 0) + 1,
     });
-    args.chatHistory = stripSetGoalsFromHistory(args.chatHistory);
     if (resolver.toolPlan) {
-        args.chatHistory = insertSystemMessage(args.chatHistory,
-            `Review the tool results above against your todo list (Goal: ${resolver.toolPlan.goal}).\nIf results are sufficient, respond to the user.\nIf the approach failed or you need a different strategy, call SetGoals with a new todo list (and optionally other tools) — the items will be executed by the tool loop.`,
-            rid
-        );
+        logEvent(rid, 'plan.step', { round: resolver.toolCallRound || 0, steps: resolver.toolPlan.steps.length });
+    }
+    args.chatHistory = insertSystemMessage(args.chatHistory, buildStepInstruction(resolver), rid);
+
+    try {
+        const result = await callModelLogged(resolver, withVisibleModel({
+            ...args,
+            stream: false,
+            tools: researchTools,
+            tool_choice: "auto",
+            reasoningEffort: args.researchReasoningEffort || args.configuredReasoningEffort || 'low',
+            skipMemoryLoad: true,
+        }, args.toolLoopModel), 'tool_loop', {
+            model: args.toolLoopModel,
+            round: resolver.toolCallRound,
+            hasPlan: !!resolver.toolPlan,
+        });
+
+        if (!result) return { response: await handlePromptError(null), done: true };
+
+        const calls = extractToolCalls(result);
+        if (calls.length === 0) {
+            logEvent(rid, 'plan.worker_idle', {
+                round: (resolver.toolCallRound || 0) + 1,
+                hasPlan: !!resolver.toolPlan,
+            });
+            return {
+                done: false,
+                budgetExhausted: false,
+                endPulseCalled: false,
+                workerYieldedNoTools: true,
+            };
+        }
+
+        const { budgetExhausted, endPulseCalled } = await processToolCallRound(calls, args, resolver, entityTools);
+        return {
+            done: false,
+            budgetExhausted,
+            endPulseCalled,
+            workerYieldedNoTools: false,
+        };
+    } catch (error) {
+        return { response: await handlePromptError(error), done: true };
     }
 }
 
-async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError) {
+async function finalizeSynthesisFromEvidence(args, resolver, handlePromptError, effectiveChatHistory, guardReason, callbackDepth = 0) {
+    const finalized = await callModelLogged(resolver, withVisibleModel({
+        ...args,
+        chatHistory: [
+            ...(effectiveChatHistory || []),
+            {
+                role: 'user',
+                content: `[system message: ${getRequestId(resolver)}:finalize] Research is complete for this run. Do not call DelegateResearch or any tools again. Answer the user now with the best response you can from the evidence gathered so far. Any factual answer you give must appear explicitly in the evidence already gathered. Do not infer or guess missing facts. If you could not complete the requested action, say what blocked completion. Start with the answer itself in your normal voice. If grounded in search, place :cd_source[searchResultId] immediately after the supported sentence. Do not restate instructions, citation rules, tool rules, or process notes.`,
+            },
+        ],
+        stream: args.stream,
+        tools: [],
+        reasoningEffort: args.synthesisReasoningEffort || args.configuredReasoningEffort || 'medium',
+        skipMemoryLoad: true,
+    }, args.synthesisModel || args.primaryModel), 'synthesis_finalize', {
+        model: args.synthesisModel || args.primaryModel,
+        callbackDepth,
+        guardReason,
+    });
+
+    if (!finalized) {
+        return { result: await handlePromptError(null), done: true };
+    }
+
+    const finalizedHolder = { value: finalized };
+    await drainStreamingCallbacks(resolver)(finalizedHolder);
+    return { result: finalizedHolder.value, done: true };
+}
+
+function prepareForSynthesis(args, resolver) {
+    const rid = getRequestId(resolver);
+    let synthesisHistory = Array.isArray(args.chatHistory)
+        ? args.chatHistory.map((msg) => ({ ...msg }))
+        : [];
+    // Strip SYNTHESIZE hints
+    synthesisHistory = synthesisHistory.filter(msg => {
+        const content = typeof msg.content === 'string' ? msg.content : '';
+        if (msg.role === 'user') {
+            return !content.startsWith(`[system message: ${rid}]`);
+        }
+        if (msg.role === 'system') {
+            return !content.startsWith(`${SYNTHESIS_REVIEW_MARKER} ${rid}`);
+        }
+        return true;
+    });
+    synthesisHistory = stripSetGoalsFromHistory(synthesisHistory);
+    const synthesisModel = args.synthesisModel || args.primaryModel || '';
+    if (isEntityRuntimeEnabled(args)) {
+        synthesisHistory = sanitizeToolHistoryForRestrictedTools(synthesisHistory, ['DelegateResearch']);
+    }
+    if (resolver.toolPlan) {
+        const reviewInstruction = isGeminiModel(synthesisModel)
+            ? `Look at the tool results above against your todo list (Goal: ${resolver.toolPlan.goal}).\nIf they are sufficient, answer the user now in your normal voice using the strongest grounded signal.\nAny factual answer you give from the tool results must appear explicitly in the evidence above. Do not infer or guess missing facts.\nIf they are not sufficient, call DelegateResearch only with the missing outcomes. Do not call search/fetch or any other tools directly in this step. The worker loop will execute the next round.`
+            : `Look at the tool results above against your todo list (Goal: ${resolver.toolPlan.goal}).\nIf the approach failed or you need a different strategy, call DelegateResearch with a new worker brief for the missing outcomes.\nOtherwise, answer the user now.\nAny factual answer you give from the tool results must appear explicitly in the evidence above. Do not infer or guess missing facts.\nStart with the answer itself in your normal voice.\nUse one short paragraph unless the user asked for more structure or the evidence truly requires it.\nIf grounded in search, place :cd_source[searchResultId] immediately after the supported sentence and continue.\nDo not restate instructions, citation rules, tool rules, or process notes.`;
+        synthesisHistory = isClaudeModel(synthesisModel)
+            ? insertTaggedSystemTurn(synthesisHistory, reviewInstruction, { requestId: rid })
+            : insertSystemMessage(synthesisHistory, reviewInstruction, rid);
+    }
+    return synthesisHistory;
+}
+
+async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError, synthesisHistory = null) {
     consumeInjectedAgentMessages(args, resolver);
     await say(getRequestId(resolver), `\n`, 1000, false, false);
     await markRuntimeStage(resolver, 'synthesize', 'Synthesizing response from gathered evidence', {
         model: args.synthesisModel || args.primaryModel,
     });
-    const synthesisTools = isEntityRuntimeEnabled(args)
-        ? [SET_GOALS_OPENAI_DEF]
+    const runtimeSupervisorMode = isEntityRuntimeEnabled(args);
+    const synthesisTools = runtimeSupervisorMode
+        ? [DELEGATE_RESEARCH_OPENAI_DEF]
         : [...entityToolsOpenAiFormat, SET_GOALS_OPENAI_DEF];
+    const effectiveChatHistory = Array.isArray(synthesisHistory) ? synthesisHistory : args.chatHistory;
 
     try {
         let synthesisResult = await callModelLogged(resolver, withVisibleModel({
-            ...args, stream: args.stream, tools: synthesisTools,
+            ...args, chatHistory: effectiveChatHistory, stream: args.stream, tools: synthesisTools,
             tool_choice: "auto", reasoningEffort: args.synthesisReasoningEffort || args.configuredReasoningEffort || 'medium', skipMemoryLoad: true,
         }, args.synthesisModel || args.primaryModel), 'synthesis', { model: args.synthesisModel || args.primaryModel, replanCount: resolver.replanCount || 0, callbackDepth });
 
@@ -2401,6 +3104,96 @@ async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiForma
         }
 
         if (synthToolCalls.length === 0 || hadStreamingCallback) return { result: synthesisResult, done: true };
+
+        if (runtimeSupervisorMode) {
+            const delegationCalls = synthToolCalls.filter((toolCall) => {
+                const name = toolCall?.function?.name?.toLowerCase() || '';
+                return name === DELEGATE_RESEARCH_TOOL_NAME || name === SET_GOALS_TOOL_NAME;
+            });
+            const proposedPlan = delegationCalls.length > 0 ? extractPlanFromToolCall(delegationCalls[0]) : null;
+            const stopReason = resolver.entityRuntimeState?.stopReason || null;
+            const researchExhausted = !!(stopReason && TERMINAL_REPLAN_STOP_REASONS.has(stopReason));
+            const noExecutableWorkInCycle = (resolver._cycleExecutedToolCount || 0) === 0;
+            const stalledAfterReplan = noExecutableWorkInCycle && (resolver.replanCount || 0) > 0;
+            const replanCapReached = (resolver.replanCount || 0) >= MAX_REPLAN_SAFETY_CAP;
+
+            if (delegationCalls.length > 0) {
+                const samePlan = proposedPlan
+                    && buildPlanSignature(proposedPlan) === buildPlanSignature(resolver.toolPlan);
+                if (!proposedPlan || samePlan || researchExhausted || stalledAfterReplan || replanCapReached) {
+                    const guardReason = !proposedPlan
+                        ? 'invalid_delegate'
+                        : (samePlan
+                            ? 'same_plan'
+                            : (researchExhausted
+                                ? stopReason
+                                : (replanCapReached ? 'replan_cap' : 'no_executable_work')));
+                    logEvent(getRequestId(resolver), 'plan.replan_blocked', {
+                        reason: guardReason,
+                        stopReason,
+                        callbackDepth,
+                        currentCycleExecutedToolCount: resolver._cycleExecutedToolCount || 0,
+                        proposedPlan,
+                        tools: summarizeReturnedCalls(synthToolCalls),
+                    });
+                    return await finalizeSynthesisFromEvidence(
+                        args,
+                        resolver,
+                        handlePromptError,
+                        effectiveChatHistory,
+                        guardReason,
+                        callbackDepth,
+                    );
+                }
+
+                resolver.replanCount = (resolver.replanCount || 0) + 1;
+                applyToolPlan(proposedPlan, resolver, { source: 'supervisor_delegate' });
+                logEvent(getRequestId(resolver), 'plan.replan', {
+                    replanCount: resolver.replanCount,
+                    source: 'supervisor_delegate',
+                    tools: summarizeReturnedCalls(synthToolCalls),
+                });
+                return { result: null, done: false, toolCalls: [], needsWorkerRound: true };
+            }
+
+            const implicitPlan = buildToolPlanFromToolCalls(synthToolCalls, args);
+            const samePlan = implicitPlan
+                && buildPlanSignature(implicitPlan) === buildPlanSignature(resolver.toolPlan);
+            if (!implicitPlan || samePlan || researchExhausted || stalledAfterReplan || replanCapReached) {
+                const guardReason = !implicitPlan
+                    ? 'invalid_supervisor_tool_call'
+                    : (samePlan
+                        ? 'same_plan'
+                        : (researchExhausted
+                            ? stopReason
+                            : (replanCapReached ? 'replan_cap' : 'no_executable_work')));
+                logEvent(getRequestId(resolver), 'plan.replan_blocked', {
+                    reason: guardReason,
+                    stopReason,
+                    callbackDepth,
+                    currentCycleExecutedToolCount: resolver._cycleExecutedToolCount || 0,
+                    proposedPlan: implicitPlan,
+                    tools: summarizeReturnedCalls(synthToolCalls),
+                });
+                return await finalizeSynthesisFromEvidence(
+                    args,
+                    resolver,
+                    handlePromptError,
+                    effectiveChatHistory,
+                    guardReason,
+                    callbackDepth,
+                );
+            }
+
+            resolver.replanCount = (resolver.replanCount || 0) + 1;
+            applyToolPlan(implicitPlan, resolver, { source: 'supervisor_implicit_delegate' });
+            logEvent(getRequestId(resolver), 'plan.replan', {
+                replanCount: resolver.replanCount,
+                source: 'supervisor_implicit_delegate',
+                tools: summarizeReturnedCalls(synthToolCalls),
+            });
+            return { result: null, done: false, toolCalls: [], needsWorkerRound: true };
+        }
 
         // Non-streaming tool_calls from synthesis
         const isReplan = passesGate(synthToolCalls);
@@ -2424,31 +3217,14 @@ async function callSynthesis(args, resolver, entityTools, entityToolsOpenAiForma
                     currentCycleExecutedToolCount: resolver._cycleExecutedToolCount || 0,
                     proposedPlan,
                 });
-
-                const forcedHistory = [
-                    ...(args.chatHistory || []),
-                    {
-                        role: 'user',
-                        content: `[system message: ${getRequestId(resolver)}:finalize] Research is complete for this run. Do not call SetGoals or any tools again. Respond directly to the user with the best answer you can from the evidence gathered so far. If you could not complete the requested action, say what blocked completion.`,
-                    },
-                ];
-                const finalized = await callModelLogged(resolver, withVisibleModel({
-                    ...args,
-                    chatHistory: forcedHistory,
-                    stream: args.stream,
-                    tools: [],
-                    reasoningEffort: args.synthesisReasoningEffort || args.configuredReasoningEffort || 'medium',
-                    skipMemoryLoad: true,
-                }, args.synthesisModel || args.primaryModel), 'synthesis_finalize', {
-                    model: args.synthesisModel || args.primaryModel,
-                    callbackDepth,
+                return await finalizeSynthesisFromEvidence(
+                    args,
+                    resolver,
+                    handlePromptError,
+                    effectiveChatHistory,
                     guardReason,
-                });
-
-                if (!finalized) return { result: await handlePromptError(null), done: true };
-                const finalizedHolder = { value: finalized };
-                await drainStreamingCallbacks(resolver)(finalizedHolder);
-                return { result: finalizedHolder.value, done: true };
+                    callbackDepth,
+                );
             }
         }
 
@@ -2483,8 +3259,110 @@ async function runDualModelPath(currentToolCalls, args, resolver, entityTools, e
         currentToolCalls = gateResult.toolCalls;
     }
 
-    // Main loop: process → executor → synthesis → maybe replan
+    if (!isEntityRuntimeEnabled(args)) {
+        // Preserve the legacy bounded cheap-model loop for non-runtime callers.
+        let synthesisResult;
+        while (true) {
+            resolver._cycleExecutedToolCount = 0;
+            if (currentToolCalls.length > 0) {
+                const { budgetExhausted } = await processToolCallRound(currentToolCalls, args, resolver, entityTools);
+                if (budgetExhausted) currentToolCalls = [];
+            }
+
+            for (const msg of args.chatHistory) {
+                if (msg.role === 'system' && typeof msg.content === 'string' && msg.content.includes('SetGoals')) {
+                    msg.content = msg.content.replace(/IMPORTANT:.*?2-5 items\.\n\n/s, '');
+                    break;
+                }
+            }
+            args.chatHistory = stripSetGoalsFromHistory(args.chatHistory);
+
+            const loopErr = await executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError);
+            if (loopErr) return loopErr;
+
+            const synthesisHistory = prepareForSynthesis(args, resolver);
+
+            const startIdx = resolver._preToolHistoryLength || 0;
+            const toolHistory = dehydrateToolHistory(args.chatHistory, entityTools, startIdx);
+            if (toolHistory.length > 0) {
+                resolver.pathwayResultData = { ...(resolver.pathwayResultData || {}), toolHistory };
+            }
+
+            const synthResult = await callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError, synthesisHistory);
+            if (synthResult.done) { synthesisResult = synthResult.result; break; }
+            currentToolCalls = synthResult.toolCalls;
+        }
+
+        logRequestEnd(resolver);
+        return synthesisResult;
+    }
+
+    // Runtime loop: process immediate tools → supervisor review → optional single worker round → review again
     let synthesisResult;
+    let needsWorkerRound = false;
+    const currentStage = getRuntimeStage(resolver);
+    const runtimeSupervisorStreamReplan = isEntityRuntimeEnabled(args)
+        && currentStage === 'synthesize'
+        && currentToolCalls.length > 0
+        && currentToolCalls.every((toolCall) => {
+            const name = String(toolCall?.function?.name || '').trim().toLowerCase();
+            return name === DELEGATE_RESEARCH_TOOL_NAME || name === SET_GOALS_TOOL_NAME;
+        });
+
+    if (runtimeSupervisorStreamReplan) {
+        const delegationCalls = currentToolCalls.filter((toolCall) => {
+            const name = String(toolCall?.function?.name || '').trim().toLowerCase();
+            return name === DELEGATE_RESEARCH_TOOL_NAME || name === SET_GOALS_TOOL_NAME;
+        });
+        const proposedPlan = delegationCalls.length > 0 ? extractPlanFromToolCall(delegationCalls[0]) : null;
+        const stopReason = resolver.entityRuntimeState?.stopReason || null;
+        const researchExhausted = !!(stopReason && TERMINAL_REPLAN_STOP_REASONS.has(stopReason));
+        const noExecutableWorkInCycle = (resolver._cycleExecutedToolCount || 0) === 0;
+        const replanCapReached = (resolver.replanCount || 0) >= MAX_REPLAN_SAFETY_CAP;
+        const samePlan = proposedPlan
+            && buildPlanSignature(proposedPlan) === buildPlanSignature(resolver.toolPlan);
+
+        if (!proposedPlan || samePlan || researchExhausted || noExecutableWorkInCycle || replanCapReached) {
+            const guardReason = !proposedPlan
+                ? 'invalid_delegate'
+                : (samePlan
+                    ? 'same_plan'
+                    : (researchExhausted
+                        ? stopReason
+                        : (replanCapReached ? 'replan_cap' : 'no_executable_work')));
+            logEvent(getRequestId(resolver), 'plan.replan_blocked', {
+                reason: guardReason,
+                stopReason,
+                callbackDepth,
+                currentCycleExecutedToolCount: resolver._cycleExecutedToolCount || 0,
+                proposedPlan,
+                tools: summarizeReturnedCalls(currentToolCalls),
+                source: 'streaming_supervisor_delegate',
+            });
+            const synthesisHistory = prepareForSynthesis(args, resolver);
+            const finalized = await finalizeSynthesisFromEvidence(
+                args,
+                resolver,
+                handlePromptError,
+                synthesisHistory,
+                guardReason,
+                callbackDepth,
+            );
+            logRequestEnd(resolver);
+            return finalized.result;
+        }
+
+        resolver.replanCount = (resolver.replanCount || 0) + 1;
+        applyToolPlan(proposedPlan, resolver, { source: 'supervisor_delegate_stream' });
+        logEvent(getRequestId(resolver), 'plan.replan', {
+            replanCount: resolver.replanCount,
+            source: 'streaming_supervisor_delegate',
+            tools: summarizeReturnedCalls(currentToolCalls),
+        });
+        currentToolCalls = [];
+        needsWorkerRound = true;
+    }
+
     while (true) {
         resolver._cycleExecutedToolCount = 0;
         if (currentToolCalls.length > 0) {
@@ -2492,7 +3370,30 @@ async function runDualModelPath(currentToolCalls, args, resolver, entityTools, e
             if (budgetExhausted) currentToolCalls = [];
         }
 
-        // Strip SetGoals from executor context
+        const shouldRunInitialWorkerRound = (
+            !needsWorkerRound
+            && currentToolCalls.length > 0
+            && (resolver._cycleExecutedToolCount || 0) === 0
+            && !!resolver.toolPlan
+            && !resolver.entityRuntimeState?.stopReason
+        );
+
+        if ((needsWorkerRound || shouldRunInitialWorkerRound) && !resolver.entityRuntimeState?.stopReason) {
+            const workerResult = await runSingleWorkerRound(
+                args,
+                resolver,
+                entityTools,
+                entityToolsOpenAiFormat,
+                handlePromptError,
+            );
+            needsWorkerRound = false;
+            if (workerResult?.done) return workerResult.response;
+            if (workerResult?.budgetExhausted || workerResult?.endPulseCalled) {
+                currentToolCalls = [];
+            }
+        }
+
+        // Strip SetGoals from supervisor context
         for (const msg of args.chatHistory) {
             if (msg.role === 'system' && typeof msg.content === 'string' && msg.content.includes('SetGoals')) {
                 msg.content = msg.content.replace(/IMPORTANT:.*?2-5 items\.\n\n/s, '');
@@ -2501,10 +3402,7 @@ async function runDualModelPath(currentToolCalls, args, resolver, entityTools, e
         }
         args.chatHistory = stripSetGoalsFromHistory(args.chatHistory);
 
-        const loopErr = await executorLoop(args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError);
-        if (loopErr) return loopErr;
-
-        prepareForSynthesis(args, resolver);
+        const synthesisHistory = prepareForSynthesis(args, resolver);
 
         // Dehydrate tool history onto pathwayResultData before synthesis streams the final info block
         const startIdx = resolver._preToolHistoryLength || 0;
@@ -2513,9 +3411,10 @@ async function runDualModelPath(currentToolCalls, args, resolver, entityTools, e
             resolver.pathwayResultData = { ...(resolver.pathwayResultData || {}), toolHistory };
         }
 
-        const synthResult = await callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError);
+        const synthResult = await callSynthesis(args, resolver, entityTools, entityToolsOpenAiFormat, callbackDepth, handlePromptError, synthesisHistory);
         if (synthResult.done) { synthesisResult = synthResult.result; break; }
         currentToolCalls = synthResult.toolCalls;
+        needsWorkerRound = synthResult.needsWorkerRound !== false;
     }
 
     logRequestEnd(resolver);
@@ -2538,11 +3437,11 @@ function loadEntityContext(entityConfig, args, resolver) {
     return { entityName, entityInstructions, useContinuityMemory, toolLoopModel, modelPolicy, authorityEnvelope };
 }
 
-function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse, runtimeContext = null, promptContext = {}, runtimeOrientationPacket = null) {
-    const entityDNA = buildEntityDNABlock({
+function buildPromptTemplate(entityConfig, entityToolsOpenAiFormat, entityInstructions, useContinuityMemory, voiceResponse, isPulse, runtimeContext = null, promptContext = {}) {
+    const entityContext = buildEntityContextBlock({
         entityInstructions,
         useContinuityMemory,
-        runtimeOrientationPacket,
+        resolvedContinuityContext: runtimeContext?.continuityContext || '',
     });
 
     const commonInstructionsTemplate = entityConfig?.isSystem
@@ -2607,7 +3506,7 @@ if you've completed something they'd want to know about.
     const runtimeInstructions = buildRuntimeInstructionBlock(runtimeContext);
     const stableInstructionBlock = `${instructionTemplates}\n\n${toolsTemplate}${planInstruction}${searchRulesTemplate}${voiceInstructions}${pulseInstructions}{{renderTemplate AI_GROUNDING_INSTRUCTIONS}}`.trim();
     const dynamicInstructionBlock = [
-        entityDNA.trim(),
+        entityContext.trim(),
         runtimeInstructions.trim(),
         '{{renderTemplate AI_STYLE_NEUTRALIZATION}}',
     ].filter(Boolean).join('\n\n').trim();
@@ -2636,10 +3535,17 @@ function extractUserMessage(args) {
             if (msg?.role === 'user') {
                 const content = msg.content;
                 if (typeof content === 'string') {
-                    if (!content.trim().startsWith('{') || !content.includes('"success"')) { userMessage = content; break; }
+                    const trimmedContent = content.trim();
+                    if (trimmedContent.startsWith('[system message:')) continue;
+                    if (!trimmedContent.startsWith('{') || !trimmedContent.includes('"success"')) { userMessage = content; break; }
                 } else if (Array.isArray(content)) {
                     const textItem = content.find(c => typeof c === 'string' || c?.type === 'text');
-                    if (textItem) { userMessage = typeof textItem === 'string' ? textItem : textItem.text; break; }
+                    if (textItem) {
+                        const textValue = typeof textItem === 'string' ? textItem : textItem.text;
+                        if (String(textValue || '').trim().startsWith('[system message:')) continue;
+                        userMessage = textValue;
+                        break;
+                    }
                 }
             }
         }
@@ -2841,191 +3747,16 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
     });
     const userText = extractUserMessage(args);
     const availableToolNames = entityToolsOpenAiFormat.map(tool => tool.function?.name || '');
-    const shouldSpeculateChat = shouldSpeculateChatFastPath({
-        args,
+    runtimeRoute = await maybeRefineRouteWithModel({
         initialRoute: runtimeRoute,
-        currentConversationMode,
-        currentConversationModeConfidence,
         text: userText,
+        chatHistory: args.chatHistory || [],
+        availableToolNames,
+        args,
+        resolver,
+        modelPolicy,
+        currentMode: currentConversationMode,
     });
-    if (shouldSpeculateChat) {
-        const classificationPromise = classifyRouteWithModel({
-            initialRoute: runtimeRoute,
-            text: userText,
-            chatHistory: args.chatHistory || [],
-            availableToolNames,
-            args,
-            resolver,
-            modelPolicy,
-            currentMode: currentConversationMode,
-        }).catch(error => ({ status: 'error', model: modelPolicy.routingModel, error }));
-        const speculativeChatPromise = runSpeculativeDirectReplyFastPath(runtimeRoute, args, resolver);
-        const firstResolved = await Promise.race([
-            classificationPromise.then(classification => ({ type: 'classification', classification })),
-            speculativeChatPromise.then(result => ({ type: 'chat', result })),
-        ]);
-
-        if (firstResolved.type === 'classification') {
-            const appliedRoute = applyRouteClassificationOutcome({
-                classification: firstResolved.classification,
-                initialRoute: runtimeRoute,
-                args,
-                resolver,
-            });
-            const classifierVetoed = appliedRoute.mode !== 'direct_reply'
-                || normalizeConversationMode(args.runtimeConversationMode || currentConversationMode) !== 'chat';
-            runtimeRoute = appliedRoute;
-            if (!classifierVetoed) {
-                args.planningReasoningEffort = runtimeRoute.planningReasoningEffort || 'low';
-                args.synthesisReasoningEffort = runtimeRoute.synthesisReasoningEffort || 'low';
-                logFastPathRouteSelection({
-                    resolver,
-                    args,
-                    entityId,
-                    invocationType,
-                    toolLoopModel,
-                    reasoningEffort,
-                    modelPolicy,
-                    authorityEnvelope,
-                    route: runtimeRoute,
-                    conversationMode: normalizeConversationMode(args.runtimeConversationMode || currentConversationMode),
-                });
-                const fastResult = await speculativeChatPromise;
-                if (hasUsableFastPathResult(fastResult)) {
-                    if (isPulse && useContinuityMemory && resolver.continuityEntityId) {
-                        await recordPulseMemory(resolver, args, fastResult, entityName, entityInstructions);
-                    } else if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
-                        await recordConversationMemory(resolver, args, fastResult, entityName, entityInstructions);
-                    }
-                    logRequestEnd(resolver);
-                    await finalizeRuntimeRun(args, resolver, fastResult);
-                    return fastResult;
-                }
-                logEvent(getRequestId(resolver), 'route.speculative_chat_empty', {
-                    conversationMode: normalizeConversationMode(args.runtimeConversationMode || currentConversationMode),
-                    reason: runtimeRoute.reason,
-                    source: 'classifier_approved',
-                });
-            }
-            void speculativeChatPromise.catch(() => {});
-        } else {
-            if (!hasUsableFastPathResult(firstResolved.result)) {
-                logEvent(getRequestId(resolver), 'route.speculative_chat_empty', {
-                    conversationMode: currentConversationMode,
-                    reason: runtimeRoute.reason,
-                    source: 'race_winner',
-                });
-                const classification = await classificationPromise.catch(error => ({ status: 'error', model: modelPolicy.routingModel, error }));
-                runtimeRoute = applyRouteClassificationOutcome({
-                    classification,
-                    initialRoute: runtimeRoute,
-                    args,
-                    resolver,
-                });
-                void speculativeChatPromise.catch(() => {});
-            } else {
-            const graceClassification = args.stream
-                ? await Promise.race([
-                    classificationPromise.then(classification => ({ type: 'classification', classification })),
-                    new Promise(resolve => setTimeout(() => resolve({ type: 'timeout' }), STREAM_SPECULATIVE_CLASSIFIER_GRACE_MS)),
-                ])
-                : { type: 'timeout' };
-
-            if (graceClassification.type === 'classification') {
-                const appliedRoute = applyRouteClassificationOutcome({
-                    classification: graceClassification.classification,
-                    initialRoute: runtimeRoute,
-                    args,
-                    resolver,
-                });
-                const classifierVetoed = appliedRoute.mode !== 'direct_reply'
-                    || normalizeConversationMode(args.runtimeConversationMode || currentConversationMode) !== 'chat';
-                runtimeRoute = appliedRoute;
-                if (classifierVetoed) {
-                    void speculativeChatPromise.catch(() => {});
-                } else {
-                    if (resolver.entityRuntimeState) {
-                        resolver.entityRuntimeState.conversationModeConfidence = 'high';
-                    }
-                    args.runtimeConversationModeConfidence = 'high';
-                    args.planningReasoningEffort = 'low';
-                    args.synthesisReasoningEffort = FAST_CHAT_REASONING_EFFORT;
-                    logEvent(getRequestId(resolver), 'route.speculative_chat_win', {
-                        conversationMode: normalizeConversationMode(args.runtimeConversationMode || currentConversationMode),
-                        confidence: currentConversationModeConfidence,
-                    });
-                    logFastPathRouteSelection({
-                        resolver,
-                        args,
-                        entityId,
-                        invocationType,
-                        toolLoopModel,
-                        reasoningEffort,
-                        modelPolicy,
-                        authorityEnvelope,
-                        route: {
-                            ...runtimeRoute,
-                            routeSource: 'speculative',
-                        },
-                        conversationMode: normalizeConversationMode(args.runtimeConversationMode || currentConversationMode),
-                    });
-                    const fastResult = firstResolved.result;
-                    if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
-                        await recordConversationMemory(resolver, args, fastResult, entityName, entityInstructions);
-                    }
-                    logRequestEnd(resolver);
-                    await finalizeRuntimeRun(args, resolver, fastResult);
-                    return fastResult;
-                }
-            } else {
-                void classificationPromise.catch(() => {});
-                if (resolver.entityRuntimeState) {
-                    resolver.entityRuntimeState.conversationModeConfidence = 'high';
-                }
-                args.runtimeConversationModeConfidence = 'high';
-                args.planningReasoningEffort = 'low';
-                args.synthesisReasoningEffort = FAST_CHAT_REASONING_EFFORT;
-                logEvent(getRequestId(resolver), 'route.speculative_chat_win', {
-                    conversationMode: currentConversationMode,
-                    confidence: currentConversationModeConfidence,
-                });
-                logFastPathRouteSelection({
-                    resolver,
-                    args,
-                    entityId,
-                    invocationType,
-                    toolLoopModel,
-                    reasoningEffort,
-                    modelPolicy,
-                    authorityEnvelope,
-                    route: {
-                        ...runtimeRoute,
-                        routeSource: 'speculative',
-                    },
-                    conversationMode: currentConversationMode,
-                });
-                const fastResult = firstResolved.result;
-                if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
-                    await recordConversationMemory(resolver, args, fastResult, entityName, entityInstructions);
-                }
-                logRequestEnd(resolver);
-                await finalizeRuntimeRun(args, resolver, fastResult);
-                return fastResult;
-            }
-            }
-        }
-    } else {
-        runtimeRoute = await maybeRefineRouteWithModel({
-            initialRoute: runtimeRoute,
-            text: userText,
-            chatHistory: args.chatHistory || [],
-            availableToolNames,
-            args,
-            resolver,
-            modelPolicy,
-            currentMode: currentConversationMode,
-        });
-    }
     const effectiveConversationMode = normalizeConversationMode(args.runtimeConversationMode || currentConversationMode);
     const effectiveModeAffiliationPolicy = await getConversationModeAffiliationPolicy(effectiveConversationMode);
     const effectiveModelPolicy = applyConversationModeAffiliation(
@@ -3034,23 +3765,26 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         effectiveModeAffiliationPolicy,
     );
     const planningToolNames = runtimeRoute.initialToolNames || [];
-    const planningToolsOpenAiFormat = planningToolNames.length > 0
-        ? entityToolsOpenAiFormat.filter(tool => planningToolNames.includes(tool.function?.name))
-        : entityToolsOpenAiFormat;
+    const promptPlanningToolNames = runtimeRoute.mode === 'plan' ? planningToolNames : [];
+    const planningToolsOpenAiFormat = promptPlanningToolNames.length > 0
+        ? entityToolsOpenAiFormat.filter(tool => promptPlanningToolNames.includes(tool.function?.name))
+        : (runtimeRoute.mode === 'plan' ? entityToolsOpenAiFormat : []);
     const promptContext = {
         includeAvailableFiles: shouldIncludeAvailableFilesInPrompt({
-            text: extractUserMessage(args),
             route: runtimeRoute,
-            planningToolNames: planningToolsOpenAiFormat.map(tool => tool.function?.name || '').filter(Boolean),
+            planningToolNames,
         }),
         includeDateTime: shouldIncludeDateTimeInPrompt({
-            text: extractUserMessage(args),
             route: runtimeRoute,
-            planningToolNames: planningToolsOpenAiFormat.map(tool => tool.function?.name || '').filter(Boolean),
+            planningToolNames,
         }),
     };
     args.latencyRouteMode = runtimeRoute.mode;
     args.latencyRouteReason = runtimeRoute.reason;
+    args.runtimeRouteMode = runtimeRoute.mode;
+    args.runtimeRouteReason = runtimeRoute.reason;
+    args.runtimeRouteSource = runtimeRoute.routeSource || '';
+    args.runtimeDirectTool = runtimeRoute.toolName || '';
     args.initialPlanningToolNames = planningToolsOpenAiFormat.map(tool => tool.function?.name || '').filter(Boolean);
     args.promptContext = promptContext;
     resolver.args = {...args};
@@ -3064,11 +3798,31 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
             stage: args.runtimeStage || 'plan',
             requestedOutput: args.requestedOutput || '',
             envelopeSummary: summarizeAuthorityEnvelope(authorityEnvelope),
+            continuityContext: typeof resolver.continuityContext === 'string'
+                ? resolver.continuityContext
+                : '',
             orientationSummary: runtimeOrientationPacket
                 ? summarizeOrientationPacket(runtimeOrientationPacket)
                 : '',
         }
         : null;
+    if (useContinuityMemory && !runtimeContext?.continuityContext?.trim()) {
+        logEvent(getRequestId(resolver), 'memory.context_missing', {
+            entityId: args.entityId || entityConfig?.id || null,
+            routeMode: args.runtimeRouteMode || args.latencyRouteMode || null,
+            runtimeStage: args.runtimeStage || null,
+        });
+    }
+    args.runtimeContext = runtimeContext;
+    args.promptTemplateMeta = {
+        isSystem: !!entityConfig?.isSystem,
+        entityInstructions,
+        useContinuityMemory,
+        promptContext,
+        resolvedContinuityContext: typeof resolver.continuityContext === 'string'
+            ? resolver.continuityContext
+            : '',
+    };
 
     const promptMessages = buildPromptTemplate(
         entityConfig,
@@ -3078,14 +3832,39 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         voiceResponse,
         isPulse,
         runtimeContext,
-        promptContext,
-        runtimeOrientationPacket
+        promptContext
     );
     resolver.pathwayPrompt = [new Prompt({ messages: promptMessages })];
 
     args.configuredReasoningEffort = reasoningEffort;
-    args.planningReasoningEffort = runtimeRoute.planningReasoningEffort || reasoningEffort || 'medium';
-    args.synthesisReasoningEffort = runtimeRoute.synthesisReasoningEffort || reasoningEffort || 'medium';
+    args.primaryReasoningEffort = effectiveModelPolicy.primaryReasoningEffort || reasoningEffort;
+    args.orientationReasoningEffort = effectiveModelPolicy.orientationReasoningEffort || args.primaryReasoningEffort;
+    args.planningReasoningEffort =
+        effectiveModelPolicy.planningReasoningEffort
+        || runtimeRoute.planningReasoningEffort
+        || args.primaryReasoningEffort
+        || 'medium';
+    args.researchReasoningEffort =
+        effectiveModelPolicy.researchReasoningEffort
+        || args.primaryReasoningEffort
+        || 'low';
+    args.childReasoningEffort =
+        effectiveModelPolicy.childReasoningEffort
+        || args.researchReasoningEffort;
+    args.synthesisReasoningEffort =
+        effectiveModelPolicy.synthesisReasoningEffort
+        || runtimeRoute.synthesisReasoningEffort
+        || args.primaryReasoningEffort
+        || 'medium';
+    args.verificationReasoningEffort =
+        effectiveModelPolicy.verificationReasoningEffort
+        || args.synthesisReasoningEffort;
+    args.compressionReasoningEffort =
+        effectiveModelPolicy.compressionReasoningEffort
+        || args.researchReasoningEffort;
+    args.routingReasoningEffort =
+        effectiveModelPolicy.routingReasoningEffort
+        || 'none';
     if (runtimeRoute.mode === 'direct_reply') {
         args.synthesisReasoningEffort = FAST_CHAT_REASONING_EFFORT;
     }
@@ -3105,8 +3884,8 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         resolver.entityRuntimeState.conversationMode = effectiveConversationMode;
         resolver.entityRuntimeState.conversationModeConfidence = normalizeModeConfidence(args.runtimeConversationModeConfidence || currentConversationModeConfidence);
     }
-    syncRuntimeResultData(resolver, args);
-    const requestModel = runtimeRoute.mode === 'direct_reply' || runtimeRoute.mode === 'direct_tool'
+    updateRuntimeRouteState(resolver, args, runtimeRoute);
+    const requestModel = runtimeRoute.mode === 'direct_reply' || runtimeRoute.mode === 'direct_search'
         ? getFastPathModel(args)
         : args.primaryModel;
 
@@ -3138,17 +3917,23 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
             planningToolNames: summarizeToolNames(planningToolsOpenAiFormat),
             planningReasoningEffort: args.planningReasoningEffort,
             synthesisReasoningEffort: args.synthesisReasoningEffort,
-            ...(runtimeRoute.toolName && { directTool: runtimeRoute.toolName }),
         });
         publishRuntimeModeStatus({ resolver, args });
 
-        if (runtimeRoute.mode === 'direct_tool') {
+        if (runtimeRoute.mode === 'direct_search') {
             logEvent(rid, 'route.preflight_skipped', {
                 mode: runtimeRoute.mode,
                 reason: runtimeRoute.reason,
-                skipped: ['file_sync', 'context_compression'],
+                skipped: ['file_sync', 'context_compression', 'formal_planning'],
             });
-            const fastResult = await runDirectToolFastPath(runtimeRoute, args, resolver, entityTools, makeErrorHandler(args, resolver));
+            const fastResult = await runDirectSearchFastPath(
+                runtimeRoute,
+                args,
+                resolver,
+                entityTools,
+                entityToolsOpenAiFormat,
+                makeErrorHandler(args, resolver),
+            );
             if (isPulse && useContinuityMemory && resolver.continuityEntityId) {
                 await recordPulseMemory(resolver, args, fastResult, entityName, entityInstructions);
             } else if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
@@ -3257,6 +4042,12 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
             });
         }
 
+        response = repairManagedMediaUrlsInResponse(
+            response,
+            resolver,
+            args.chatHistory || [],
+        );
+
         if (isPulse && useContinuityMemory && resolver.continuityEntityId) {
             await recordPulseMemory(resolver, args, response, entityName, entityInstructions);
         } else if (useContinuityMemory && resolver.continuityEntityId && resolver.continuityUserId) {
@@ -3284,11 +4075,12 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
             });
         }
 
-        if (args.stream && !(response && typeof response.on === 'function')) {
+        if (args.stream) {
+            const finalResponseText = resolver.streamedContent || extractResponseText(response) || '';
             publishRequestProgress({
                 requestId: rid,
                 progress: 1,
-                data: JSON.stringify(extractResponseText(response)),
+                data: JSON.stringify(finalResponseText),
                 info: JSON.stringify(resolver.pathwayResultData || {}),
                 error: resolver.errors?.length > 0 ? resolver.errors.join(', ') : ''
             });

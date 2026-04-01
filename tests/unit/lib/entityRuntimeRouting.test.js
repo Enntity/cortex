@@ -5,6 +5,7 @@ import {
     extractRecentFileReferences,
     routeEntityTurn,
     shortlistInitialTools,
+    shortlistToolsForCategory,
 } from '../../../lib/entityRuntime/index.js';
 
 test('extractFilenameMentions returns unique image filenames in mention order', t => {
@@ -42,6 +43,17 @@ test('shortlistInitialTools returns an empty shortlist without heuristic routing
     t.deepEqual(shortlist, []);
 });
 
+test('shortlistToolsForCategory keeps workspace routing narrow to workspace shell access', t => {
+    const shortlist = shortlistToolsForCategory('workspace', [
+        'WorkspaceSSH',
+        'ViewImages',
+        'SetBaseAvatar',
+        'AnalyzePDF',
+    ]);
+
+    t.deepEqual(shortlist, ['WorkspaceSSH']);
+});
+
 test('routeEntityTurn uses high-confidence chat mode to bias toward direct reply', t => {
     const route = routeEntityTurn({
         text: 'What other files do you see in the workspace?',
@@ -67,6 +79,20 @@ test('routeEntityTurn keeps low-confidence chat mode on plan until the router co
 
     t.is(route.mode, 'plan');
     t.is(route.reason, 'chat_mode');
+});
+
+test('routeEntityTurn leaves simple current-info turns on plan until the router decides otherwise', t => {
+    const route = routeEntityTurn({
+        text: "What's Elon talking about today?",
+        availableToolNames: ['SearchInternet', 'FetchWebPageContentJina'],
+        invocationType: 'chat',
+        conversationMode: 'chat',
+        conversationModeConfidence: 'low',
+    });
+
+    t.is(route.mode, 'plan');
+    t.is(route.reason, 'chat_mode');
+    t.deepEqual(route.initialToolNames, []);
 });
 
 test('routeEntityTurn uses agentic mode to bias toward planning', t => {
@@ -107,6 +133,19 @@ test('routeEntityTurn keeps high-confidence casual chat in direct reply mode', t
     });
 
     t.is(route.mode, 'direct_reply');
+    t.is(route.reason, 'chat_mode');
+});
+
+test('routeEntityTurn keeps long high-confidence chat asks on plan until the router confirms intent', t => {
+    const route = routeEntityTurn({
+        text: 'Hey I saw a video about some sweet arcade near Dallas - supposed to be huge. I want to visit with you someday. Any intel?',
+        availableToolNames: ['WorkspaceSSH', 'SearchInternet', 'ViewImages'],
+        invocationType: 'chat',
+        conversationMode: 'chat',
+        conversationModeConfidence: 'high',
+    });
+
+    t.is(route.mode, 'plan');
     t.is(route.reason, 'chat_mode');
 });
 

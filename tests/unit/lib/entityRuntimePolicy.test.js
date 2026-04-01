@@ -33,19 +33,20 @@ test('resolveEntityModelPolicy keeps explicit stage overrides and prefers the sh
     t.is(policy.routingModel, 'oai-gpt54-mini');
 });
 
-test('resolveEntityModelPolicy defaults to cheap research while keeping planning and synthesis on the profile primary model', t => {
+test('resolveEntityModelPolicy defaults entities without explicit modelPolicy to the builtin balanced profile', t => {
     const policy = resolveEntityModelPolicy({
         entityConfig: {},
         args: {},
         resolver: { modelName: 'oai-gpt41' },
     });
 
-    t.is(policy.planningModel, 'oai-gpt41');
-    t.not(policy.researchModel, 'oai-gpt41');
+    t.is(policy.primaryModel, 'oai-gpt54');
+    t.is(policy.orientationModel, 'oai-gpt54');
+    t.is(policy.planningModel, 'oai-gpt54');
+    t.is(policy.researchModel, 'oai-gpt54-mini');
     t.is(policy.routingModel, 'oai-gpt54-mini');
-    t.is(policy.synthesisModel, 'oai-gpt41');
-    t.is(policy.verificationModel, 'oai-gpt41');
-    t.is(policy.primaryModel, 'oai-gpt41');
+    t.is(policy.synthesisModel, 'oai-gpt54');
+    t.is(policy.verificationModel, 'oai-gpt54');
 });
 
 test('resolveEntityModelPolicy ignores request model fields and stays on the configured profile', t => {
@@ -71,6 +72,147 @@ test('resolveEntityModelPolicy ignores request model fields and stays on the con
 
     t.is(policy.researchModel, 'xai-grok-4-1-fast-non-reasoning');
     t.is(policy.routingModel, 'oai-gpt54-mini');
+});
+
+test('resolveEntityModelPolicy re-resolves builtin balanced profile ids instead of trusting stale saved model ids', t => {
+    const policy = resolveEntityModelPolicy({
+        entityConfig: {
+            modelPolicy: {
+                profileId: 'balanced',
+                primaryModel: 'oai-gpt41',
+                synthesisModel: 'oai-gpt41',
+                planningModel: 'oai-gpt41',
+                researchModel: 'oai-gpt41-nano',
+                routingModel: 'oai-gpt41-nano',
+            },
+        },
+        args: {},
+        resolver: { modelName: 'oai-gpt41' },
+    });
+
+    t.is(policy.primaryModel, 'oai-gpt54');
+    t.is(policy.synthesisModel, 'oai-gpt54');
+    t.is(policy.planningModel, 'oai-gpt54');
+    t.is(policy.researchModel, 'oai-gpt54-mini');
+    t.is(policy.routingModel, 'oai-gpt54-mini');
+});
+
+test('resolveEntityModelPolicy infers legacy builtin balanced policies even when profileId is missing', t => {
+    const policy = resolveEntityModelPolicy({
+        entityConfig: {
+            modelPolicy: {
+                primaryModel: 'oai-gpt41',
+                orientationModel: 'oai-gpt41',
+                planningModel: 'oai-gpt41',
+                researchModel: 'oai-gpt41-nano',
+                childModel: 'oai-gpt41-nano',
+                synthesisModel: 'oai-gpt41',
+                verificationModel: 'oai-gpt41',
+                compressionModel: 'oai-gpt41-nano',
+                routingModel: 'oai-gpt41-nano',
+            },
+        },
+        args: {},
+        resolver: { modelName: 'oai-gpt41' },
+    });
+
+    t.is(policy.primaryModel, 'oai-gpt54');
+    t.is(policy.orientationModel, 'oai-gpt54');
+    t.is(policy.planningModel, 'oai-gpt54');
+    t.is(policy.researchModel, 'oai-gpt54-mini');
+    t.is(policy.childModel, 'oai-gpt54-mini');
+    t.is(policy.synthesisModel, 'oai-gpt54');
+    t.is(policy.verificationModel, 'oai-gpt54');
+    t.is(policy.compressionModel, 'oai-gpt54-mini');
+    t.is(policy.routingModel, 'oai-gpt54-mini');
+});
+
+test('resolveEntityModelPolicy defaults ambiguous legacy builtin policies to balanced when profileId is missing', t => {
+    const policy = resolveEntityModelPolicy({
+        entityConfig: {
+            modelPolicy: {
+                primaryModel: 'oai-gpt41',
+                orientationModel: 'oai-gpt41',
+                planningModel: 'oai-gpt41',
+                synthesisModel: 'oai-gpt41',
+                verificationModel: 'oai-gpt41',
+            },
+        },
+        args: {},
+        resolver: { modelName: 'oai-gpt41' },
+    });
+
+    t.is(policy.primaryModel, 'oai-gpt54');
+    t.is(policy.orientationModel, 'oai-gpt54');
+    t.is(policy.planningModel, 'oai-gpt54');
+    t.is(policy.synthesisModel, 'oai-gpt54');
+    t.is(policy.verificationModel, 'oai-gpt54');
+    t.is(policy.researchModel, 'oai-gpt54-mini');
+    t.is(policy.routingModel, 'oai-gpt54-mini');
+});
+
+test('resolveEntityModelPolicy resolves the builtin gemini profile to Gemini Flash + Flash Lite', t => {
+    const policy = resolveEntityModelPolicy({
+        entityConfig: {
+            modelPolicy: {
+                profileId: 'gemini',
+            },
+        },
+        args: {},
+        resolver: { modelName: 'oai-gpt41' },
+    });
+
+    t.is(policy.primaryModel, 'gemini-flash-3-vision');
+    t.is(policy.orientationModel, 'gemini-flash-3-vision');
+    t.is(policy.planningModel, 'gemini-flash-3-vision');
+    t.is(policy.researchModel, 'gemini-flash-31-lite-vision');
+    t.is(policy.childModel, 'gemini-flash-31-lite-vision');
+    t.is(policy.synthesisModel, 'gemini-flash-3-vision');
+    t.is(policy.synthesisReasoningEffort, 'high');
+    t.is(policy.verificationModel, 'gemini-flash-3-vision');
+    t.is(policy.compressionModel, 'gemini-flash-31-lite-vision');
+    t.is(policy.routingModel, 'gemini-flash-31-lite-vision');
+});
+
+test('resolveEntityModelPolicy preserves explicit per-slot reasoning overrides', t => {
+    const policy = resolveEntityModelPolicy({
+        entityConfig: {
+            modelPolicy: {
+                profileId: 'gemini',
+                synthesisReasoningEffort: 'medium',
+            },
+        },
+        args: {
+            modelPolicy: JSON.stringify({
+                synthesisReasoningEffort: 'high',
+            }),
+        },
+        resolver: { modelName: 'oai-gpt41' },
+    });
+
+    t.is(policy.synthesisReasoningEffort, 'high');
+});
+
+test('resolveEntityModelPolicy resolves the builtin claude profile to Claude Sonnet 4.6 + Haiku 4.5', t => {
+    const policy = resolveEntityModelPolicy({
+        entityConfig: {
+            modelPolicy: {
+                profileId: 'claude',
+            },
+        },
+        args: {},
+        resolver: { modelName: 'oai-gpt41' },
+    });
+
+    t.is(policy.primaryModel, 'claude-46-sonnet');
+    t.is(policy.orientationModel, 'claude-46-sonnet');
+    t.is(policy.planningModel, 'claude-46-sonnet');
+    t.is(policy.researchModel, 'claude-45-haiku');
+    t.is(policy.childModel, 'claude-45-haiku');
+    t.is(policy.synthesisModel, 'claude-46-sonnet');
+    t.is(policy.verificationModel, 'claude-46-sonnet');
+    t.is(policy.compressionModel, 'claude-45-haiku');
+    t.is(policy.routingModel, 'claude-45-haiku');
 });
 
 test('resolveAuthorityEnvelope merges digest defaults with entity and request overrides', t => {

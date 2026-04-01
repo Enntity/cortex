@@ -267,6 +267,9 @@ test.serial('Tool: createEntity creates entity with continuity memory', async (t
     t.truthy(entity, 'Entity should exist in database');
     t.is(entity.name, 'Luna', 'Entity name should match');
     t.true(entity.identity.includes('I am Luna'), 'Identity should be stored on the entity');
+    t.true(entity.identity.includes('## Expression Profile'), 'Entity identity should store expression details under Expression Profile');
+    t.true(entity.identity.includes('## Relationship Context'), 'Entity identity should store user-facing context under Relationship Context');
+    t.false(entity.identity.includes('## User Preferences'), 'Legacy mixed User Preferences heading should no longer be written for new entities');
     t.true(Array.isArray(entity.assocUserIds), 'Should have assocUserIds array');
     t.true(entity.assocUserIds.includes(TEST_USER_ID), 'Should be associated with user');
     

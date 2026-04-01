@@ -13,7 +13,7 @@ const mockLogger = {
 
 global.logger = mockLogger;
 
-function createResolverWithPlugin(pluginClass, modelName = 'test-model') {
+function createResolverWithPlugin(pluginClass, modelName = 'test-model', modelOverrides = {}) {
   const pathway = {
     name: 'test-pathway',
     model: modelName,
@@ -23,7 +23,8 @@ function createResolverWithPlugin(pluginClass, modelName = 'test-model') {
   
   const model = {
     name: modelName,
-    type: 'GEMINI-3-REASONING-VISION'
+    type: 'GEMINI-3-REASONING-VISION',
+    ...modelOverrides
   };
   
   const resolver = new PathwayResolver({ 
@@ -229,6 +230,92 @@ test('getRequestParameters - transforms function role to user role', t => {
   const functionMessages = params.contents.filter(c => c.role === 'function');
   t.is(functionMessages.length, 0, 
     'Should not have any function role messages after transformation');
+});
+
+test('getRequestParameters - keeps thinkingConfig for non-streamed responses', t => {
+  const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
+  const plugin = resolver.modelExecutor.plugin;
+
+  const params = plugin.getRequestParameters(
+    'test',
+    { stream: false, thinkingLevel: 'high' },
+    { prompt: 'test' },
+    { pathway: {} }
+  );
+
+  t.truthy(params.generationConfig.thinkingConfig);
+  t.is(params.generationConfig.thinkingConfig.thinkingLevel, 'high');
+  t.is(params.generationConfig.thinkingConfig.includeThoughts, false);
+});
+
+test('getRequestParameters - keeps thinkingConfig for streamed responses', t => {
+  const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
+  const plugin = resolver.modelExecutor.plugin;
+
+  const params = plugin.getRequestParameters(
+    'test',
+    { stream: true, thinkingLevel: 'high' },
+    { prompt: 'test' },
+    { pathway: {} }
+  );
+
+  t.truthy(params.generationConfig.thinkingConfig);
+  t.is(params.generationConfig.thinkingConfig.thinkingLevel, 'high');
+  t.is(params.generationConfig.thinkingConfig.includeThoughts, false);
+});
+
+test('getRequestParameters - applies model reasoningEffortMap for Gemini Flash none -> minimal', t => {
+  const resolver = createResolverWithPlugin(
+    Gemini3ReasoningVisionPlugin,
+    'gemini-flash-3-vision',
+    {
+      reasoningEffortMap: {
+        none: 'minimal',
+        low: 'low',
+        medium: 'medium',
+        high: 'high',
+        xhigh: 'high',
+      },
+    }
+  );
+  const plugin = resolver.modelExecutor.plugin;
+
+  const params = plugin.getRequestParameters(
+    'test',
+    { reasoningEffort: 'none' },
+    { prompt: 'test' },
+    { pathway: {} }
+  );
+
+  t.truthy(params.generationConfig.thinkingConfig);
+  t.is(params.generationConfig.thinkingConfig.thinkingLevel, 'minimal');
+});
+
+test('getRequestParameters - applies model reasoningEffortMap for Gemini pathway reasoning effort', t => {
+  const resolver = createResolverWithPlugin(
+    Gemini3ReasoningVisionPlugin,
+    'gemini-pro-31-vision',
+    {
+      reasoningEffortMap: {
+        none: 'low',
+        low: 'low',
+        medium: 'high',
+        high: 'high',
+        xhigh: 'high',
+      },
+    }
+  );
+  const plugin = resolver.modelExecutor.plugin;
+
+  const params = plugin.getRequestParameters(
+    'test',
+    {},
+    { prompt: 'test' },
+    { pathway: { reasoningEffort: 'medium' } }
+  );
+
+  t.truthy(params.generationConfig.thinkingConfig);
+  t.is(params.generationConfig.thinkingConfig.thinkingLevel, 'high');
 });
 
 test('getRequestParameters - parallel tool calls produce one functionCall message', t => {
@@ -689,11 +776,12 @@ test('parity fix - assistant message with empty content still gets functionCall 
 // that occurs when prepareForSynthesis adds a user-role review message after tool
 // results, creating consecutive user turns that Gemini 3 rejects.
 
-test('parity fix - user text after functionResponse is merged into same user turn', t => {
+test('parity fix - synthetic review message is moved to systemInstruction', t => {
   // Reproduces the exact digest failure: after the tool loop, prepareForSynthesis
   // adds a user-role review message. After parity fix converts function→user,
   // this creates consecutive user turns: user(functionResponse) + user(text).
-  // The fix merges them into one user turn.
+  // The Gemini fix hoists the synthetic control message into systemInstruction
+  // so the tool result turn stays clean.
   const resolver = createResolverWithPlugin(Gemini3ReasoningVisionPlugin);
   const plugin = resolver.modelExecutor.plugin;
 
@@ -731,15 +819,22 @@ test('parity fix - user text after functionResponse is merged into same user tur
   // Should start with user
   t.is(params.contents[0].role, 'user', 'Must start with user turn');
 
-  // The review text should be merged into the functionResponse user turn
+  // The tool-result turn should stay separate from synthetic review text
   const userTurnsWithFR = params.contents.filter(c =>
     c.role === 'user' && c.parts?.some(p => p.functionResponse)
   );
   t.is(userTurnsWithFR.length, 1, 'Should have exactly one user turn with functionResponse');
 
-  // That turn should also contain the review text
-  const hasText = userTurnsWithFR[0].parts.some(p => p.text && p.text.includes('Review the tool results'));
-  t.true(hasText, 'Review message text should be merged into the functionResponse user turn');
+  // The functionResponse turn should remain tool-results only
+  const hasText = userTurnsWithFR[0].parts.some(p => p.text);
+  t.false(hasText, 'FunctionResponse turn should not be mixed with synthetic review text');
+
+  // The synthetic review text should be hoisted into systemInstruction instead
+  const systemParts = params.systemInstruction?.parts || [];
+  t.true(
+    systemParts.some(p => p.text && p.text.includes('Review the tool results above against your todo list')),
+    'Synthetic review text should be added to systemInstruction'
+  );
 });
 
 test('parity fix - even-number slicing does not drop first user message', t => {
@@ -986,4 +1081,3 @@ test('Gemini3ReasoningVisionPlugin - inherits from Gemini3ImagePlugin', t => {
   t.true(typeof plugin.buildToolCallFromFunctionCall === 'function',
     'Should have buildToolCallFromFunctionCall method');
 });
-

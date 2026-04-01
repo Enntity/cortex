@@ -381,6 +381,7 @@
         },
         "oai-router": {
             "type": "OPENAI-REASONING-VISION",
+            "reasoningEffortMap": { "none": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
             "endpoints": [
                 {
                     "name": "EUS2 AZURE MODEL ROUTER",
@@ -678,6 +679,7 @@
         "gemini-pro-31-vision": {
             "type": "GEMINI-3-REASONING-VISION",
             "emulateOpenAIChatModel": "gemini-pro-31",
+            "reasoningEffortMap": { "none": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "high" },
             "metadata": {
                 "displayName": "Gemini 3.1 Pro",
                 "category": "chat",
@@ -701,6 +703,7 @@
         "gemini-flash-3-vision": {
             "type": "GEMINI-3-REASONING-VISION",
             "emulateOpenAIChatModel": "gemini-flash-3",
+            "reasoningEffortMap": { "none": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
             "metadata": {
                 "displayName": "Gemini 3 Flash",
                 "category": "chat",
@@ -725,6 +728,7 @@
         "gemini-flash-31-lite-vision": {
             "type": "GEMINI-3-REASONING-VISION",
             "emulateOpenAIChatModel": "gemini-flash-31-lite",
+            "reasoningEffortMap": { "none": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
             "metadata": {
                 "displayName": "Gemini 3.1 Flash Lite",
                 "category": "chat",

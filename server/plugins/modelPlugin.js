@@ -524,28 +524,43 @@ class ModelPlugin {
         logger.info(`${logMessage}`);
     }
 
+    serializeForLogging(data) {
+        if (data == null) return '';
+        if (typeof data === 'string') return data;
+        if (typeof data === 'number' || typeof data === 'boolean' || typeof data === 'bigint') {
+            return String(data);
+        }
+        try {
+            return JSON.stringify(data);
+        } catch (error) {
+            return String(data);
+        }
+    }
+
     getLength(data) {
         const isProd = config.get('env') === 'production';
         let length = 0;
         let units = isProd ? 'characters' : 'tokens';
-        if (data) {
-            if (isProd || data.length > 5000) {
-                length = data.length;
+        const normalizedData = this.serializeForLogging(data);
+        if (normalizedData) {
+            if (isProd || normalizedData.length > 5000) {
+                length = normalizedData.length;
                 units = 'characters';
             } else {
-                length = encode(data).length;
+                length = encode(normalizedData).length;
             }
         }
         return {length, units};
     }
 
     shortenContent(content, maxWords = 40) {
-        if (!content || typeof content !== 'string') {
-            return content;
+        const normalizedContent = this.serializeForLogging(content);
+        if (!normalizedContent) {
+            return normalizedContent;
         }
-        const words = content.split(" ");
+        const words = normalizedContent.split(" ");
         if (words.length <= maxWords || logger.level === 'debug') {
-            return content;
+            return normalizedContent;
         }
         return words.slice(0, maxWords / 2).join(" ") +
             " ... " +

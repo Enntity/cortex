@@ -106,7 +106,7 @@ test('getRequestParameters includes model in body', async (t) => {
     ];
     
     const parameters = { messages };
-    const requestParams = await plugin.getRequestParameters('', parameters, {});
+    const requestParams = await plugin.getRequestParameters('', parameters, { messages: parameters.messages });
     
     // Should have model in request body
     t.is(requestParams.model, 'claude-sonnet-4-20250514');
@@ -302,6 +302,48 @@ test('no reasoningEffort does not add thinking config', async (t) => {
     const parameters = { messages: [{ role: 'user', content: 'Hi' }] };
     const result = await plugin.getRequestParameters('', parameters, {});
     t.is(result.thinking, undefined);
+});
+
+test('logRequestData handles anthropic system content arrays without throwing', (t) => {
+    const plugin = new ClaudeAnthropicPlugin(pathway, anthropicModel);
+    const data = {
+        stream: false,
+        system: [
+            {
+                type: 'text',
+                text: 'You are a latency router for an agent runtime.',
+                cache_control: { type: 'ephemeral' },
+            },
+        ],
+        messages: [
+            {
+                role: 'user',
+                content: [
+                    {
+                        type: 'text',
+                        text: '{"userText":"Who owns that beast?","currentMode":"chat"}',
+                    },
+                ],
+            },
+        ],
+    };
+    const responseData = {
+        content: [
+            {
+                type: 'tool_use',
+                id: 'toolu_123',
+                name: 'SelectRoute',
+                input: {
+                    mode: 'plan',
+                    confidence: 'medium',
+                },
+            },
+        ],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 42, output_tokens: 7 },
+    };
+
+    t.notThrows(() => plugin.logRequestData(data, responseData, pathway.prompt));
 });
 
 test('SSE conversion handles tool call events', (t) => {

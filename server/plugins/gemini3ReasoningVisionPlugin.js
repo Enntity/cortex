@@ -8,6 +8,14 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
         super(pathway, model);
     }
 
+    isSyntheticSystemMessage(text = '') {
+        return /^\[system message(?::[^\]]+)?\]\s*/i.test(String(text || '').trim());
+    }
+
+    stripSyntheticSystemMessageMarker(text = '') {
+        return String(text || '').replace(/^\[system message(?::[^\]]+)?\]\s*/i, '').trim();
+    }
+
     // Override to include thoughtSignature - required by Gemini 3 for function call history
     buildFunctionCallPart(toolCall, args) {
         const part = {
@@ -61,6 +69,7 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
         // each model turn with N functionCall parts is followed by one user turn with N functionResponse parts.
         if (messages.some(m => m.role === 'tool' || m.tool_calls?.length > 0)) {
             const rebuilt = [];
+            const syntheticSystemParts = [];
 
             for (const msg of messages) {
                 if (msg.role === 'system') {
@@ -74,7 +83,14 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
                         : Array.isArray(raw) ? raw.map(p => typeof p === 'string' ? p : p?.text || '').filter(Boolean).join('\n')
                         : '';
                     if (text.trim()) {
-                        rebuilt.push({ role: 'user', parts: [{ text }] });
+                        if (this.isSyntheticSystemMessage(text)) {
+                            const instructionText = this.stripSyntheticSystemMessageMarker(text);
+                            if (instructionText) {
+                                syntheticSystemParts.push({ text: instructionText });
+                            }
+                        } else {
+                            rebuilt.push({ role: 'user', parts: [{ text }] });
+                        }
                     }
                 } else if (msg.role === 'assistant') {
                     if (msg.tool_calls?.length > 0) {
@@ -131,9 +147,8 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
                 }
             }
 
-            // Merge consecutive same-role turns.
-            // This ensures: model [N functionCalls] + user [N functionResponses] parity,
-            // and merges adjacent user turns (functionResponse + review text).
+            // Merge consecutive same-role turns after synthetic control messages
+            // have been lifted into systemInstruction.
             const merged = [];
             for (const c of rebuilt) {
                 const prev = merged[merged.length - 1];
@@ -146,7 +161,14 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
 
             // Ensure the conversation starts with a user turn (Gemini requirement).
             if (merged.length > 0 && merged[0].role !== 'user') {
-                const firstUserMsg = messages.find(m => m.role === 'user');
+                const firstUserMsg = messages.find((m) => {
+                    if (m.role !== 'user') return false;
+                    const raw = m.content;
+                    const text = typeof raw === 'string' ? raw
+                        : Array.isArray(raw) ? raw.map(p => typeof p === 'string' ? p : p?.text || '').filter(Boolean).join('\n')
+                        : '';
+                    return text.trim() && !this.isSyntheticSystemMessage(text);
+                });
                 if (firstUserMsg) {
                     const raw = firstUserMsg.content;
                     const text = typeof raw === 'string' ? raw
@@ -159,6 +181,15 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
             }
 
             baseParameters.contents = merged;
+            if (syntheticSystemParts.length > 0) {
+                if (!baseParameters.systemInstruction || typeof baseParameters.systemInstruction !== 'object') {
+                    baseParameters.systemInstruction = { role: 'user', parts: [] };
+                }
+                if (!Array.isArray(baseParameters.systemInstruction.parts)) {
+                    baseParameters.systemInstruction.parts = [];
+                }
+                baseParameters.systemInstruction.parts.push(...syntheticSystemParts);
+            }
         }
         
         // Add Gemini 3 thinking support
@@ -214,14 +245,14 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
             if (!baseParameters.generationConfig.thinkingConfig) {
                 baseParameters.generationConfig.thinkingConfig = {};
             }
-            
+
             // Set thinkingLevel — valid values depend on model (configured via reasoningEffortMap)
             if (thinkingLevel !== undefined) {
                 const level = typeof thinkingLevel === 'string' ? thinkingLevel.toLowerCase() : String(thinkingLevel).toLowerCase();
                 const validLevels = ['minimal', 'low', 'medium', 'high'];
                 baseParameters.generationConfig.thinkingConfig.thinkingLevel = validLevels.includes(level) ? level : 'low';
             }
-            
+
             // includeThoughts: true to get thought summaries
             if (includeThoughts !== undefined) {
                 baseParameters.generationConfig.thinkingConfig.includeThoughts = Boolean(includeThoughts);
@@ -336,4 +367,3 @@ class Gemini3ReasoningVisionPlugin extends Gemini3ImagePlugin {
 }
 
 export default Gemini3ReasoningVisionPlugin;
-

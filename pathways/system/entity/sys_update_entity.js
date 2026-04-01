@@ -9,6 +9,7 @@
 //   - name, description, identity, tools, useMemory, reasoningEffort
 //   - modelPolicy, authorityProfile, autonomyProfile, defaultChildPolicy
 //   - avatarText (emoji), avatarDescription (for image gen), avatarImageUrl (avatar image URL)
+//   - avatarImageBlobPath (stable blob path for avatar refresh)
 //   - voice: JSON string of voice preference array [{provider, voiceId, name?, settings?}, ...]
 //
 // Response format:
@@ -41,6 +42,7 @@ const ALLOWED_PROPERTIES = new Set([
     'avatarText',        // avatar.text (emoji)
     'avatarDescription', // avatar.description (for image generation)
     'avatarImageUrl',    // avatar.image.url
+    'avatarImageBlobPath', // avatar.image.blobPath
     // Voice preference array (JSON string)
     'voice',             // [{provider, voiceId, name?, settings?}, ...]
     // Encrypted secrets (JSON string: {KEY: value, ...})
@@ -95,6 +97,7 @@ export default {
         avatarText: undefined,        // avatar.text (emoji)
         avatarDescription: undefined, // avatar.description (for image generation)
         avatarImageUrl: undefined,    // avatar.image.url
+        avatarImageBlobPath: undefined, // avatar.image.blobPath
         // Voice preference array (JSON string)
         voice: undefined,             // [{provider, voiceId, name?, settings?}, ...]
         // Encrypted secrets (JSON string: {KEY: value, ...})
@@ -281,6 +284,12 @@ export default {
                     updateData.avatar = updateData.avatar || {};
                     updateData.avatar.image = updateData.avatar.image || {};
                     updateData.avatar.image.url = value;
+                } else if (key === 'avatarImageBlobPath') {
+                    updateData.avatar = updateData.avatar || {};
+                    updateData.avatar.image = updateData.avatar.image || {};
+                    updateData.avatar.image.blobPath = typeof value === 'string'
+                        ? value.replace(/^\/+/, '')
+                        : value;
                 } else if (key === 'voice') {
                     // Voice preference array — arrives as JSON string
                     let voiceArray = value;

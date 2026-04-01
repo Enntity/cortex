@@ -50,6 +50,15 @@ const buildSetGoalsCall = (goal = 'Test goal', steps = ['Step 1', 'Step 2'], id 
   },
 });
 
+const buildDelegateResearchCall = (goal = 'Test goal', tasks = ['Task 1', 'Task 2'], id = 'delegate-1') => ({
+  id,
+  type: 'function',
+  function: {
+    name: 'DelegateResearch',
+    arguments: JSON.stringify({ goal, tasks }),
+  },
+});
+
 const buildResolver = (overrides = {}) => ({
   errors: [],
   requestId: 'req-test',
@@ -73,6 +82,20 @@ const setupConfig = () => {
   const tools = {
     searchtool: buildToolDefinition('SearchTool', 'test_tool_search'),
     analyzetool: buildToolDefinition('AnalyzeTool', 'test_tool_analyze'),
+    setbaseavatar: buildToolDefinition('SetBaseAvatar', 'test_tool_avatar', {
+      function: {
+        name: 'SetBaseAvatar',
+        description: 'Test tool for SetBaseAvatar',
+        parameters: {
+          type: 'object',
+          properties: {
+            file: { type: 'string' },
+            userMessage: { type: 'string' },
+          },
+          required: [],
+        },
+      },
+    }),
   };
 
   const entityId = 'entity-test-plan';
@@ -99,6 +122,11 @@ const setupConfig = () => {
     test_tool_analyze: {
       rootResolver: async () => ({
         result: JSON.stringify({ success: true, data: 'analysis results' }),
+      }),
+    },
+    test_tool_avatar: {
+      rootResolver: async (_parent, args) => ({
+        result: JSON.stringify({ success: true, file: args.file || '' }),
       }),
     },
   };
@@ -621,8 +649,8 @@ test.serial('Plan hint includes current round number for model orientation', asy
   }
 });
 
-// === TEST 11: Replan via SetGoals in synthesis triggers new executor loop ===
-test.serial('SetGoals call from synthesis triggers replan and re-enters executor loop', async (t) => {
+// === TEST 11: Replan via DelegateResearch in supervisor review triggers new executor loop ===
+test.serial('DelegateResearch call from supervisor review triggers replan and re-enters executor loop', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -636,27 +664,19 @@ test.serial('SetGoals call from synthesis triggers replan and re-enters executor
     promptAndParse: async (args) => {
       callCount++;
       if (callCount === 1) {
-        // First cheap model call — SYNTHESIZE to trigger synthesis
-        return 'SYNTHESIZE';
-      }
-      if (callCount === 2) {
-        // Synthesis call — return a SetGoals tool call (replan signal)
+        // Supervisor review call — return a DelegateResearch tool call (replan signal)
         return {
-          tool_calls: [buildSetGoalsCall('New plan goal', ['New step 1', 'New step 2'], 'replan-1')],
+          tool_calls: [buildDelegateResearchCall('New plan goal', ['New step 1', 'New step 2'], 'delegate-1')],
         };
       }
-      if (callCount === 3) {
-        // Replan executor kick-off call — return tool calls
+      if (callCount === 2) {
+        // Delegated worker round — return tool calls
         replanDetected = true;
         return {
           tool_calls: [buildToolCall('SearchTool', { userMessage: 'new search' }, 'call-new-1')],
         };
       }
-      if (callCount === 4) {
-        // Second executor round — SYNTHESIZE
-        return 'SYNTHESIZE';
-      }
-      // Final synthesis after replan
+      // Final synthesis after the worker round
       return 'final answer after replan';
     },
   });
@@ -685,8 +705,8 @@ test.serial('SetGoals call from synthesis triggers replan and re-enters executor
   t.deepEqual(resolver.toolPlan.steps, ['New step 1', 'New step 2'], 'Plan steps should be updated');
 });
 
-// === TEST 12: Non-actionable SetGoals replans are finalized ===
-test.serial('SetGoals-only replans without new executable work are finalized instead of looping', async (t) => {
+// === TEST 12: Non-actionable DelegateResearch replans are finalized ===
+test.serial('DelegateResearch replans without new executable work are finalized instead of looping', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -706,10 +726,10 @@ test.serial('SetGoals-only replans without new executable work are finalized ins
         finalizationCallCount++;
         return 'Final answer after blocked replan';
       }
-      // Every synthesis call returns SetGoals (trying to replan infinitely)
+      // Every supervisor review call returns DelegateResearch (trying to replan infinitely)
       synthesisCallCount++;
       return {
-        tool_calls: [buildSetGoalsCall(`Replan ${synthesisCallCount}`, ['Step A'], `replan-${synthesisCallCount}`)],
+        tool_calls: [buildDelegateResearchCall(`Replan ${synthesisCallCount}`, ['Step A'], `delegate-${synthesisCallCount}`)],
       };
     },
   });
@@ -738,8 +758,55 @@ test.serial('SetGoals-only replans without new executable work are finalized ins
   t.is(finalizationCallCount, 1, 'Runtime should force one direct finalization call');
 });
 
-// === TEST 13: Runtime synthesis stays SetGoals-only ===
-test.serial('Runtime synthesis model receives only SetGoals', async (t) => {
+test.serial('Streamed DelegateResearch with the same plan during synthesis finalizes instead of looping', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let promptCalls = 0;
+  let finalizeArgs = null;
+  const resolver = buildResolver({
+    toolPlan: { goal: 'Test goal', steps: ['Task 1'] },
+    _cycleExecutedToolCount: 0,
+    entityRuntimeState: {
+      currentStage: 'synthesize',
+      stopReason: null,
+    },
+    promptAndParse: async (args) => {
+      promptCalls += 1;
+      finalizeArgs = JSON.parse(JSON.stringify(args));
+      return 'Finalized from evidence';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'Who owns it?' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'gemini-flash-3-vision',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildDelegateResearchCall('Test goal', ['Task 1'], 'delegate-stream-same-plan-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Finalized from evidence');
+  t.is(promptCalls, 1, 'Same-plan streamed delegation should go straight to finalization');
+  t.deepEqual(finalizeArgs.tools || [], [], 'Finalization should run with no tools exposed');
+});
+
+// === TEST 13: Runtime supervisor review stays DelegateResearch-only ===
+test.serial('Runtime supervisor review model receives only DelegateResearch', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -747,15 +814,10 @@ test.serial('Runtime synthesis model receives only SetGoals', async (t) => {
   const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
 
   let synthesisToolNames;
-  let callCount = 0;
   const resolver = buildResolver({
     toolLoopModel: 'test-cheap-model',
     promptAndParse: async (args) => {
-      callCount++;
-      if (callCount === 1) {
-        return 'SYNTHESIZE';
-      }
-      // Synthesis call — capture tools
+      // Initial executed tools should go straight to supervisor review.
       synthesisToolNames = (args.tools || []).map(t => t.function?.name);
       return 'final answer';
     },
@@ -780,9 +842,378 @@ test.serial('Runtime synthesis model receives only SetGoals', async (t) => {
 
   await toolCallback(args, message, resolver);
 
-  t.truthy(synthesisToolNames, 'Should have captured synthesis tools');
-  t.true(synthesisToolNames.includes('SetGoals'), 'Synthesis should have SetGoals tool');
-  t.deepEqual(synthesisToolNames, ['SetGoals'], 'Runtime synthesis should stay SetGoals-only');
+  t.truthy(synthesisToolNames, 'Should have captured supervisor review tools');
+  t.true(synthesisToolNames.includes('DelegateResearch'), 'Supervisor review should have DelegateResearch tool');
+  t.deepEqual(synthesisToolNames, ['DelegateResearch'], 'Runtime supervisor review should stay DelegateResearch-only');
+});
+
+test.serial('Gemini supervisor review sanitizes prior tool history into text evidence', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let synthesisArgs;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        return 'SYNTHESIZE';
+      }
+      synthesisArgs = JSON.parse(JSON.stringify(args));
+      return 'final answer';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'who owns the arcade?' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'gemini-flash-3-vision',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Identify the owner', ['Search for the owner name'], 'plan-gemini-sanitize-1'),
+      buildToolCall('SearchTool', { userMessage: 'owner search' }, 'call-gemini-sanitize-1'),
+    ],
+  };
+
+  await toolCallback(args, message, resolver);
+
+  t.deepEqual(
+    (synthesisArgs.tools || []).map(tool => tool.function?.name),
+    ['DelegateResearch'],
+    'Gemini supervisor review should expose only DelegateResearch',
+  );
+
+  const hasStructuredSearchHistory = (synthesisArgs.chatHistory || []).some((entry) => (
+    (Array.isArray(entry.tool_calls) && entry.tool_calls.some((call) => call.function?.name === 'SearchTool'))
+    || (entry.role === 'tool' && entry.name === 'SearchTool')
+  ));
+  t.false(hasStructuredSearchHistory, 'Gemini supervisor review should not retain raw SearchTool tool history');
+
+  const textualizedEvidence = (synthesisArgs.chatHistory || []).find((entry) => (
+    typeof entry.content === 'string'
+    && entry.content.includes('[Prior tool result: SearchTool]')
+  ));
+  t.truthy(textualizedEvidence, 'Gemini supervisor review should retain tool evidence as plain text');
+
+  const originalHistoryTextLeak = (args.chatHistory || []).find((entry) => (
+    typeof entry.content === 'string'
+    && entry.content.includes('[Prior tool result: SearchTool]')
+  ));
+  t.falsy(originalHistoryTextLeak, 'Canonical chat history should not be rewritten with textualized prior tool results');
+
+  const reviewMessage = (synthesisArgs.chatHistory || []).find((entry) => (
+    entry.role === 'user'
+    && typeof entry.content === 'string'
+    && entry.content.includes('Look at the tool results above against your todo list')
+  ));
+  t.truthy(reviewMessage, 'Gemini supervisor review should keep the review instruction in its own injected turn');
+
+  const evidenceWithGluedInstruction = (synthesisArgs.chatHistory || []).find((entry) => (
+    typeof entry.content === 'string'
+    && entry.content.includes('[Prior tool result: SearchTool]')
+    && entry.content.includes('Look at the tool results above against your todo list')
+  ));
+  t.falsy(evidenceWithGluedInstruction, 'Gemini supervisor review should not glue instructions onto textualized evidence');
+});
+
+test.serial('Runtime supervisor review message forbids narrated instruction review', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let synthesisArgs;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        return 'SYNTHESIZE';
+      }
+      synthesisArgs = JSON.parse(JSON.stringify(args));
+      return 'final answer';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'what happened?' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'gemini-flash-3-vision',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Summarize the latest findings', ['Check the gathered evidence'], 'plan-synth-guard-1'),
+      buildToolCall('SearchTool', { userMessage: 'search' }, 'call-synth-guard-1'),
+    ],
+  };
+
+  await toolCallback(args, message, resolver);
+
+  const reviewMessage = synthesisArgs.chatHistory.find((entry) => (
+    entry.role === 'user'
+    && typeof entry.content === 'string'
+    && entry.content.includes('Look at the tool results above against your todo list')
+  ));
+
+  t.truthy(reviewMessage, 'Should include a synthesis review message');
+  t.true(reviewMessage.content.includes('If they are sufficient, answer the user now in your normal voice using the strongest grounded signal.'));
+  t.true(reviewMessage.content.includes('If they are not sufficient, call DelegateResearch only with the missing outcomes.'));
+  t.true(reviewMessage.content.includes('Do not call search/fetch or any other tools directly in this step.'));
+  t.true(reviewMessage.content.includes('The worker loop will execute the next round.'));
+});
+
+test.serial('Claude supervisor review sanitizes prior tool history into text evidence', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let synthesisArgs;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        return 'SYNTHESIZE';
+      }
+      synthesisArgs = JSON.parse(JSON.stringify(args));
+      return 'final answer';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'who owns the arcade?' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'claude-46-sonnet',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Identify the owner', ['Search for the owner name'], 'plan-claude-sanitize-1'),
+      buildToolCall('SearchTool', { userMessage: 'owner search' }, 'call-claude-sanitize-1'),
+    ],
+  };
+
+  await toolCallback(args, message, resolver);
+
+  t.deepEqual(
+    (synthesisArgs.tools || []).map(tool => tool.function?.name),
+    ['DelegateResearch'],
+    'Claude supervisor review should expose only DelegateResearch',
+  );
+
+  const hasStructuredSearchHistory = (synthesisArgs.chatHistory || []).some((entry) => (
+    (Array.isArray(entry.tool_calls) && entry.tool_calls.some((call) => call.function?.name === 'SearchTool'))
+    || (entry.role === 'tool' && entry.name === 'SearchTool')
+  ));
+  t.false(hasStructuredSearchHistory, 'Claude supervisor review should not retain raw SearchTool tool history');
+
+  const textualizedEvidence = (synthesisArgs.chatHistory || []).find((entry) => (
+    typeof entry.content === 'string'
+    && entry.content.includes('[Prior tool result: SearchTool]')
+  ));
+  t.truthy(textualizedEvidence, 'Claude supervisor review should retain tool evidence as plain text');
+
+  const reviewSystemTurn = (synthesisArgs.chatHistory || []).find((entry) => (
+    entry.role === 'system'
+    && typeof entry.content === 'string'
+    && entry.content.includes('Look at the tool results above against your todo list')
+  ));
+  t.truthy(reviewSystemTurn, 'Claude supervisor review should keep the review instruction in its own system turn');
+
+  const evidenceWithGluedInstruction = (synthesisArgs.chatHistory || []).find((entry) => (
+    typeof entry.content === 'string'
+    && entry.content.includes('[Prior tool result: SearchTool]')
+    && entry.content.includes('Look at the tool results above against your todo list')
+  ));
+  t.falsy(evidenceWithGluedInstruction, 'Claude supervisor review should not glue instructions onto textualized evidence');
+});
+
+test.serial('Supervisor review bare tool calls are converted into an implicit replan instead of looping', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let cheapCallCount = 0;
+  let synthesisCallCount = 0;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-synth-recover',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 4,
+        maxSearchCalls: 10,
+        maxFetchCalls: 10,
+        maxChildRuns: 2,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        cheapCallCount++;
+        if (cheapCallCount === 1) return 'SYNTHESIZE';
+        if (cheapCallCount === 2) {
+          return {
+            tool_calls: [buildToolCall('SearchTool', { userMessage: 'run the recovery search' }, 'executor-search-1')],
+          };
+        }
+        return 'SYNTHESIZE';
+      }
+
+      synthesisCallCount++;
+      if (synthesisCallCount === 1) {
+        return {
+          tool_calls: [
+            buildToolCall('SearchTool', { userMessage: 'implicit follow-up search' }, 'implicit-supervisor-search-1'),
+          ],
+        };
+      }
+      return 'Recovered final answer';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'recover synthesis replan' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Initial arcade plan', ['Identify the venue'], 'plan-recover-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Recovered final answer');
+  t.is(cheapCallCount, 2, 'Exactly one worker round should run before and after the implicit supervisor replan');
+  t.is(synthesisCallCount, 2, 'Synthesis should re-run once after the recovery tool round');
+  t.is(resolver.toolBudgetUsed, 10, 'Only the recovered executor search should consume budget');
+  t.not(resolver.entityRuntimeState.stopReason, 'stage_tool_block');
+  t.is(resolver.toolPlan.goal, 'recover synthesis replan');
+});
+
+test.serial('Runtime worker loop can execute SetBaseAvatar after supervisor delegates the final action', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let cheapCallCount = 0;
+  let synthesisCallCount = 0;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-avatar-followthrough',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 4,
+        maxSearchCalls: 10,
+        maxFetchCalls: 10,
+        maxChildRuns: 2,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        cheapCallCount++;
+        return {
+          tool_calls: [
+            buildToolCall('SetBaseAvatar', {
+              file: '/workspace/files/chats/abc123/jinx_headshot_closeup.webp',
+              userMessage: 'Setting the closeup avatar.',
+            }, 'worker-avatar-1'),
+          ],
+        };
+      }
+
+      synthesisCallCount++;
+      if (synthesisCallCount === 1) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Set the discovered closeup as the base avatar.',
+              ['Call SetBaseAvatar with /workspace/files/chats/abc123/jinx_headshot_closeup.webp.'],
+              'delegate-avatar-1',
+            ),
+          ],
+        };
+      }
+      return 'Avatar updated';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'set the renamed closeup avatar' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Find and set the renamed closeup avatar.', ['Find the correct image path'], 'plan-avatar-1'),
+      buildToolCall('SearchTool', { userMessage: 'find the renamed avatar file' }, 'search-avatar-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Avatar updated');
+  t.is(cheapCallCount, 1, 'Worker should execute the final avatar action directly');
+  t.is(synthesisCallCount, 2, 'Supervisor should review once, then finalize after the worker action');
+  t.is(resolver.toolBudgetUsed, 20, 'SearchTool and SetBaseAvatar should both consume budget');
+  t.not(resolver.entityRuntimeState.stopReason, 'stage_tool_block');
+  t.true(
+    args.chatHistory.some((entry) => entry.role === 'tool' && entry.name === 'SetBaseAvatar'),
+    'Chat history should include the SetBaseAvatar tool result',
+  );
 });
 
 // === TEST 14: buildStepInstruction helper ===
@@ -865,7 +1296,7 @@ test.serial('Malformed SetGoals-only passes gate, executor runs but no plan stor
 });
 
 // === TEST 16: replanCount accumulates on pathwayResolver ===
-test.serial('replanCount accumulates on pathwayResolver across calls', async (t) => {
+test.serial('replanCount accumulates on pathwayResolver across supervisor delegations', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -877,11 +1308,11 @@ test.serial('replanCount accumulates on pathwayResolver across calls', async (t)
     toolLoopModel: 'test-cheap-model',
     promptAndParse: async (args) => {
       if (args.modelOverride === 'test-cheap-model') return 'SYNTHESIZE';
-      // First synthesis: replan. Second: text-only (done).
+      // First supervisor review: delegate. Second: text-only (done).
       synthesisCallCount++;
       if (synthesisCallCount === 1) {
         return {
-          tool_calls: [buildSetGoalsCall('Replan goal', ['Step 1'], 'replan-shared-1')],
+          tool_calls: [buildDelegateResearchCall('Replan goal', ['Step 1'], 'delegate-shared-1')],
         };
       }
       return 'Final answer';
