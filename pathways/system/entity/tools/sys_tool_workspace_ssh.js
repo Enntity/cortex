@@ -408,6 +408,10 @@ IMPORTANT: bg, poll, jobs, and reset are built-in commands — they must be the 
                         type: 'string',
                         description: 'Brief display message',
                     },
+                    icon: {
+                        type: 'string',
+                        description: 'Emoji icon for this action (e.g. "🐍" for Python, "📦" for package install). Defaults to 💻.',
+                    },
                     timeoutSeconds: {
                         type: 'number',
                         description: 'Optional timeout in seconds for long-running commands. Defaults to 300 (5 min).',

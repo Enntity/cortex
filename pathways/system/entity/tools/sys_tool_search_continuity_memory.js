@@ -18,6 +18,8 @@ export default {
         memoryTypes: { type: 'array', items: { type: 'string' } },  // Filter by types: ANCHOR, ARTIFACT, IDENTITY, etc.
         limit: { type: 'integer', default: 5 },  // Max results
         expandGraph: { type: 'boolean', default: false },  // Whether to expand to related memories
+        userMessage: ``,     // Optional display message for the user
+        icon: ``,            // Optional emoji icon override for the UI
         contextId: ``,       // User/context identifier
         entityId: ``,        // Entity UUID (required for memory operations)
     },
@@ -55,6 +57,14 @@ IMPORTANT: Your context window contains only a subset of your memories. Never cl
                     expandGraph: {
                         type: 'boolean',
                         description: 'If true, also fetch memories related to the search results (associative recall).'
+                    },
+                    userMessage: {
+                        type: 'string',
+                        description: 'Optional display message shown while memory search runs.'
+                    },
+                    icon: {
+                        type: 'string',
+                        description: 'Optional emoji icon override for this action.'
                     }
                 },
                 required: ['query']
@@ -144,4 +154,3 @@ IMPORTANT: Your context window contains only a subset of your memories. Never cl
         }
     }
 };
-

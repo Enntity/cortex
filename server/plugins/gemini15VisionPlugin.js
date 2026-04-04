@@ -15,6 +15,7 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
         this.contentBuffer = '';
         this.hadToolCalls = false;
         this._currentResponseId = null;
+        this._allowedFunctionNames = new Set();
     }
 
     // Override the convertMessagesToGemini method to handle multimodal vision messages
@@ -323,6 +324,13 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
             baseParameters.toolConfig = { functionCallingConfig: { mode: 'NONE' } };
         }
 
+        this._allowedFunctionNames = new Set(
+            (baseParameters.tools || [])
+                .flatMap((toolGroup) => Array.isArray(toolGroup?.functionDeclarations) ? toolGroup.functionDeclarations : [])
+                .map((declaration) => String(declaration?.name || '').trim().toLowerCase())
+                .filter(Boolean),
+        );
+
         return baseParameters;
     }
 
@@ -470,12 +478,31 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
             }]
         });
 
+        const terminateUnexpectedFunctionCall = (functionName = '') => {
+            const normalizedName = String(functionName || '').trim();
+            logger.warn(`Gemini emitted unexpected function call "${normalizedName || 'unknown'}" for request ${this.requestId}`);
+            requestProgress.data = JSON.stringify(createChunk({
+                content: '\n\nI hit an internal tool-calling error and stopped this run. Please try again.'
+            }, 'stop'));
+            requestProgress.progress = 1;
+            requestProgress.toolCallbackInvoked = false;
+            this.hadToolCalls = false;
+            this.toolCallsBuffer = [];
+            this.contentBuffer = '';
+            return requestProgress;
+        };
+
         // Handle content chunks with tool calls
         if (eventData.candidates?.[0]?.content?.parts) {
             const parts = eventData.candidates[0].content.parts;
             
             for (const part of parts) {
                 if (part.functionCall) {
+                    const functionName = String(part.functionCall.name || '').trim();
+                    const normalizedFunctionName = functionName.toLowerCase();
+                    if (!normalizedFunctionName || !this._allowedFunctionNames.has(normalizedFunctionName)) {
+                        return terminateUnexpectedFunctionCall(functionName);
+                    }
                     // Mark that we have tool calls
                     this.hadToolCalls = true;
                     

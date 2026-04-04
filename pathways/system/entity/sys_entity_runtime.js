@@ -2,7 +2,7 @@ import logger from '../../../lib/logger.js';
 import { getEntityRuntime, ENTITY_RUNTIME_MODE } from '../../../lib/entityRuntime/index.js';
 import { logEvent } from '../../../lib/requestLogger.js';
 import { loadEntityConfig } from './tools/shared/sys_entity_tools.js';
-import { executeEntityAgentCore, toolCallbackCore } from './sys_entity_executor.js';
+import { executeEntityAgentCore, prepareEntityLatencyCore, toolCallbackCore } from './sys_entity_executor.js';
 
 function extractGoal(args = {}) {
     if (typeof args.text === 'string' && args.text.trim()) return args.text.trim();
@@ -63,6 +63,18 @@ export default {
     timeout: 600,
 
     executePathway: async ({ args, resolver, runAllPrompts }) => {
+        if (String(args.requestedOutput || '').trim().toLowerCase() === 'latency_prepare') {
+            const preparation = await prepareEntityLatencyCore({
+                args: {
+                    ...args,
+                    runtimeMode: ENTITY_RUNTIME_MODE,
+                    runtimeOrigin: args.invocationType || 'chat',
+                },
+                resolver,
+            });
+            return JSON.stringify(preparation);
+        }
+
         const runtime = getEntityRuntime();
         const entityConfig = await loadEntityConfig(args.entityId);
         const runtimeOrigin = args.invocationType || 'chat';

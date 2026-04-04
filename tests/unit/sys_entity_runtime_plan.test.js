@@ -6,7 +6,16 @@ import {
   insertSystemMessage,
   extractToolCalls,
   buildStepInstruction,
+  extractUserMessage,
+  buildDefaultToolUserMessage,
+  buildInitialPlanningTools,
+  buildDelegateOnlyPlanningHistory,
+  buildWorkerStartingHistory,
+  buildRuntimeEvidenceLedgerText,
+  shouldBreakForInsufficientGrounding,
+  shouldForceInitialResearchDelegation,
   passesGate,
+  adaptContinuityContextForPromptContext,
 } from '../../pathways/system/entity/sys_entity_executor.js';
 import { config } from '../../config.js';
 import { getToolsForEntity } from '../../pathways/system/entity/tools/shared/sys_entity_tools.js';
@@ -59,6 +68,15 @@ const buildDelegateResearchCall = (goal = 'Test goal', tasks = ['Task 1', 'Task 
   },
 });
 
+const buildDelegateTaskCall = (goal = 'Test goal', task = 'Task 1', id = 'delegate-task-1') => ({
+  id,
+  type: 'function',
+  function: {
+    name: 'DelegateTask',
+    arguments: JSON.stringify({ goal, task }),
+  },
+});
+
 const buildResolver = (overrides = {}) => ({
   errors: [],
   requestId: 'req-test',
@@ -71,6 +89,7 @@ const buildResolver = (overrides = {}) => ({
       truncateMessagesToTargetLength: (messages) => messages,
     },
   },
+  ensureMemoryLoaded: async () => ({ enabled: false, attempted: false, loaded: false, skipped: true }),
   promptAndParse: async () => 'final-response',
   ...overrides,
 });
@@ -434,7 +453,7 @@ test.serial('Generic SYNTHESIZE hint used when no plan exists', async (t) => {
   );
   t.truthy(systemMsg, 'System message should contain SYNTHESIZE');
   t.true(
-    systemMsg.content.includes('If you need more information'),
+    systemMsg.content.includes('Use tools only when they advance the task'),
     'Should use generic hint when no plan'
   );
   t.false(
@@ -805,8 +824,8 @@ test.serial('Streamed DelegateResearch with the same plan during synthesis final
   t.deepEqual(finalizeArgs.tools || [], [], 'Finalization should run with no tools exposed');
 });
 
-// === TEST 13: Runtime supervisor review stays DelegateResearch-only ===
-test.serial('Runtime supervisor review model receives only DelegateResearch', async (t) => {
+// === TEST 13: Runtime supervisor review keeps delegation-only tools ===
+test.serial('Runtime supervisor review keeps delegation-only tools', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -844,7 +863,8 @@ test.serial('Runtime supervisor review model receives only DelegateResearch', as
 
   t.truthy(synthesisToolNames, 'Should have captured supervisor review tools');
   t.true(synthesisToolNames.includes('DelegateResearch'), 'Supervisor review should have DelegateResearch tool');
-  t.deepEqual(synthesisToolNames, ['DelegateResearch'], 'Runtime supervisor review should stay DelegateResearch-only');
+  t.true(synthesisToolNames.includes('DelegateTask'), 'Supervisor review should have DelegateTask tool');
+  t.deepEqual(synthesisToolNames, ['DelegateResearch', 'DelegateTask'], 'Runtime supervisor review should only keep delegation tools');
 });
 
 test.serial('Gemini supervisor review sanitizes prior tool history into text evidence', async (t) => {
@@ -888,8 +908,8 @@ test.serial('Gemini supervisor review sanitizes prior tool history into text evi
 
   t.deepEqual(
     (synthesisArgs.tools || []).map(tool => tool.function?.name),
-    ['DelegateResearch'],
-    'Gemini supervisor review should expose only DelegateResearch',
+    ['DelegateResearch', 'DelegateTask'],
+    'Gemini supervisor review should keep only delegation tools',
   );
 
   const hasStructuredSearchHistory = (synthesisArgs.chatHistory || []).some((entry) => (
@@ -898,11 +918,12 @@ test.serial('Gemini supervisor review sanitizes prior tool history into text evi
   ));
   t.false(hasStructuredSearchHistory, 'Gemini supervisor review should not retain raw SearchTool tool history');
 
-  const textualizedEvidence = (synthesisArgs.chatHistory || []).find((entry) => (
+  const evidenceLedger = (synthesisArgs.chatHistory || []).find((entry) => (
     typeof entry.content === 'string'
-    && entry.content.includes('[Prior tool result: SearchTool]')
+    && entry.content.includes('Runtime evidence ledger:')
+    && entry.content.includes('SearchTool')
   ));
-  t.truthy(textualizedEvidence, 'Gemini supervisor review should retain tool evidence as plain text');
+  t.truthy(evidenceLedger, 'Gemini supervisor review should retain tool evidence in the runtime evidence ledger');
 
   const originalHistoryTextLeak = (args.chatHistory || []).find((entry) => (
     typeof entry.content === 'string'
@@ -913,14 +934,14 @@ test.serial('Gemini supervisor review sanitizes prior tool history into text evi
   const reviewMessage = (synthesisArgs.chatHistory || []).find((entry) => (
     entry.role === 'user'
     && typeof entry.content === 'string'
-    && entry.content.includes('Look at the tool results above against your todo list')
+    && entry.content.includes('Look at the evidence above against the active request')
   ));
   t.truthy(reviewMessage, 'Gemini supervisor review should keep the review instruction in its own injected turn');
 
   const evidenceWithGluedInstruction = (synthesisArgs.chatHistory || []).find((entry) => (
     typeof entry.content === 'string'
     && entry.content.includes('[Prior tool result: SearchTool]')
-    && entry.content.includes('Look at the tool results above against your todo list')
+    && entry.content.includes('Look at the evidence above against the active request')
   ));
   t.falsy(evidenceWithGluedInstruction, 'Gemini supervisor review should not glue instructions onto textualized evidence');
 });
@@ -967,14 +988,13 @@ test.serial('Runtime supervisor review message forbids narrated instruction revi
   const reviewMessage = synthesisArgs.chatHistory.find((entry) => (
     entry.role === 'user'
     && typeof entry.content === 'string'
-    && entry.content.includes('Look at the tool results above against your todo list')
+    && entry.content.includes('Look at the evidence above against the active request')
   ));
 
   t.truthy(reviewMessage, 'Should include a synthesis review message');
-  t.true(reviewMessage.content.includes('If they are sufficient, answer the user now in your normal voice using the strongest grounded signal.'));
-  t.true(reviewMessage.content.includes('If they are not sufficient, call DelegateResearch only with the missing outcomes.'));
-  t.true(reviewMessage.content.includes('Do not call search/fetch or any other tools directly in this step.'));
-  t.true(reviewMessage.content.includes('The worker loop will execute the next round.'));
+  t.true(reviewMessage.content.includes('If you can answer now, answer in your normal voice'));
+  t.true(reviewMessage.content.includes('If one bounded follow-up task remains, call DelegateTask'));
+  t.true(reviewMessage.content.includes('If more information gathering is needed in parallel, call DelegateResearch'));
 });
 
 test.serial('Claude supervisor review sanitizes prior tool history into text evidence', async (t) => {
@@ -1018,8 +1038,8 @@ test.serial('Claude supervisor review sanitizes prior tool history into text evi
 
   t.deepEqual(
     (synthesisArgs.tools || []).map(tool => tool.function?.name),
-    ['DelegateResearch'],
-    'Claude supervisor review should expose only DelegateResearch',
+    ['DelegateResearch', 'DelegateTask'],
+    'Claude supervisor review should keep only delegation tools',
   );
 
   const hasStructuredSearchHistory = (synthesisArgs.chatHistory || []).some((entry) => (
@@ -1028,28 +1048,29 @@ test.serial('Claude supervisor review sanitizes prior tool history into text evi
   ));
   t.false(hasStructuredSearchHistory, 'Claude supervisor review should not retain raw SearchTool tool history');
 
-  const textualizedEvidence = (synthesisArgs.chatHistory || []).find((entry) => (
+  const evidenceLedger = (synthesisArgs.chatHistory || []).find((entry) => (
     typeof entry.content === 'string'
-    && entry.content.includes('[Prior tool result: SearchTool]')
+    && entry.content.includes('Runtime evidence ledger:')
+    && entry.content.includes('SearchTool')
   ));
-  t.truthy(textualizedEvidence, 'Claude supervisor review should retain tool evidence as plain text');
+  t.truthy(evidenceLedger, 'Claude supervisor review should retain tool evidence in the runtime evidence ledger');
 
   const reviewSystemTurn = (synthesisArgs.chatHistory || []).find((entry) => (
     entry.role === 'system'
     && typeof entry.content === 'string'
-    && entry.content.includes('Look at the tool results above against your todo list')
+    && entry.content.includes('Look at the evidence above against the active request')
   ));
   t.truthy(reviewSystemTurn, 'Claude supervisor review should keep the review instruction in its own system turn');
 
   const evidenceWithGluedInstruction = (synthesisArgs.chatHistory || []).find((entry) => (
     typeof entry.content === 'string'
     && entry.content.includes('[Prior tool result: SearchTool]')
-    && entry.content.includes('Look at the tool results above against your todo list')
+    && entry.content.includes('Look at the evidence above against the active request')
   ));
   t.falsy(evidenceWithGluedInstruction, 'Claude supervisor review should not glue instructions onto textualized evidence');
 });
 
-test.serial('Supervisor review bare tool calls are converted into an implicit replan instead of looping', async (t) => {
+test.serial('Supervisor review can delegate one serial task that the worker executes end-to-end', async (t) => {
   const originals = setupConfig();
   t.teardown(() => restoreConfig(originals));
 
@@ -1081,8 +1102,7 @@ test.serial('Supervisor review bare tool calls are converted into an implicit re
     promptAndParse: async (args) => {
       if (args.modelOverride === 'test-cheap-model') {
         cheapCallCount++;
-        if (cheapCallCount === 1) return 'SYNTHESIZE';
-        if (cheapCallCount === 2) {
+        if (cheapCallCount === 1) {
           return {
             tool_calls: [buildToolCall('SearchTool', { userMessage: 'run the recovery search' }, 'executor-search-1')],
           };
@@ -1094,7 +1114,7 @@ test.serial('Supervisor review bare tool calls are converted into an implicit re
       if (synthesisCallCount === 1) {
         return {
           tool_calls: [
-            buildToolCall('SearchTool', { userMessage: 'implicit follow-up search' }, 'implicit-supervisor-search-1'),
+            buildDelegateTaskCall('recover synthesis replan', 'Run the recovery search', 'delegate-task-recover-1'),
           ],
         };
       }
@@ -1121,7 +1141,7 @@ test.serial('Supervisor review bare tool calls are converted into an implicit re
   const result = await toolCallback(args, message, resolver);
 
   t.is(result, 'Recovered final answer');
-  t.is(cheapCallCount, 2, 'Exactly one worker round should run before and after the implicit supervisor replan');
+  t.is(cheapCallCount, 2, 'Delegated serial work should use one worker tool round and one worker completion round');
   t.is(synthesisCallCount, 2, 'Synthesis should re-run once after the recovery tool round');
   t.is(resolver.toolBudgetUsed, 10, 'Only the recovered executor search should consume budget');
   t.not(resolver.entityRuntimeState.stopReason, 'stage_tool_block');
@@ -1160,6 +1180,9 @@ test.serial('Runtime worker loop can execute SetBaseAvatar after supervisor dele
     promptAndParse: async (args) => {
       if (args.modelOverride === 'test-cheap-model') {
         cheapCallCount++;
+        if (args.chatHistory?.some((entry) => entry.role === 'tool' && entry.name === 'SetBaseAvatar')) {
+          return 'SYNTHESIZE';
+        }
         return {
           tool_calls: [
             buildToolCall('SetBaseAvatar', {
@@ -1206,7 +1229,7 @@ test.serial('Runtime worker loop can execute SetBaseAvatar after supervisor dele
   const result = await toolCallback(args, message, resolver);
 
   t.is(result, 'Avatar updated');
-  t.is(cheapCallCount, 1, 'Worker should execute the final avatar action directly');
+  t.is(cheapCallCount, 2, 'Worker should execute the final action and then yield cleanly');
   t.is(synthesisCallCount, 2, 'Supervisor should review once, then finalize after the worker action');
   t.is(resolver.toolBudgetUsed, 20, 'SearchTool and SetBaseAvatar should both consume budget');
   t.not(resolver.entityRuntimeState.stopReason, 'stage_tool_block');
@@ -1214,6 +1237,1043 @@ test.serial('Runtime worker loop can execute SetBaseAvatar after supervisor dele
     args.chatHistory.some((entry) => entry.role === 'tool' && entry.name === 'SetBaseAvatar'),
     'Chat history should include the SetBaseAvatar tool result',
   );
+});
+
+test.serial('Runtime delegated research fans out worker tasks into parallel child worker calls', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let synthesisCallCount = 0;
+  const workerTasks = [];
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-fanout-workers',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 6,
+        maxSearchCalls: 10,
+        maxFetchCalls: 10,
+        maxChildRuns: 3,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        const task = String(args.workerTaskBrief || '');
+        if (args.chatHistory?.filter((entry) => entry.role === 'tool' && entry.name === 'SearchTool').length > 1) {
+          return 'SYNTHESIZE';
+        }
+        workerTasks.push(task);
+        if (task.includes('friends')) {
+          return {
+            tool_calls: [
+              buildToolCall('SearchTool', { userMessage: 'search the friend thread' }, 'worker-friends-1'),
+            ],
+          };
+        }
+        if (task.includes('family')) {
+          return {
+            tool_calls: [
+              buildToolCall('SearchTool', { userMessage: 'search the family thread' }, 'worker-family-1'),
+            ],
+          };
+        }
+        return 'SYNTHESIZE';
+      }
+
+      synthesisCallCount++;
+      if (synthesisCallCount === 1) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Identify the user’s orbit from several angles.',
+              ['Search for friends and crew names', 'Search for family and relationship references'],
+              'delegate-fanout-1',
+            ),
+          ],
+        };
+      }
+      return 'Fanout final answer';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'Who is in my orbit?' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Find the people in the user orbit.', ['Find initial evidence'], 'plan-fanout-1'),
+      buildToolCall('SearchTool', { userMessage: 'run the first lookup' }, 'search-fanout-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Fanout final answer');
+  t.deepEqual(
+    [...new Set(workerTasks)].sort(),
+    ['Search for family and relationship references', 'Search for friends and crew names'].sort(),
+    'Delegated tasks should be dispatched as separate child worker prompts',
+  );
+  t.is(resolver.entityRuntimeState.childRuns, 2, 'Fanout should consume child worker budget');
+  t.is(
+    args.chatHistory.filter((entry) => entry.role === 'tool' && entry.name === 'SearchTool').length,
+    3,
+    'Merged chat history should include the initial tool result plus both fanout worker results',
+  );
+  t.is(resolver.toolBudgetUsed, 30, 'Initial search plus two fanout searches should all consume tool budget');
+});
+
+test.serial('Delegated worker can autonomously run multiple tool rounds for its assigned task', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let workerCallCount = 0;
+  let synthesisCallCount = 0;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-autonomous-worker',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 4,
+        maxSearchCalls: 10,
+        maxFetchCalls: 10,
+        maxChildRuns: 2,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        workerCallCount++;
+        const hasSearchResult = args.chatHistory.some((entry) => entry.role === 'tool' && entry.name === 'SearchTool');
+        const hasAnalyzeResult = args.chatHistory.some((entry) => entry.role === 'tool' && entry.name === 'AnalyzeTool');
+        if (!hasSearchResult) {
+          return {
+            tool_calls: [
+              buildToolCall('SearchTool', { userMessage: 'look for names' }, 'worker-auto-search-1'),
+            ],
+          };
+        }
+        if (!hasAnalyzeResult) {
+          return {
+            tool_calls: [
+              buildToolCall('AnalyzeTool', { userMessage: 'analyze the names' }, 'worker-auto-analyze-1'),
+            ],
+          };
+        }
+        return 'SYNTHESIZE';
+      }
+
+      synthesisCallCount++;
+      if (synthesisCallCount === 1) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Resolve the assigned orbit slice.',
+              ['Find names and then analyze what they mean'],
+              'delegate-auto-worker-1',
+            ),
+          ],
+        };
+      }
+      return 'Autonomous worker final answer';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'Who is in my orbit?' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Find the orbit details.', ['Gather enough evidence to answer'], 'plan-auto-worker-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Autonomous worker final answer');
+  t.true(workerCallCount >= 3, 'Worker should think, act, then think again before yielding');
+  t.true(
+    args.chatHistory.some((entry) => entry.role === 'tool' && entry.name === 'SearchTool'),
+    'Worker should execute the first research tool itself',
+  );
+  t.true(
+    args.chatHistory.some((entry) => entry.role === 'tool' && entry.name === 'AnalyzeTool'),
+    'Worker should execute a follow-up tool in a later autonomous round',
+  );
+});
+
+test.serial('Supervisor no_executable_work short-circuits finalize when a usable draft already exists', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let cheapCallCount = 0;
+  let synthesisCallCount = 0;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-short-circuit-finalize',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 4,
+        maxSearchCalls: 10,
+        maxFetchCalls: 10,
+        maxChildRuns: 2,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        cheapCallCount++;
+        return 'SYNTHESIZE';
+      }
+
+      synthesisCallCount++;
+      if (synthesisCallCount === 1) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Try another round',
+              ['Find more evidence'],
+              'delegate-no-work-1',
+            ),
+          ],
+        };
+      }
+      return {
+        tool_calls: [
+          buildDelegateResearchCall(
+            'Try a different round',
+            ['Check a different angle'],
+            'delegate-no-work-1b',
+          ),
+        ],
+      };
+    },
+  });
+
+  const args = {
+    chatHistory: [
+      { role: 'user', content: 'what happened?' },
+      { role: 'assistant', content: 'Here is the best grounded answer so far.' },
+    ],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Explain what happened.', ['Find enough evidence to answer'], 'plan-no-work-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Here is the best grounded answer so far.');
+  t.is(cheapCallCount, 1);
+  t.is(synthesisCallCount, 2, 'No extra synthesis_finalize pass should run when a usable draft exists');
+});
+
+test.serial('Supervisor no_executable_work does one guarded finalize when no usable draft exists', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let cheapCallCount = 0;
+  let synthesisCallCount = 0;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-guarded-finalize',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 4,
+        maxSearchCalls: 10,
+        maxFetchCalls: 10,
+        maxChildRuns: 2,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        cheapCallCount++;
+        return 'SYNTHESIZE';
+      }
+
+      synthesisCallCount++;
+      if (synthesisCallCount === 1) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Try another round',
+              ['Find more evidence'],
+              'delegate-no-work-2',
+            ),
+          ],
+        };
+      }
+      if (synthesisCallCount === 2) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Try a different round',
+              ['Check a different angle'],
+              'delegate-no-work-2b',
+            ),
+          ],
+        };
+      }
+      return 'Guarded final answer';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'what happened?' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Explain what happened.', ['Find enough evidence to answer'], 'plan-no-work-2'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Guarded final answer');
+  t.is(cheapCallCount, 1);
+  t.is(synthesisCallCount, 3, 'Exactly one guarded finalize pass should run when no draft exists');
+});
+
+test.serial('Supervisor no_executable_work does not reuse the previous turn assistant message as a draft', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let cheapCallCount = 0;
+  let synthesisCallCount = 0;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-no-stale-draft-reuse',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 4,
+        maxSearchCalls: 10,
+        maxFetchCalls: 10,
+        maxChildRuns: 2,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        cheapCallCount++;
+        return 'SYNTHESIZE';
+      }
+
+      synthesisCallCount++;
+      if (synthesisCallCount === 1) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Try another round',
+              ['Find more evidence'],
+              'delegate-stale-draft-1',
+            ),
+          ],
+        };
+      }
+      if (synthesisCallCount === 2) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Try a different round',
+              ['Check a different angle'],
+              'delegate-stale-draft-2',
+            ),
+          ],
+        };
+      }
+      return 'Fresh guarded finalize answer after the current user turn.';
+    },
+  });
+
+  const args = {
+    chatHistory: [
+      { role: 'user', content: 'previous question' },
+      { role: 'assistant', content: 'Previous turn answer that must not be reused.' },
+      { role: 'user', content: 'current question' },
+    ],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Answer the current question.', ['Find enough evidence to answer'], 'plan-stale-draft-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Fresh guarded finalize answer after the current user turn.');
+  t.is(cheapCallCount, 1);
+  t.is(synthesisCallCount, 3, 'Should do a guarded finalize instead of reusing the previous turn answer');
+});
+
+test('extractUserMessage unwraps structured text payloads before routing', (t) => {
+  t.is(
+    extractUserMessage({
+      chatHistory: [{ role: 'user', content: '{"type":"text","text":"What do you know about me?"}' }],
+    }),
+    'What do you know about me?',
+  );
+
+  t.is(
+    extractUserMessage({
+      chatHistory: [{ role: 'user', content: [{ type: 'text', text: 'Who is in my orbit?' }] }],
+    }),
+    'Who is in my orbit?',
+  );
+
+  t.is(
+    extractUserMessage({
+      chatHistory: [
+        { role: 'user', content: '{"success":true,"message":"Found 5 relevant memories."}' },
+        { role: 'user', content: 'Actual current question' },
+      ],
+    }),
+    'Actual current question',
+  );
+});
+
+test('buildDefaultToolUserMessage derives SearchMemory status copy from the query', (t) => {
+  t.is(
+    buildDefaultToolUserMessage('SearchMemory', {
+      query: 'Who are the specific people in Jason\'s orbit?',
+    }),
+    'Checking memory for Who are the specific people in Jason\'s orbit.',
+  );
+
+  t.is(
+    buildDefaultToolUserMessage('SearchMemory', {}),
+    'Checking memory.',
+  );
+});
+
+test('buildInitialPlanningTools keeps one runtime code path for direct work and delegated research', (t) => {
+  const planningTools = [
+    { function: { name: 'SearchMemory' } },
+    { function: { name: 'SearchInternet' } },
+  ];
+
+  t.deepEqual(
+    buildInitialPlanningTools({
+      planningToolsOpenAiFormat: planningTools,
+      entityToolsOpenAiFormat: planningTools,
+      runtimeEnabled: true,
+      delegateOnly: true,
+    }).map((tool) => tool.function.name),
+    ['DelegateResearch'],
+  );
+
+  t.deepEqual(
+    buildInitialPlanningTools({
+      planningToolsOpenAiFormat: planningTools,
+      entityToolsOpenAiFormat: planningTools,
+      runtimeEnabled: true,
+    }).map((tool) => tool.function.name),
+    ['DelegateResearch', 'SearchMemory', 'SearchInternet'],
+  );
+});
+
+test('buildDelegateOnlyPlanningHistory narrows the delegator context to the current ask', (t) => {
+  const resolver = buildResolver();
+  const history = buildDelegateOnlyPlanningHistory([
+    { role: 'assistant', content: 'Old answer' },
+    { role: 'user', content: 'Old question' },
+    { role: 'assistant', content: '', tool_calls: [buildToolCall('SearchTool', { userMessage: 'search' }, 'call-old')] },
+    { role: 'tool', tool_call_id: 'call-old', name: 'SearchTool', content: 'Old tool output' },
+    { role: 'user', content: 'Who is in my orbit?' },
+  ], resolver, {
+    initialToolNames: ['SearchMemory', 'WorkspaceSSH'],
+  });
+
+  t.is(history.length, 2);
+  t.is(history[0].content, 'Who is in my orbit?');
+  t.true(history[1].content.includes('Delegate the research only.'));
+  t.true(history[1].content.includes('Prefer these source families first: memory.'));
+});
+
+test('buildWorkerStartingHistory keeps system instructions and trims conversational history', (t) => {
+  const history = buildWorkerStartingHistory([
+    { role: 'user', content: 'Old question' },
+    { role: 'assistant', content: 'Old answer' },
+    { role: 'user', content: '[system message: req-test] Follow the delegated task list.' },
+    { role: 'assistant', content: '', tool_calls: [buildToolCall('SearchTool', { userMessage: 'search' }, 'call-old')] },
+    { role: 'tool', tool_call_id: 'call-old', name: 'SearchTool', content: 'Old tool output' },
+    { role: 'assistant', content: 'Recent answer framing' },
+    { role: 'user', content: 'Who is in my orbit?' },
+  ]);
+
+  t.deepEqual(
+    history.map((message) => message.content || message.role),
+    [
+      '[system message: req-test] Follow the delegated task list.',
+      'Old question',
+      'Old answer',
+      'Recent answer framing',
+      'Who is in my orbit?',
+    ],
+  );
+});
+
+test('buildRuntimeEvidenceLedgerText preserves full evidence bodies', (t) => {
+  const text = buildRuntimeEvidenceLedgerText([
+    {
+      toolName: 'SearchMemory',
+      content: 'Found Hobbs and Bahrain references.\nAmanda appears in the recovered artifact.',
+      metadata: { toolArgs: { query: 'Who is in Jason\'s orbit?' } },
+    },
+    {
+      toolName: 'WorkspaceSSH',
+      content: 'No extra names in workspace files.\nChecked /workspace/files/profile.txt.',
+      metadata: { toolArgs: { command: 'grep -r Jason /workspace/files/' } },
+    },
+  ]);
+
+  t.true(text.startsWith('Runtime evidence ledger:\n'));
+  t.true(text.includes("- SearchMemory (Who is in Jason's orbit?)"));
+  t.true(text.includes('Amanda appears in the recovered artifact.'));
+  t.true(text.includes('- WorkspaceSSH (grep -r Jason /workspace/files/)'));
+  t.true(text.includes('Checked /workspace/files/profile.txt.'));
+});
+
+test('shouldBreakForInsufficientGrounding trips after repeated thin-novelty replans', (t) => {
+  t.true(
+    shouldBreakForInsufficientGrounding({
+      replanCount: 3,
+      toolBudgetUsed: 40,
+      entityRuntimeState: {
+        stopReason: null,
+        evidenceItems: 5,
+        childRuns: 3,
+        noveltyHistory: [1, 1, 1],
+        authorityEnvelope: {
+          noveltyWindow: 2,
+          maxFanoutWidth: 4,
+        },
+      },
+    }),
+  );
+
+  t.true(
+    shouldBreakForInsufficientGrounding({
+      replanCount: 1,
+      toolBudgetUsed: 12,
+      entityRuntimeState: {
+        stopReason: null,
+        evidenceItems: 2,
+        childRuns: 2,
+        idleWorkerRounds: 1,
+        noveltyHistory: [1, 0],
+        authorityEnvelope: {
+          noveltyWindow: 2,
+          maxFanoutWidth: 4,
+        },
+      },
+    }),
+  );
+
+  t.false(
+    shouldBreakForInsufficientGrounding({
+      replanCount: 1,
+      toolBudgetUsed: 10,
+      entityRuntimeState: {
+        stopReason: null,
+        evidenceItems: 2,
+        childRuns: 1,
+        idleWorkerRounds: 0,
+        noveltyHistory: [3, 2],
+        authorityEnvelope: {
+          noveltyWindow: 2,
+          maxFanoutWidth: 4,
+        },
+      },
+    }),
+  );
+});
+
+test('shouldForceInitialResearchDelegation treats research-shaped plan routes as delegate-first research', (t) => {
+  t.true(
+    shouldForceInitialResearchDelegation({
+      mode: 'plan',
+      toolCategory: 'memory',
+      reason: 'retrieve_user_context',
+      initialToolNames: ['SearchMemory', 'StoreContinuityMemory'],
+    }, {
+      runtimeMode: 'entity-runtime',
+      toolLoopModel: 'test-cheap-model',
+      runtimeConversationMode: 'agentic',
+    }),
+  );
+
+  t.true(
+    shouldForceInitialResearchDelegation({
+      mode: 'plan',
+      toolCategory: 'web',
+      reason: 'some_new_reason',
+      initialToolNames: ['SearchInternet', 'FetchWebPageContentJina'],
+    }, {
+      runtimeMode: 'entity-runtime',
+      toolLoopModel: 'test-cheap-model',
+      runtimeConversationMode: 'agentic',
+    }),
+  );
+
+  t.false(
+    shouldForceInitialResearchDelegation({
+      mode: 'plan',
+      toolCategory: 'workspace',
+      reason: 'workspace_task',
+      initialToolNames: ['WorkspaceSSH'],
+    }, {
+      runtimeMode: 'entity-runtime',
+      toolLoopModel: 'test-cheap-model',
+      runtimeConversationMode: 'agentic',
+    }),
+  );
+});
+
+test('adaptContinuityContextForPromptContext removes named memory-tool guidance from delegate-only prompts', (t) => {
+  const context = `## Memory Boundaries
+The memories above are your current context window. When referencing past interactions, ONLY reference what is explicitly stated above. If a user asks about something not covered here, use SearchMemory to check before claiming to remember or not remember. Never fabricate, infer, or extrapolate memories beyond what is shown. If you're unsure, say so — or search.`;
+
+  const delegateOnly = adaptContinuityContextForPromptContext(context, { runtimeInitialDelegateOnly: true });
+  t.false(delegateOnly.includes('use SearchMemory to check before claiming to remember or not remember.'));
+  t.true(delegateOnly.includes('treat it as missing evidence instead of claiming to remember it.'));
+
+  const normal = adaptContinuityContextForPromptContext(context, {});
+  t.true(normal.includes('use SearchMemory to check before claiming to remember or not remember.'));
+});
+
+test('adaptContinuityContextForPromptContext strips named memory-tool guidance across wrapped spacing', (t) => {
+  const context = `## Memory Boundaries
+The memories above are your current context window.
+If a user asks about something not covered here,
+use SearchMemory to check before claiming to remember or not remember.
+Never fabricate.`;
+
+  const delegateOnly = adaptContinuityContextForPromptContext(context, { runtimeInitialDelegateOnly: true });
+
+  t.false(delegateOnly.includes('use SearchMemory to check before claiming to remember or not remember.'));
+  t.true(delegateOnly.includes('treat it as missing evidence instead of claiming to remember it.'));
+});
+
+test.serial('Runtime ignores tool calls that were not exposed on the active model step', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let promptCalls = 0;
+  const resolver = buildResolver({
+    _activeToolNames: new Set(['delegateresearch']),
+    toolLoopModel: 'test-cheap-model',
+    promptAndParse: async () => {
+      promptCalls++;
+      return 'SYNTHESIZE';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'test undeclared tool guard' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildToolCall('SearchTool', { userMessage: 'search' }, 'undeclared-call-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(resolver.toolBudgetUsed, 0);
+  t.is(promptCalls, 2);
+  t.is(result, 'SYNTHESIZE');
+});
+
+test.serial('Runtime delegated research respects maxFanoutWidth and can continue the same plan across waves', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let synthesisCallCount = 0;
+  const workerCalls = [];
+  const executedWorkerTasks = new Set();
+  const tasks = [
+    'Find friend names',
+    'Find family names',
+    'Find work details',
+    'Find hobby details',
+    'Find location details',
+  ];
+
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-fanout-width',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 6,
+        maxSearchCalls: 12,
+        maxFetchCalls: 10,
+        maxChildRuns: 8,
+        maxFanoutWidth: 3,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        const task = String(args.workerTaskBrief || '');
+        if (executedWorkerTasks.has(task)) {
+          return 'SYNTHESIZE';
+        }
+        executedWorkerTasks.add(task);
+        workerCalls.push({
+          task,
+          taskCount: Number(args.workerTaskCount || 0),
+        });
+        return {
+          tool_calls: [
+            buildToolCall('SearchTool', { userMessage: task || 'run worker lookup' }, `worker-width-${workerCalls.length}`),
+          ],
+        };
+      }
+
+      synthesisCallCount++;
+      if (synthesisCallCount <= 2) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Map the orbit from multiple angles.',
+              tasks,
+              `delegate-width-${synthesisCallCount}`,
+            ),
+          ],
+        };
+      }
+      return 'Width-aware final answer';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'Who is in my orbit?' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Map the people in the orbit.', ['Find initial evidence'], 'plan-width-1'),
+      buildToolCall('SearchTool', { userMessage: 'seed orbit lookup' }, 'search-width-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Width-aware final answer');
+  t.deepEqual(
+    workerCalls.map(({ task }) => task).sort(),
+    tasks.slice().sort(),
+    'All delegated tasks should eventually run across multiple waves',
+  );
+  t.deepEqual(
+    [...new Set(workerCalls.map(({ taskCount }) => taskCount))].sort((a, b) => a - b),
+    [2, 3],
+    'First wave should cap at fanout width, then a second wave should finish the remaining tasks',
+  );
+  t.is(resolver.entityRuntimeState.childRuns, 5, 'Child run budget should track total workers across both waves');
+  t.is(synthesisCallCount, 3);
+});
+
+test.serial('Supervisor blocks semantically repeated delegate plans when no novel tasks remain', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let synthesisCallCount = 0;
+  const workerTasks = [];
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-no-novel-plan',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 6,
+        maxSearchCalls: 10,
+        maxFetchCalls: 10,
+        maxChildRuns: 6,
+        maxFanoutWidth: 2,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-cheap-model') {
+        if (args.chatHistory?.filter((entry) => entry.role === 'tool' && entry.name === 'SearchTool').length > 1) {
+          return 'SYNTHESIZE';
+        }
+        workerTasks.push(String(args.workerTaskBrief || ''));
+        return {
+          tool_calls: [
+            buildToolCall('SearchTool', { userMessage: String(args.workerTaskBrief || 'run lookup') }, `worker-novel-${workerTasks.length}`),
+          ],
+        };
+      }
+
+      synthesisCallCount++;
+      if (synthesisCallCount === 1) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Identify the people in the orbit.',
+              [
+                'Search memory for friends and crew names',
+                'Search memory for family and relationship references',
+              ],
+              'delegate-novel-1',
+            ),
+          ],
+        };
+      }
+      if (synthesisCallCount === 2) {
+        return {
+          tool_calls: [
+            buildDelegateResearchCall(
+              'Identify the people in the orbit.',
+              [
+                'Search memory for specific names of friends and crew',
+                'Search memory for relationship references in memory',
+              ],
+              'delegate-novel-2',
+            ),
+          ],
+        };
+      }
+      return 'Novelty-guarded final answer';
+    },
+  });
+
+  const args = {
+    chatHistory: [{ role: 'user', content: 'Who is in my orbit?' }],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Find the orbit details.', ['Find enough evidence to answer'], 'plan-novel-1'),
+      buildToolCall('SearchTool', { userMessage: 'seed orbit lookup' }, 'search-novel-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Novelty-guarded final answer');
+  t.deepEqual(
+    workerTasks.sort(),
+    [
+      'Search memory for family and relationship references',
+      'Search memory for friends and crew names',
+    ].sort(),
+    'Second delegate should be blocked because it only restates already-attempted work',
+  );
+  t.is(resolver.entityRuntimeState.childRuns, 2);
+  t.is(synthesisCallCount, 3, 'The third synthesis call should be the guarded finalize pass');
+});
+
+test.serial('Runtime synthesis history is scoped to the current turn and current-run evidence', async (t) => {
+  const originals = setupConfig();
+  t.teardown(() => restoreConfig(originals));
+
+  const entityConfig = originals.testEntity;
+  const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig);
+
+  let inspectedHistory = null;
+  const resolver = buildResolver({
+    toolLoopModel: 'test-cheap-model',
+    entityRuntimeState: {
+      runId: 'run-scoped-synthesis-history',
+      authorityEnvelope: {
+        maxToolCallsPerRound: 4,
+        maxSearchCalls: 10,
+        maxFetchCalls: 10,
+        maxChildRuns: 4,
+        maxFanoutWidth: 2,
+      },
+      semanticToolCounts: new Map(),
+      semanticEvidenceKeys: new Set(),
+      noveltyHistory: [],
+      searchCalls: 0,
+      fetchCalls: 0,
+      childRuns: 0,
+      evidenceItems: 0,
+      stopReason: null,
+      currentStage: 'research_batch',
+    },
+    promptAndParse: async (args) => {
+      if (args.modelOverride === 'test-primary-model') {
+        inspectedHistory = args.chatHistory;
+        return 'Scoped synthesis answer';
+      }
+      return 'SYNTHESIZE';
+    },
+  });
+
+  const args = {
+    chatHistory: [
+      { role: 'user', content: 'Tell me something else' },
+      { role: 'assistant', content: 'You just got back from a recent Vegas trip with the crew.' },
+      { role: 'user', content: 'Who is in my orbit?' },
+    ],
+    entityTools,
+    entityToolsOpenAiFormat,
+    runtimeMode: 'entity-runtime',
+    toolLoopModel: 'test-cheap-model',
+    primaryModel: 'test-primary-model',
+    synthesisModel: 'test-primary-model',
+    configuredReasoningEffort: 'medium',
+  };
+
+  const message = {
+    tool_calls: [
+      buildSetGoalsCall('Answer the orbit question.', ['Find enough grounded evidence'], 'plan-scoped-1'),
+      buildToolCall('SearchTool', { userMessage: 'search orbit memory' }, 'search-scoped-1'),
+    ],
+  };
+
+  const result = await toolCallback(args, message, resolver);
+
+  t.is(result, 'Scoped synthesis answer');
+  const serializedHistory = JSON.stringify(inspectedHistory);
+  t.true(serializedHistory.includes('Who is in my orbit?'));
+  t.true(serializedHistory.includes('search results'));
+  t.false(serializedHistory.includes('recent Vegas trip with the crew'));
 });
 
 // === TEST 14: buildStepInstruction helper ===

@@ -84,6 +84,198 @@ class PathwayResolver {
         // set up initial prompt
         this.pathwayPrompt = pathway.prompt;
     }
+
+    resolveCurrentQuery(args = {}) {
+        let currentQuery = args.text || '';
+        if (!currentQuery && args.chatHistory?.length > 0) {
+            let lastUserMessage = null;
+            for (let i = args.chatHistory.length - 1; i >= 0; i--) {
+                const msg = args.chatHistory[i];
+                if (msg?.role === 'user' || msg?.role === 'human') {
+                    lastUserMessage = msg;
+                    break;
+                }
+            }
+
+            const messageToUse = lastUserMessage || args.chatHistory.slice(-1)[0];
+            const content = messageToUse?.content;
+
+            if (typeof content === 'string') {
+                if (!content.trim().startsWith('{') || !content.includes('"success"')) {
+                    currentQuery = content;
+                }
+            } else if (Array.isArray(content)) {
+                const firstItem = content[0];
+                if (typeof firstItem === 'string') {
+                    if (!firstItem.trim().startsWith('{') || !firstItem.includes('"success"')) {
+                        try {
+                            const parsed = JSON.parse(firstItem);
+                            currentQuery = parsed.text || parsed.content || firstItem;
+                        } catch {
+                            currentQuery = firstItem;
+                        }
+                    }
+                } else if (firstItem?.text) {
+                    currentQuery = firstItem.text;
+                } else if (firstItem?.content) {
+                    currentQuery = firstItem.content;
+                }
+            }
+        }
+        return typeof currentQuery === 'string' ? currentQuery : '';
+    }
+
+    async ensureMemoryLoaded(args = {}) {
+        const { contextId, useMemory } = args;
+        this.savedContextId = contextId ? contextId : uuidv4();
+
+        const useContinuityMemory = useMemory !== false;
+        if (!useContinuityMemory) {
+            this.savedContext = {};
+            this.continuityContext = '';
+            this._continuityPreloaded = false;
+            return { enabled: false, attempted: false, loaded: false, skipped: true };
+        }
+
+        const rid = this.rootRequestId || this.requestId;
+        const memStart = Date.now();
+        this.savedContext = {};
+
+        try {
+            const continuityService = getContinuityMemoryService();
+            if (!continuityService.isAvailable() || !args.entityId) {
+                this.continuityContext = '';
+                this._continuityPreloaded = false;
+                return {
+                    enabled: true,
+                    attempted: true,
+                    loaded: false,
+                    reason: !args.entityId ? 'missing_entity_id' : 'service_unavailable',
+                };
+            }
+
+            const entityId = args.entityId;
+            const userId = this.savedContextId;
+            const currentQuery = this.resolveCurrentQuery(args);
+
+            const initStart = Date.now();
+            await continuityService.initSession(entityId, userId);
+            const initMs = Date.now() - initStart;
+
+            const cached = await continuityService.hotMemory?.getRenderedContextCache(entityId, userId);
+
+            if (cached?.context) {
+                let context = cached.context || '';
+
+                try {
+                    const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
+                    const timeContext = ContextBuilder.buildTimeContext(expressionState);
+                    if (timeContext) {
+                        context = context + '\n\n' + timeContext;
+                    }
+                } catch (timeErr) {
+                    logger.debug(`Could not add time context: ${timeErr.message}`);
+                }
+
+                this.continuityContext = context;
+                this.continuityEntityId = entityId;
+                this.continuityUserId = userId;
+                this._continuityPreloaded = true;
+
+                logEvent(rid, 'memory.load', {
+                    durationMs: Date.now() - memStart,
+                    initSessionMs: initMs,
+                    source: 'cache',
+                    contextChars: cached.context?.length || 0,
+                    cacheAgeMs: Date.now() - cached.timestamp,
+                });
+
+                continuityService.getContextWindow({
+                    entityId,
+                    userId,
+                    query: currentQuery,
+                    options: {
+                        episodicLimit: 20,
+                        topicMemoryLimit: 10,
+                        bootstrapRelationalLimit: 10,
+                        bootstrapMinImportance: 5,
+                        expandGraph: true,
+                    },
+                }).then((freshContext) => {
+                    continuityService.hotMemory?.setRenderedContextCache(entityId, userId, freshContext || '');
+                    logger.debug(`[PROFILE:mem] Background refresh complete (${freshContext?.length || 0} chars)`);
+                }).catch((err) => {
+                    logger.warn(`Background continuity refresh failed: ${err.message}`);
+                });
+
+                return {
+                    enabled: true,
+                    attempted: true,
+                    loaded: true,
+                    source: 'cache',
+                    contextChars: context.length,
+                };
+            }
+
+            const coldStart = Date.now();
+            let continuityContext = await continuityService.getContextWindow({
+                entityId,
+                userId,
+                query: currentQuery,
+                options: {
+                    episodicLimit: 20,
+                    topicMemoryLimit: 10,
+                    bootstrapRelationalLimit: 10,
+                    bootstrapMinImportance: 5,
+                    expandGraph: true,
+                },
+            });
+
+            continuityService.hotMemory?.setRenderedContextCache(entityId, userId, continuityContext || '');
+
+            try {
+                const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
+                const timeContext = ContextBuilder.buildTimeContext(expressionState);
+                if (timeContext && continuityContext) {
+                    continuityContext = continuityContext + '\n\n' + timeContext;
+                }
+            } catch (timeErr) {
+                logger.debug(`Could not add time context: ${timeErr.message}`);
+            }
+
+            this.continuityContext = continuityContext || '';
+            this.continuityEntityId = entityId;
+            this.continuityUserId = userId;
+            this._continuityPreloaded = true;
+
+            logEvent(rid, 'memory.load', {
+                durationMs: Date.now() - memStart,
+                initSessionMs: initMs,
+                source: 'cold',
+                contextWindowMs: Date.now() - coldStart,
+                contextChars: continuityContext?.length || 0,
+            });
+
+            return {
+                enabled: true,
+                attempted: true,
+                loaded: true,
+                source: 'cold',
+                contextChars: continuityContext?.length || 0,
+            };
+        } catch (error) {
+            logger.warn(`Continuity memory load failed (non-fatal): ${error.message}`);
+            this.savedContext = {};
+            this.continuityContext = '';
+            this._continuityPreloaded = false;
+            return {
+                enabled: true,
+                attempted: true,
+                loaded: false,
+                error: error.message,
+            };
+        }
+    }
     
     // Legacy 'tool' property is now stored in pathwayResultData
     get tool() {      
@@ -538,169 +730,6 @@ class PathwayResolver {
         }
 
         // Get saved context from contextId or change contextId if needed
-        const { contextId, useMemory } = args;
-        this.savedContextId = contextId ? contextId : uuidv4();
-        
-        const useContinuityMemory = useMemory !== false;
-        
-        const loadMemory = async () => {
-            const rid = this.rootRequestId || this.requestId;
-            const memStart = Date.now();
-            this.savedContext = {};
-            try {
-                // === CONTINUITY MEMORY INTEGRATION ===
-                // Load narrative context from the Continuity Architecture if enabled
-                if (useContinuityMemory) {
-                    try {
-                        const continuityService = getContinuityMemoryService();
-                        if (continuityService.isAvailable() && args.entityId) {
-                            const entityId = args.entityId;
-                            const userId = this.savedContextId;
-
-                            // Extract current query from args.text or last USER message in chatHistory
-                            let currentQuery = args.text || '';
-                            if (!currentQuery && args.chatHistory?.length > 0) {
-                                let lastUserMessage = null;
-                                for (let i = args.chatHistory.length - 1; i >= 0; i--) {
-                                    const msg = args.chatHistory[i];
-                                    if (msg?.role === 'user' || msg?.role === 'human') {
-                                        lastUserMessage = msg;
-                                        break;
-                                    }
-                                }
-
-                                const messageToUse = lastUserMessage || args.chatHistory.slice(-1)[0];
-                                const content = messageToUse?.content;
-
-                                if (typeof content === 'string') {
-                                    if (!content.trim().startsWith('{') || !content.includes('"success"')) {
-                                        currentQuery = content;
-                                    }
-                                } else if (Array.isArray(content)) {
-                                    const firstItem = content[0];
-                                    if (typeof firstItem === 'string') {
-                                        if (!firstItem.trim().startsWith('{') || !firstItem.includes('"success"')) {
-                                            try {
-                                                const parsed = JSON.parse(firstItem);
-                                                currentQuery = parsed.text || parsed.content || firstItem;
-                                            } catch {
-                                                currentQuery = firstItem;
-                                            }
-                                        }
-                                    } else if (firstItem?.text) {
-                                        currentQuery = firstItem.text;
-                                    } else if (firstItem?.content) {
-                                        currentQuery = firstItem.content;
-                                    }
-                                }
-                            }
-                            currentQuery = typeof currentQuery === 'string' ? currentQuery : '';
-
-                            const initStart = Date.now();
-                            await continuityService.initSession(entityId, userId);
-                            const initMs = Date.now() - initStart;
-
-                            // Stale-while-revalidate: check Redis cache first
-                            const cached = await continuityService.hotMemory?.getRenderedContextCache(entityId, userId);
-
-                            if (cached?.context) {
-                                // Use cached context immediately, but add fresh time context
-                                let context = cached.context || '';
-
-                                // Fetch expression state from Redis (fast) for fresh time data
-                                try {
-                                    const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
-                                    const timeContext = ContextBuilder.buildTimeContext(expressionState);
-                                    if (timeContext) {
-                                        context = context + '\n\n' + timeContext;
-                                    }
-                                } catch (timeErr) {
-                                    logger.debug(`Could not add time context: ${timeErr.message}`);
-                                }
-
-                                this.continuityContext = context;
-                                this.continuityEntityId = entityId;
-                                this.continuityUserId = userId;
-
-                                logEvent(rid, 'memory.load', {
-                                    durationMs: Date.now() - memStart, initSessionMs: initMs,
-                                    source: 'cache', contextChars: cached.context?.length || 0,
-                                    cacheAgeMs: Date.now() - cached.timestamp,
-                                });
-
-                                // Refresh cache in background (fire-and-forget)
-                                continuityService.getContextWindow({
-                                    entityId,
-                                    userId,
-                                    query: currentQuery,
-                                    options: {
-                                        episodicLimit: 20,
-                                        topicMemoryLimit: 10,
-                                        bootstrapRelationalLimit: 10,
-                                        bootstrapMinImportance: 5,
-                                        expandGraph: true
-                                    }
-                                }).then(freshContext => {
-                                    // Update Redis cache
-                                    continuityService.hotMemory?.setRenderedContextCache(entityId, userId, freshContext || '');
-                                    logger.debug(`[PROFILE:mem] Background refresh complete (${freshContext?.length || 0} chars)`);
-                                }).catch(err => {
-                                    logger.warn(`Background continuity refresh failed: ${err.message}`);
-                                });
-                            } else {
-                                // No cache - must load synchronously (first request)
-                                const coldStart = Date.now();
-                                let continuityContext = await continuityService.getContextWindow({
-                                    entityId,
-                                    userId,
-                                    query: currentQuery,
-                                    options: {
-                                        episodicLimit: 20,
-                                        topicMemoryLimit: 10,
-                                        bootstrapRelationalLimit: 10,
-                                        bootstrapMinImportance: 5,
-                                        expandGraph: true
-                                    }
-                                });
-
-                                // Cache to Redis WITHOUT time-sensitive parts
-                                continuityService.hotMemory?.setRenderedContextCache(entityId, userId, continuityContext || '');
-
-                                // Add fresh time context for this request
-                                try {
-                                    const expressionState = await continuityService.hotMemory?.getExpressionState(entityId, userId);
-                                    const timeContext = ContextBuilder.buildTimeContext(expressionState);
-                                    if (timeContext && continuityContext) {
-                                        continuityContext = continuityContext + '\n\n' + timeContext;
-                                    }
-                                } catch (timeErr) {
-                                    logger.debug(`Could not add time context: ${timeErr.message}`);
-                                }
-
-                                // Store for injection into prompts
-                                this.continuityContext = continuityContext || '';
-                                this.continuityEntityId = entityId;
-                                this.continuityUserId = userId;
-
-                                logEvent(rid, 'memory.load', {
-                                    durationMs: Date.now() - memStart, initSessionMs: initMs,
-                                    source: 'cold', contextWindowMs: Date.now() - coldStart,
-                                    contextChars: continuityContext?.length || 0,
-                                });
-                            }
-                        }
-                    } catch (error) {
-                        logger.warn(`Continuity memory load failed (non-fatal): ${error.message}`);
-                        this.continuityContext = '';
-                    }
-                }
-            } catch (error) {
-                this.logError(`Error in loadMemory: ${error.message}`);
-                this.savedContext = {};
-                this.continuityContext = '';
-            }
-        };
-
         const MAX_RETRIES = 3;
         let data = null;
         
@@ -708,7 +737,7 @@ class PathwayResolver {
             // Skip memory load if already loaded (e.g., intermediate tool calls)
             // The continuityContext from the first call persists on the resolver
             if (!args.skipMemoryLoad) {
-                await loadMemory(); // Reset memory state on each retry
+                await this.ensureMemoryLoaded(args);
             }
             
             data = await this.processRequest(args);

@@ -26,6 +26,7 @@ test('processStreamEvent accumulates tool calls across events and dispatches onc
   const plugin = createPlugin();
   plugin.pathwayToolCallback = (...args) => toolCallbackArgs.push(args);
   plugin.requestId = 'test-req-123';
+  plugin._allowedFunctionNames = new Set(['searchinternet']);
 
   const mockResolver = { args: { text: 'test' } };
   requestState['test-req-123'] = { pathwayResolver: mockResolver };
@@ -102,6 +103,7 @@ test('processStreamEvent does NOT dispatch tool calls without finishReason STOP'
   const plugin = createPlugin();
   plugin.pathwayToolCallback = (...args) => toolCallbackArgs.push(args);
   plugin.requestId = 'test-req-456';
+  plugin._allowedFunctionNames = new Set(['workspacessh']);
 
   requestState['test-req-456'] = { pathwayResolver: { args: {} } };
 
@@ -139,6 +141,7 @@ test('processStreamEvent resets state only on new responseId', t => {
   const plugin = createPlugin();
   plugin.pathwayToolCallback = () => {};
   plugin.requestId = 'test-req-reset';
+  plugin._allowedFunctionNames = new Set(['toola', 'toolb', 'toolc']);
 
   requestState['test-req-reset'] = { pathwayResolver: { args: {} } };
 
@@ -180,4 +183,37 @@ test('processStreamEvent resets state only on new responseId', t => {
   t.is(plugin.toolCallsBuffer[0].function.name, 'ToolC');
 
   delete requestState['test-req-reset'];
+});
+
+test('processStreamEvent terminates cleanly on undeclared tool call', t => {
+  const toolCallbackArgs = [];
+  const plugin = createPlugin();
+  plugin.pathwayToolCallback = (...args) => toolCallbackArgs.push(args);
+  plugin.requestId = 'test-req-undeclared';
+  plugin._allowedFunctionNames = new Set(['delegateresearch']);
+
+  requestState['test-req-undeclared'] = { pathwayResolver: { args: {} } };
+
+  const result = plugin.processStreamEvent({
+    data: JSON.stringify({
+      candidates: [{
+        content: {
+          role: 'model',
+          parts: [{ functionCall: { name: 'SearchMemory', args: { query: 'orbit' } } }]
+        },
+        finishReason: 'STOP'
+      }],
+      responseId: 'response-undeclared'
+    })
+  }, {});
+
+  const chunk = JSON.parse(result.data);
+  t.is(chunk.choices[0].finish_reason, 'stop');
+  t.true(chunk.choices[0].delta.content.includes('internal tool-calling error'));
+  t.is(result.progress, 1);
+  t.falsy(result.toolCallbackInvoked);
+  t.is(toolCallbackArgs.length, 0, 'Should not invoke callback for undeclared tools');
+  t.is(plugin.toolCallsBuffer.length, 0, 'Should clear buffered tool calls');
+
+  delete requestState['test-req-undeclared'];
 });
