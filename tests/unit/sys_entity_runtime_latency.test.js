@@ -683,6 +683,103 @@ test.serial('executeEntityAgentCore routes simple current-info turns through the
   )));
 });
 
+test.serial('executeEntityAgentCore routes simple media-folder asks through the router-owned direct_tool fast path', async (t) => {
+  const originals = setupConfig({
+    workspacessh: buildToolDefinition('WorkspaceSSH', 'test_tool_workspace', {
+      command: { type: 'string' },
+      userMessage: { type: 'string' },
+      timeoutSeconds: { type: 'number' },
+    }),
+    viewimages: buildToolDefinition('ViewImages', 'test_tool_view_images', {
+      files: { type: 'array' },
+      userMessage: { type: 'string' },
+    }),
+    setbaseavatar: buildToolDefinition('SetBaseAvatar', 'test_tool_avatar', {
+      file: { type: 'string' },
+      userMessage: { type: 'string' },
+    }),
+  });
+  t.teardown(() => restoreConfig(originals));
+
+  let routePromptArgs;
+  let directToolPromptArgs;
+  let finalPromptArgs;
+  let directToolCallCount = 0;
+  const resolver = buildResolver({
+    promptAndParse: async (args) => {
+      if (isRouteCall(args)) {
+        routePromptArgs = args;
+        return JSON.stringify({
+          mode: 'direct_tool',
+          confidence: 'high',
+          toolCategory: 'images',
+          planningEffort: 'low',
+          synthesisEffort: 'low',
+          conversationMode: 'agentic',
+          modeAction: 'switch',
+          reason: 'media_browse',
+          modeReason: 'workspace_request',
+        });
+      }
+      if (Array.isArray(args.tools) && args.tools.some((tool) => tool.function?.name === 'ViewImages')) {
+        directToolPromptArgs = args;
+        directToolCallCount += 1;
+        return {
+          tool_calls: [
+            buildToolCall('ViewImages', {
+              files: ['media/media.png', 'media/media-2.png'],
+              userMessage: 'Opening the media vault.',
+            }, 'view-images-call-1'),
+          ],
+        };
+      }
+      finalPromptArgs = args;
+      return 'media folder answer';
+    },
+  });
+
+  let plannerCalled = false;
+  const result = await executeEntityAgentCore({
+    args: {
+      text: 'Oooh show me some of the media folder.',
+      chatHistory: [{ role: 'user', content: 'Oooh show me some of the media folder.' }],
+      agentContext: [],
+      entityId: originals.entityId,
+      invocationType: 'chat',
+      stream: false,
+      useMemory: false,
+      runtimeMode: 'entity-runtime',
+      runtimeRunId: 'run-test-direct-tool',
+      runtimeStage: 'research_batch',
+      runtimeConversationMode: 'agentic',
+      runtimeConversationModeConfidence: 'high',
+      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
+      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
+    },
+    runAllPrompts: async (args) => {
+      plannerCalled = true;
+      finalPromptArgs = args;
+      return 'unexpected planner call';
+    },
+    resolver,
+  });
+
+  t.is(result, 'media folder answer');
+  t.false(plannerCalled);
+  t.truthy(routePromptArgs);
+  t.truthy(directToolPromptArgs);
+  t.is(directToolCallCount, 1);
+  t.deepEqual(
+    directToolPromptArgs.tools.map((tool) => tool.function?.name).sort(),
+    ['SetBaseAvatar', 'ViewImages', 'WorkspaceSSH'],
+  );
+  t.deepEqual(finalPromptArgs.tools, []);
+  t.is(finalPromptArgs.latencyRouteMode, 'media_browse');
+  t.true(finalPromptArgs.chatHistory.some((message) => (
+    message.role === 'tool' && String(message.content).includes('media/media.png')
+  )));
+});
+
 test.serial('executeEntityAgentCore uses the model router for ambiguous workspace inspection turns', async (t) => {
   const originals = setupConfig({
     workspacessh: buildToolDefinition('WorkspaceSSH', 'test_tool_workspace', {

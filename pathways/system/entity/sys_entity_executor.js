@@ -72,7 +72,7 @@ const SET_GOALS_TOOL_NAME = 'setgoals';
 const DELEGATE_RESEARCH_TOOL_NAME = 'delegateresearch';
 const DELEGATE_TASK_TOOL_NAME = 'delegatetask';
 const ROUTER_DECISION_TOOL_NAME = 'SelectRoute';
-const ROUTER_ALLOWED_MODES = new Set(['plan', 'direct_reply', 'direct_search']);
+const ROUTER_ALLOWED_MODES = new Set(['plan', 'direct_reply', 'direct_search', 'direct_tool']);
 const ROUTER_ALLOWED_TOOL_CATEGORIES = new Set(['general', 'workspace', 'images', 'web', 'memory', 'media', 'chart']);
 
 const SET_GOALS_OPENAI_DEF = {
@@ -133,7 +133,7 @@ const ROUTER_DECISION_OPENAI_DEF = {
             properties: {
                 mode: {
                     type: 'string',
-                    enum: ['plan', 'direct_reply', 'direct_search'],
+                    enum: ['plan', 'direct_reply', 'direct_search', 'direct_tool'],
                 },
                 confidence: {
                     type: 'string',
@@ -390,6 +390,13 @@ function buildLeanResponsePromptTemplate({
         });
     }
 
+    if (purpose === 'fast_tool') {
+        messages.push({
+            role: 'system',
+            content: 'This is a simple single-action tool turn. Use the most direct available tool or a small bundled set of closely related tools, then stop. Do not plan or delegate.',
+        });
+    }
+
     if (promptContext.includeDateTime) {
         messages.push({ role: 'system', content: '{{renderTemplate AI_DATETIME}}' });
     }
@@ -583,6 +590,7 @@ export function buildPurposePromptOverride(callArgs = {}, purpose = '') {
     case 'synthesis_finalize':
     case 'initial_finalize':
     case 'fast_chat':
+    case 'fast_tool':
     case 'fast_finalize':
         return buildLeanResponsePromptTemplate(templateArgs);
     case 'fast_search':
@@ -1603,6 +1611,7 @@ Current sticky conversation modes:
 Execution routes:
 - "direct_reply": casual chat or a simple acknowledgement that needs no tools
 - "direct_search": a simple, deterministic current-info/news/search turn that can be handled with one bundled search round and one answer
+- "direct_tool": a simple deterministic local/tool turn that should be satisfiable with one focused tool round and one answer
 - "plan": anything that may require tools, file/workspace handling, ambiguity resolution, or iterative multi-step work
 
 Tool categories:
@@ -1618,10 +1627,11 @@ Rules:
 - Keep the current conversationMode unless the user intent clearly shifts.
 - Prefer "direct_reply" only when you can answer confidently from the existing conversation, entity context, and stable knowledge alone.
 - If the user is asking for intel, identification, verification, or any real-world referent that may require lookup or disambiguation, do not choose "direct_reply".
-- If a direct reply would require guessing, choose "direct_search" or "plan" instead.
+- If a direct reply would require guessing, choose "direct_search", "direct_tool", or "plan" instead.
 - Prefer "direct_search" only for simple, deterministic current-info questions where one bundled search round should be enough to answer confidently.
+- Prefer "direct_tool" for simple local single-action turns like showing files, opening images/media, listing a folder, or making one obvious workspace/image action where one focused tool round should be enough.
 - Use "plan" if the turn has real ambiguity, entity-identification uncertainty, multiple plausible targets, broad or comparative scope, likely follow-on searches/fetches, likely iterative research, action-taking, or file/workspace handling.
-- If you suspect the model may need a second research round to be reliable, choose "plan", not "direct_search".
+- If you suspect the model may need a second tool/research round to be reliable, choose "plan", not "direct_search" or "direct_tool".
 - planningEffort: "low" for straightforward inspection/reporting/tool-routing turns, "medium" for normal tasks, "high" for broad research or complex problem-solving.
 - synthesisEffort: "low" for short direct answers or simple summaries, otherwise "medium" unless nuanced synthesis clearly needs "high".
 - modeAction: "stay" if the current sticky mode still fits, otherwise "switch".
@@ -1768,6 +1778,17 @@ function buildDirectRouteFromDecision(decision, { text = '', chatHistory = [], a
         }
     }
 
+    if (decision.mode === 'direct_tool') {
+        const directTools = shortlistToolsForCategory(decision.toolCategory, availableToolNames);
+        if (directTools.length > 0) {
+            return {
+                mode: 'direct_tool',
+                reason: decision.reason || 'tool_action',
+                initialToolNames: directTools,
+            };
+        }
+    }
+
     return null;
 }
 
@@ -1831,7 +1852,7 @@ async function classifyRouteWithModel({
         );
         const nextRoute = {
             ...initialRoute,
-            mode: ['direct_reply', 'direct_search'].includes(decision.mode) ? decision.mode : 'plan',
+            mode: ['direct_reply', 'direct_search', 'direct_tool'].includes(decision.mode) ? decision.mode : 'plan',
             routeSource: 'model',
             toolCategory: decision.toolCategory,
             reason: ['default', 'chat_mode', 'agentic_mode', 'creative_mode', 'research_mode', 'nsfw_mode'].includes(initialRoute.reason)
@@ -1897,7 +1918,7 @@ function applyRouteClassificationOutcome({
             resolver.entityRuntimeState.conversationModeConfidence = 'low';
         }
         args.runtimeConversationModeConfidence = 'low';
-        if (['direct_reply', 'direct_search'].includes(initialRoute?.mode)) {
+        if (['direct_reply', 'direct_search', 'direct_tool'].includes(initialRoute?.mode)) {
             return {
                 ...initialRoute,
                 mode: 'plan',
@@ -1919,7 +1940,7 @@ function applyRouteClassificationOutcome({
     const normalizedConfidence = confidence === 'high' ? 'high' : 'low';
     const lowConfidenceFastPath = (
         normalizedConfidence !== 'high'
-        && ['direct_reply', 'direct_search'].includes(initialRoute?.mode)
+        && ['direct_reply', 'direct_search', 'direct_tool'].includes(initialRoute?.mode)
     );
     const effectiveRoute = lowConfidenceFastPath
         ? {
@@ -2167,6 +2188,86 @@ async function runDirectSearchFastPath(route, args, resolver, entityTools, entit
     }
 }
 
+async function runDirectToolFastPath(route, args, resolver, entityTools, entityToolsOpenAiFormat, handlePromptError) {
+    const rid = getRequestId(resolver);
+    const fastPathModel = getFastPathModel(args);
+    const finalizeModel = getFastFinalizeModel(args);
+    const directTools = (entityToolsOpenAiFormat || []).filter((tool) => (
+        (route.initialToolNames || []).includes(tool.function?.name)
+    ));
+
+    if (directTools.length === 0) {
+        return await handlePromptError(new Error('Direct tool route selected without any available tools'));
+    }
+
+    await markRuntimeStage(resolver, 'direct_tool', 'Executing direct tool fast path', {
+        model: fastPathModel,
+        route: route.reason,
+    });
+
+    try {
+        const toolStep = await callModelLogged(resolver, withVisibleModel({
+            ...args,
+            chatHistory: trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
+            stream: false,
+            tools: directTools,
+            tool_choice: 'auto',
+            reasoningEffort: 'low',
+            skipMemoryLoad: shouldSkipRuntimeMemoryLoad(resolver),
+            latencyRouteMode: route.reason,
+        }, fastPathModel), 'fast_tool', {
+            model: fastPathModel,
+            route: route.reason,
+        });
+
+        if (!toolStep) return await handlePromptError(null);
+
+        const directToolCalls = extractToolCalls(toolStep);
+        if (directToolCalls.length > 0) {
+            await processToolCallRound(directToolCalls, args, resolver, entityTools);
+        } else if (hasUsableFastPathResult(toolStep)) {
+            const finalizedToolStep = await maybeFinalizeInitialResponse({
+                response: toolStep,
+                args,
+                resolver,
+                initialCallModel: fastPathModel,
+            });
+            markAnswerProduced(resolver, 'direct_tool');
+            return finalizedToolStep;
+        }
+
+        const forcedHistory = [
+            ...trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
+            {
+                role: 'user',
+                content: `[system message: ${rid}:fast-tool-finalize] The tool results above are sufficient for this simple local action. Answer the user now in your normal voice. Start with the answer itself. Do not call tools again.`,
+            },
+        ];
+
+        const finalized = await callModelLogged(resolver, withVisibleModel({
+            ...args,
+            chatHistory: forcedHistory,
+            stream: args.stream,
+            tools: [],
+            reasoningEffort: 'low',
+            skipMemoryLoad: shouldSkipRuntimeMemoryLoad(resolver),
+            latencyRouteMode: route.reason,
+        }, finalizeModel), 'fast_finalize', {
+            model: finalizeModel,
+            route: route.reason,
+        });
+
+        if (!finalized) return await handlePromptError(null);
+
+        const holder = { value: finalized };
+        await drainStreamingCallbacks(resolver)(holder);
+        markAnswerProduced(resolver, 'direct_tool');
+        return holder.value;
+    } catch (error) {
+        return await handlePromptError(error);
+    }
+}
+
 async function runDirectReplyFastPath(route, args, resolver, handlePromptError) {
     const rid = getRequestId(resolver);
     const fastPathModel = getFastFinalizeModel(args);
@@ -2235,6 +2336,33 @@ async function warmDirectSearchFastPath(route, args, resolver, entityToolsOpenAi
     });
 
     return 'fast_search';
+}
+
+async function warmDirectToolFastPath(route, args, resolver, entityToolsOpenAiFormat = []) {
+    const fastPathModel = getFastPathModel(args);
+    const directTools = (entityToolsOpenAiFormat || []).filter((tool) => (
+        (route.initialToolNames || []).includes(tool.function?.name)
+    ));
+
+    if (directTools.length === 0) {
+        return null;
+    }
+
+    await callModelLogged(resolver, withVisibleModel(withLatencyWarmOptions({
+        ...args,
+        chatHistory: trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
+        stream: false,
+        tools: directTools,
+        tool_choice: 'auto',
+        reasoningEffort: 'low',
+        skipMemoryLoad: true,
+        latencyRouteMode: route.reason,
+    }), fastPathModel), 'fast_tool', {
+        model: fastPathModel,
+        route: route.reason,
+    });
+
+    return 'fast_tool';
 }
 
 async function warmDirectReplyFastPath(route, args, resolver) {
@@ -2329,7 +2457,7 @@ function logFastPathRouteSelection({
     conversationMode,
 }) {
     const rid = getRequestId(resolver);
-    const responseModel = route.mode === 'direct_reply' || route.mode === 'direct_search'
+    const responseModel = ['direct_reply', 'direct_search', 'direct_tool'].includes(route.mode)
         ? getFastFinalizeModel(args)
         : args.primaryModel;
     updateRuntimeRouteState(resolver, args, route);
@@ -3391,7 +3519,7 @@ async function processToolCallRound(toolCalls, args, resolver, entityTools) {
     if (undeclaredToolCalls.length > 0) {
         finalMessages = insertSystemMessage(
             finalMessages,
-            `The runtime ignored ${undeclaredToolCalls.length} tool call(s) because they were not exposed for this model step. Continue with the tools you actually have available.`,
+            `The runtime ignored ${undeclaredToolCalls.length} tool call(s) because they were not exposed for this model step. Continue with the tools you actually have available. If you still need one of those blocked tools, request it via DelegateResearch or DelegateTask instead of calling it directly.`,
             rid,
         );
     }
@@ -4803,9 +4931,9 @@ export async function prepareEntityLatencyCore({ args, resolver }) {
         contextId,
         useMemory: useContinuityMemory,
     });
-    const routeRuntimeStage = runtimeRoute.mode === 'direct_reply'
-        ? 'direct_reply'
-        : (runtimeRoute.mode === 'direct_search' ? 'direct_search' : (args.runtimeStage || 'plan'));
+    const routeRuntimeStage = ['direct_reply', 'direct_search', 'direct_tool'].includes(runtimeRoute.mode)
+        ? runtimeRoute.mode
+        : (args.runtimeStage || 'plan');
     args.runtimeStage = routeRuntimeStage;
 
     const runtimeContext = {
@@ -4892,6 +5020,9 @@ export async function prepareEntityLatencyCore({ args, resolver }) {
         warmedPurposes.push(await warmDirectReplyFastPath(runtimeRoute, args, resolver));
     } else if (runtimeRoute.mode === 'direct_search') {
         const warmedPurpose = await warmDirectSearchFastPath(runtimeRoute, args, resolver, entityToolsOpenAiFormat);
+        if (warmedPurpose) warmedPurposes.push(warmedPurpose);
+    } else if (runtimeRoute.mode === 'direct_tool') {
+        const warmedPurpose = await warmDirectToolFastPath(runtimeRoute, args, resolver, entityToolsOpenAiFormat);
         if (warmedPurpose) warmedPurposes.push(warmedPurpose);
     } else {
         speculationSkipped = true;
@@ -5247,7 +5378,7 @@ async function executeDirectRuntimeRoute({
 }) {
     const rid = getRequestId(resolver);
     const handlePromptError = makeErrorHandler(args, resolver);
-    const skipped = runtimeRoute.mode === 'direct_search'
+    const skipped = ['direct_search', 'direct_tool'].includes(runtimeRoute.mode)
         ? ['file_sync', 'context_compression', 'formal_planning']
         : ['file_sync', 'context_compression'];
 
@@ -5266,7 +5397,16 @@ async function executeDirectRuntimeRoute({
             entityToolsOpenAiFormat,
             handlePromptError,
         )
-        : await runDirectReplyFastPath(runtimeRoute, args, resolver, handlePromptError);
+        : (runtimeRoute.mode === 'direct_tool'
+            ? await runDirectToolFastPath(
+                runtimeRoute,
+                args,
+                resolver,
+                entityTools,
+                entityToolsOpenAiFormat,
+                handlePromptError,
+            )
+            : await runDirectReplyFastPath(runtimeRoute, args, resolver, handlePromptError));
 
     return completeRuntimeResponse({
         args,
@@ -5657,9 +5797,9 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         contextId,
         useMemory: useContinuityMemory,
     });
-    const routeRuntimeStage = runtimeRoute.mode === 'direct_reply'
-        ? 'direct_reply'
-        : (runtimeRoute.mode === 'direct_search' ? 'direct_search' : (args.runtimeStage || 'plan'));
+    const routeRuntimeStage = ['direct_reply', 'direct_search', 'direct_tool'].includes(runtimeRoute.mode)
+        ? runtimeRoute.mode
+        : (args.runtimeStage || 'plan');
     args.runtimeStage = routeRuntimeStage;
     if (resolver.entityRuntimeState) {
         resolver.entityRuntimeState.currentStage = routeRuntimeStage;
@@ -5765,7 +5905,7 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         resolver.entityRuntimeState.conversationModeConfidence = normalizeModeConfidence(args.runtimeConversationModeConfidence || currentConversationModeConfidence);
     }
     updateRuntimeRouteState(resolver, args, runtimeRoute);
-    const requestModel = runtimeRoute.mode === 'direct_reply' || runtimeRoute.mode === 'direct_search'
+    const requestModel = ['direct_reply', 'direct_search', 'direct_tool'].includes(runtimeRoute.mode)
         ? getFastFinalizeModel(args)
         : args.primaryModel;
 
@@ -5800,7 +5940,7 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         });
         publishRuntimeModeStatus({ resolver, args });
 
-        if (runtimeRoute.mode === 'direct_search' || runtimeRoute.mode === 'direct_reply') {
+        if (['direct_search', 'direct_reply', 'direct_tool'].includes(runtimeRoute.mode)) {
             return await executeDirectRuntimeRoute({
                 runtimeRoute,
                 args,

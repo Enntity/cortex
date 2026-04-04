@@ -478,18 +478,9 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
             }]
         });
 
-        const terminateUnexpectedFunctionCall = (functionName = '') => {
+        const noteUnexpectedFunctionCall = (functionName = '') => {
             const normalizedName = String(functionName || '').trim();
             logger.warn(`Gemini emitted unexpected function call "${normalizedName || 'unknown'}" for request ${this.requestId}`);
-            requestProgress.data = JSON.stringify(createChunk({
-                content: '\n\nI hit an internal tool-calling error and stopped this run. Please try again.'
-            }, 'stop'));
-            requestProgress.progress = 1;
-            requestProgress.toolCallbackInvoked = false;
-            this.hadToolCalls = false;
-            this.toolCallsBuffer = [];
-            this.contentBuffer = '';
-            return requestProgress;
         };
 
         // Handle content chunks with tool calls
@@ -501,7 +492,7 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
                     const functionName = String(part.functionCall.name || '').trim();
                     const normalizedFunctionName = functionName.toLowerCase();
                     if (!normalizedFunctionName || !this._allowedFunctionNames.has(normalizedFunctionName)) {
-                        return terminateUnexpectedFunctionCall(functionName);
+                        noteUnexpectedFunctionCall(functionName);
                     }
                     // Mark that we have tool calls
                     this.hadToolCalls = true;
@@ -543,7 +534,7 @@ class Gemini15VisionPlugin extends Gemini15ChatPlugin {
         }
 
         // Handle finish reasons
-        if (eventData.candidates?.[0]?.finishReason === "STOP") {
+        if (["STOP", "UNEXPECTED_TOOL_CALL"].includes(eventData.candidates?.[0]?.finishReason)) {
             const finishReason = this.hadToolCalls ? "tool_calls" : "stop";
 
             // Check if there's any remaining content in the final chunk that needs to be published

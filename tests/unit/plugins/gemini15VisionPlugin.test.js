@@ -185,14 +185,14 @@ test('processStreamEvent resets state only on new responseId', t => {
   delete requestState['test-req-reset'];
 });
 
-test('processStreamEvent terminates cleanly on undeclared tool call', t => {
+test('processStreamEvent forwards undeclared tool calls into the callback path instead of terminating', t => {
   const toolCallbackArgs = [];
   const plugin = createPlugin();
   plugin.pathwayToolCallback = (...args) => toolCallbackArgs.push(args);
   plugin.requestId = 'test-req-undeclared';
   plugin._allowedFunctionNames = new Set(['delegateresearch']);
 
-  requestState['test-req-undeclared'] = { pathwayResolver: { args: {} } };
+  requestState['test-req-undeclared'] = { pathwayResolver: { args: {}, _toolLoopComplete: false } };
 
   const result = plugin.processStreamEvent({
     data: JSON.stringify({
@@ -201,18 +201,18 @@ test('processStreamEvent terminates cleanly on undeclared tool call', t => {
           role: 'model',
           parts: [{ functionCall: { name: 'SearchMemory', args: { query: 'orbit' } } }]
         },
-        finishReason: 'STOP'
+        finishReason: 'UNEXPECTED_TOOL_CALL'
       }],
       responseId: 'response-undeclared'
     })
   }, {});
 
-  const chunk = JSON.parse(result.data);
-  t.is(chunk.choices[0].finish_reason, 'stop');
-  t.true(chunk.choices[0].delta.content.includes('internal tool-calling error'));
-  t.is(result.progress, 1);
-  t.falsy(result.toolCallbackInvoked);
-  t.is(toolCallbackArgs.length, 0, 'Should not invoke callback for undeclared tools');
+  t.true(result.toolCallbackInvoked);
+  t.is(toolCallbackArgs.length, 1, 'Should invoke callback so the runtime can ignore/recover');
+  const toolMessage = toolCallbackArgs[0][1];
+  t.is(toolMessage.role, 'assistant');
+  t.is(toolMessage.tool_calls.length, 1);
+  t.is(toolMessage.tool_calls[0].function.name, 'SearchMemory');
   t.is(plugin.toolCallsBuffer.length, 0, 'Should clear buffered tool calls');
 
   delete requestState['test-req-undeclared'];
