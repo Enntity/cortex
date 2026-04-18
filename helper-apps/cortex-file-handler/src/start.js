@@ -20,6 +20,45 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ status: "healthy", version });
 });
 
+function getConfiguredApiKeys() {
+  const raw = process.env.CORTEX_API_KEY || "";
+  return raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function getProvidedApiKey(req) {
+  let providedApiKey = req.headers["cortex-api-key"] || req.query?.["cortex-api-key"];
+  if (!providedApiKey) {
+    providedApiKey = req.headers["authorization"];
+    providedApiKey = providedApiKey?.startsWith("Bearer ")
+      ? providedApiKey.slice(7)
+      : providedApiKey;
+  }
+  return typeof providedApiKey === "string" ? providedApiKey : null;
+}
+
+app.use((req, res, next) => {
+  if (process.env.NODE_ENV === "test") {
+    return next();
+  }
+
+  const cortexApiKeys = getConfiguredApiKeys();
+  if (cortexApiKeys.length === 0) {
+    return res.status(403).json({
+      error: "File handler requires CORTEX_API_KEY configuration",
+    });
+  }
+
+  const providedApiKey = getProvidedApiKey(req);
+  if (!providedApiKey || !cortexApiKeys.includes(providedApiKey)) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  next();
+});
+
 // Main endpoint
 app.all("/api/CortexFileHandler", handler);
 

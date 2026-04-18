@@ -72,6 +72,36 @@ test("health check returns healthy", async (t) => {
   t.is(data.version, "3.0.0");
 });
 
+test.serial("non-test mode requires cortex api key", async (t) => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalApiKey = process.env.CORTEX_API_KEY;
+
+  process.env.NODE_ENV = "development";
+  process.env.CORTEX_API_KEY = "secret-1";
+
+  const unauthorized = await request("GET", "/api/CortexFileHandler");
+  t.is(unauthorized.status, 401);
+
+  const authorized = await request("GET", "/api/CortexFileHandler", {
+    headers: {
+      authorization: "Bearer secret-1",
+    },
+  });
+  t.is(authorized.status, 400);
+
+  if (originalNodeEnv === undefined) {
+    delete process.env.NODE_ENV;
+  } else {
+    process.env.NODE_ENV = originalNodeEnv;
+  }
+
+  if (originalApiKey === undefined) {
+    delete process.env.CORTEX_API_KEY;
+  } else {
+    process.env.CORTEX_API_KEY = originalApiKey;
+  }
+});
+
 // ─── GET: missing params ─────────────────────────────────────────────────────
 
 test("GET without params returns 400", async (t) => {
