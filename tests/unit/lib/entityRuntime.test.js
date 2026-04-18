@@ -39,6 +39,49 @@ test('EntityRuntime.startRun builds an ephemeral durable run shape when storage 
     t.is(run.orientationPacket?.mission, 'Write the report');
 });
 
+test('EntityRuntime.startRun extracts a plain-text goal from structured chat history', async t => {
+    const runtime = new EntityRuntime({
+        store: {
+            isConfigured() {
+                return false;
+            },
+        },
+    });
+
+    const run = await runtime.startRun({
+        entityConfig: {
+            id: 'entity-1',
+            name: 'Jinx',
+            modelPolicy: {
+                primaryModel: 'voice-model',
+            },
+        },
+        args: {
+            entityId: 'entity-1',
+            invocationType: 'chat',
+            chatHistory: [
+                { role: 'assistant', content: 'Previous turn' },
+                {
+                    role: 'user',
+                    content: [
+                        JSON.stringify({
+                            type: 'text',
+                            text: 'Check the report status',
+                        }),
+                    ],
+                },
+            ],
+        },
+        resolver: {
+            requestId: 'req-structured-1',
+            modelName: 'system-model',
+        },
+    });
+
+    t.is(run.goal, 'Check the report status');
+    t.is(run.orientationPacket?.mission, 'Check the report status');
+});
+
 test('EntityRuntime.resumeRun can recover the latest open run by entity and origin', async t => {
     const stageEvents = [];
     const updates = [];

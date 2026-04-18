@@ -1,20 +1,9 @@
 import logger from '../../../lib/logger.js';
 import { getEntityRuntime, ENTITY_RUNTIME_MODE } from '../../../lib/entityRuntime/index.js';
+import { extractGoalFromArgs } from '../../../lib/entityRuntime/goal.js';
 import { logEvent } from '../../../lib/requestLogger.js';
 import { loadEntityConfig } from './tools/shared/sys_entity_tools.js';
 import { executeEntityAgentCore, prepareEntityLatencyCore, toolCallbackCore } from './sys_entity_executor.js';
-
-function extractGoal(args = {}) {
-    if (typeof args.text === 'string' && args.text.trim()) return args.text.trim();
-    const lastUser = [...(args.chatHistory || [])].reverse().find(msg => msg.role === 'user');
-    if (typeof lastUser?.content === 'string' && lastUser.content.trim()) return lastUser.content.trim();
-    if (Array.isArray(lastUser?.content)) {
-        const textPart = lastUser.content.find(part => typeof part === 'string' || part?.type === 'text');
-        if (typeof textPart === 'string') return textPart.trim();
-        if (textPart?.text) return textPart.text.trim();
-    }
-    return '';
-}
 
 function extractContextId(args = {}) {
     return args.contextId
@@ -95,7 +84,7 @@ export default {
         const entityConfig = await loadEntityConfig(args.entityId);
         const runtimeOrigin = args.invocationType || 'chat';
         const runtimeAction = args.runtimeAction || (args.runId || runtimeOrigin === 'pulse' ? 'resume' : 'start');
-        const goal = extractGoal(args);
+        const goal = extractGoalFromArgs(args);
         const rid = resolver.rootRequestId || resolver.requestId;
 
         let run = null;

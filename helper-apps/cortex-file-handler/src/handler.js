@@ -173,6 +173,22 @@ async function findByName(filename, folderPath = "") {
   return match ? match.blobPath : null;
 }
 
+function normalizeBlobPath(blobPath) {
+  const normalized = String(blobPath || "").replace(/^\/+/, "");
+  return normalized || null;
+}
+
+function resolveExactBlobPath(blobPath, folderPath = "") {
+  const normalizedBlobPath = normalizeBlobPath(blobPath);
+  if (!normalizedBlobPath) {
+    return null;
+  }
+  if (folderPath && !normalizedBlobPath.startsWith(folderPath)) {
+    return null;
+  }
+  return normalizedBlobPath;
+}
+
 /**
  * Parse multipart upload via Busboy.
  * Buffers the file content, then uploads to GCS.
@@ -302,26 +318,34 @@ async function handleMultipartUpload(req, res) {
 async function handleRename(req, res) {
   const params = { ...req.query, ...(req.body || {}) };
   const oldFilename = params.filename || params.oldFilename;
+  const blobPath = params.blobPath;
   const newFilename = params.newFilename;
   const userId = params.contextId || params.userId || null;
   const chatId = params.chatId || null;
   const fileScope = params.fileScope || null;
 
-  if (!oldFilename) {
-    return res.status(400).json({ error: "Missing filename (current filename to rename)" });
+  if (!oldFilename && !blobPath) {
+    return res.status(400).json({ error: "Missing filename or blobPath (current file to rename)" });
   }
   if (!newFilename) {
     return res.status(400).json({ error: "Missing newFilename parameter" });
   }
 
   const folderPath = constructFolderPath({ userId, chatId, fileScope });
-  const existingBlobName = await findByName(oldFilename, folderPath);
+  const existingBlobName =
+    resolveExactBlobPath(blobPath, folderPath)
+    || await findByName(oldFilename, folderPath);
   if (!existingBlobName) {
-    return res.status(404).json({ error: `File '${oldFilename}' not found` });
+    return res.status(404).json({ error: `File '${blobPath || oldFilename}' not found` });
   }
 
   const sanitized = sanitizeFilename(newFilename);
-  const newBlobName = constructBlobName(sanitized, folderPath);
+  const existingFolderPath = path.posix.dirname(existingBlobName);
+  const targetFolderPath =
+    existingFolderPath && existingFolderPath !== "."
+      ? `${existingFolderPath.replace(/\/+$/, "")}/`
+      : "";
+  const newBlobName = constructBlobName(sanitized, targetFolderPath);
 
   if (existingBlobName === newBlobName) {
     const publicUrl = await getSignedUrl(newBlobName, DEFAULT_SIGNED_MINUTES);
@@ -518,24 +542,27 @@ async function handleFetchRemote(params, remoteUrl, res) {
 async function handleDelete(req, res) {
   const params = { ...req.query, ...(req.body || {}) };
   const filename = params.filename;
+  const blobPath = params.blobPath;
   const prefix = params.prefix || params.requestId;
   const userId = params.contextId || params.userId || null;
   const chatId = params.chatId || null;
   const fileScope = params.fileScope || null;
 
-  // Delete by filename within a folder
-  if (filename) {
+  // Delete by exact blob path or filename within a folder
+  if (blobPath || filename) {
     const folderPath = constructFolderPath({ userId, chatId, fileScope });
-    const blobName = await findByName(filename, folderPath);
+    const blobName =
+      resolveExactBlobPath(blobPath, folderPath)
+      || await findByName(filename, folderPath);
 
     if (!blobName) {
-      return res.status(404).json({ error: `File '${filename}' not found` });
+      return res.status(404).json({ error: `File '${blobPath || filename}' not found` });
     }
 
     await deleteFile(blobName);
     return res.status(200).json({
-      message: `File '${filename}' deleted successfully`,
-      deleted: { filename, blobPath: blobName },
+      message: `File '${blobPath || filename}' deleted successfully`,
+      deleted: { filename: filename || path.posix.basename(blobName), blobPath: blobName },
     });
   }
 
