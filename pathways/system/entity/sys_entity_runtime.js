@@ -53,6 +53,7 @@ export default {
         runId: '',
         trigger: '',
         requestedOutput: '',
+        speculativePreparation: '',
         authorityEnvelope: undefined,
         modelPolicy: undefined,
         parentRunId: '',
@@ -64,14 +65,29 @@ export default {
 
     executePathway: async ({ args, resolver, runAllPrompts }) => {
         if (String(args.requestedOutput || '').trim().toLowerCase() === 'latency_prepare') {
-            const preparation = await prepareEntityLatencyCore({
-                args: {
-                    ...args,
-                    runtimeMode: ENTITY_RUNTIME_MODE,
-                    runtimeOrigin: args.invocationType || 'chat',
-                },
-                resolver,
-            });
+            let preparation = null;
+            try {
+                preparation = await prepareEntityLatencyCore({
+                    args: {
+                        ...args,
+                        runtimeMode: ENTITY_RUNTIME_MODE,
+                        runtimeOrigin: args.invocationType || 'chat',
+                    },
+                    resolver,
+                });
+            } catch (error) {
+                logger.warn(`[sys_entity_runtime] latency_prepare failed: ${error.message}`);
+                preparation = {
+                    prepared: false,
+                    routeMode: null,
+                    routeReason: null,
+                    routeSource: null,
+                    warmedPurposes: [],
+                    predictedBranches: [],
+                    speculationSkipped: true,
+                    error: error.message,
+                };
+            }
             return JSON.stringify(preparation);
         }
 

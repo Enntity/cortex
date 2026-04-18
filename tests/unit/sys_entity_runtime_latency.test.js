@@ -1,207 +1,17 @@
 import test from 'ava';
-import sysEntityRuntime from '../../pathways/system/entity/sys_entity_runtime.js';
 import { executeEntityAgentCore, prepareEntityLatencyCore } from '../../pathways/system/entity/sys_entity_executor.js';
-import { config } from '../../config.js';
-import { getEntityStore } from '../../lib/MongoEntityStore.js';
-import { getContinuityMemoryService } from '../../lib/continuity/index.js';
-
-const buildToolDefinition = (name, pathwayName, properties = {}) => ({
-  pathwayName,
-  definition: {
-    type: 'function',
-    icon: '🧪',
-    function: {
-      name,
-      description: `Test tool for ${name}`,
-      parameters: {
-        type: 'object',
-        properties,
-        required: [],
-      },
-    },
-  },
-});
-
-const buildResolver = (overrides = {}) => ({
-  errors: [],
-  requestId: 'req-latency-test',
-  rootRequestId: 'root-req-latency-test',
-  pathway: sysEntityRuntime,
-  modelName: 'oai-gpt54',
-  pathwayResultData: {},
-  modelExecutor: {
-    plugin: {
-      truncateMessagesToTargetLength: (messages) => messages,
-      getModelMaxPromptTokens: () => 10_000_000,
-    },
-  },
-  ensureMemoryLoaded: async () => ({ enabled: false, attempted: false, loaded: false, skipped: true }),
-  promptAndParse: async () => 'final-response',
-  ...overrides,
-});
-
-const buildRouteToolCallResponse = (payload) => ({
-  tool_calls: [
-    {
-      id: 'route-call-1',
-      type: 'function',
-      function: {
-        name: 'SelectRoute',
-        arguments: JSON.stringify(payload),
-      },
-    },
-  ],
-});
-
-const buildToolCall = (name, args = {}, id = 'tool-call-1') => ({
-  id,
-  type: 'function',
-  function: {
-    name,
-    arguments: JSON.stringify(args),
-  },
-});
-
-const buildSetGoalsCall = (goal, steps, id = 'set-goals-1') => (
-  buildToolCall('SetGoals', { goal, steps }, id)
-);
-
-const isRouteCall = (args = {}) => (
-  Array.isArray(args.tools)
-  && args.tools.some((tool) => tool.function?.name === 'SelectRoute')
-);
-
-const setupConfig = (customTools, entityOverrides = {}) => {
-  const originalPathways = config.get('pathways') || {};
-  const originalEntityTools = config.get('entityTools') || {};
-  const entityId = 'entity-test-latency';
-
-  const pathways = {
-    ...originalPathways,
-    sys_generator_error: {
-      rootResolver: async (_parent, args) => ({
-        result: `ERROR_RESPONSE: ${args.text}`,
-      }),
-    },
-    test_tool_workspace: {
-      rootResolver: async (_parent, args) => ({
-        result: JSON.stringify({ success: true, command: args.command }),
-      }),
-    },
-    test_tool_search: {
-      rootResolver: async (_parent, args) => ({
-        result: JSON.stringify({ success: true, query: args.q || args.text || '' }),
-      }),
-    },
-    test_tool_fetch: {
-      rootResolver: async (_parent, args) => ({
-        result: JSON.stringify({ success: true, url: args.url || '' }),
-      }),
-    },
-    test_tool_chart: {
-      rootResolver: async () => ({
-        result: JSON.stringify({ success: true, chart: true }),
-      }),
-    },
-    test_tool_avatar: {
-      rootResolver: async (_parent, args) => ({
-        result: JSON.stringify({ success: true, file: args.file || '' }),
-      }),
-    },
-    test_tool_view_images: {
-      rootResolver: async (_parent, args) => ({
-        result: JSON.stringify({ success: true, files: args.files || [] }),
-      }),
-    },
-  };
-
-  const testEntity = {
-    id: entityId,
-    name: 'Latency Test Entity',
-    isDefault: true,
-    tools: Object.keys(customTools),
-    customTools,
-    ...entityOverrides,
-  };
-
-  config.load({
-    pathways,
-    entityTools: {},
-  });
-
-  const entityStore = getEntityStore();
-  entityStore._entityCache.set(entityId, testEntity);
-  entityStore._cacheTimestamps.set(entityId, Date.now());
-
-  return {
-    entityId,
-    originalPathways,
-    originalEntityTools,
-  };
-};
-
-const restoreConfig = (originals) => {
-  config.load({
-    pathways: originals.originalPathways,
-    entityTools: originals.originalEntityTools,
-  });
-
-  const entityStore = getEntityStore();
-  entityStore._entityCache.delete(originals.entityId);
-  entityStore._cacheTimestamps.delete(originals.entityId);
-};
-
-class PrototypePromptResolver {
-  constructor(overrides = {}) {
-    const { promptAndParse: _ignoredPromptAndParse, ...baseResolver } = buildResolver();
-    Object.assign(this, baseResolver);
-    Object.assign(this, overrides);
-  }
-
-  async promptAndParse(args) {
-    if (this._promptAndParseImpl) {
-      return this._promptAndParseImpl(args);
-    }
-    return 'final-response';
-  }
-}
-
-const stubContinuityService = () => {
-  const service = getContinuityMemoryService();
-  const original = {
-    isAvailable: service.isAvailable,
-    recordTurn: service.recordTurn,
-    triggerSynthesis: service.triggerSynthesis,
-    recordPulseTurn: service.recordPulseTurn,
-    triggerPulseSynthesis: service.triggerPulseSynthesis,
-  };
-  const calls = [];
-
-  service.isAvailable = () => true;
-  service.recordTurn = (...args) => {
-    calls.push({ type: 'recordTurn', args });
-  };
-  service.triggerSynthesis = (...args) => {
-    calls.push({ type: 'triggerSynthesis', args });
-  };
-  service.recordPulseTurn = (...args) => {
-    calls.push({ type: 'recordPulseTurn', args });
-  };
-  service.triggerPulseSynthesis = (...args) => {
-    calls.push({ type: 'triggerPulseSynthesis', args });
-  };
-
-  return {
-    calls,
-    restore() {
-      service.isAvailable = original.isAvailable;
-      service.recordTurn = original.recordTurn;
-      service.triggerSynthesis = original.triggerSynthesis;
-      service.recordPulseTurn = original.recordPulseTurn;
-      service.triggerPulseSynthesis = original.triggerPulseSynthesis;
-    },
-  };
-};
+import {
+  buildPredictNextTurnsCall,
+  buildResolver,
+  buildRouteToolCallResponse,
+  buildSetGoalsCall,
+  buildToolCall,
+  buildToolDefinition,
+  isRouteCall,
+  restoreConfig,
+  setupConfig,
+  stubContinuityService,
+} from './helpers/entityRuntimeHarness.js';
 
 test.serial('executeEntityAgentCore routes workspace inventory asks into plan with workspace tools', async (t) => {
   const originals = setupConfig({
@@ -679,858 +489,11 @@ test.serial('executeEntityAgentCore routes simple current-info turns through the
   t.false(finalPromptArgs.promptContext.includeAvailableFiles);
   t.true(finalPromptArgs.promptContext.includeDateTime);
   t.true(finalPromptArgs.chatHistory.some((message) => (
-    message.role === 'tool' && String(message.content).includes('Elon Musk today')
+    message.role === 'tool' && String(message.content || '').includes('"query":"Elon Musk today"')
   )));
-});
-
-test.serial('executeEntityAgentCore routes simple media-folder asks through the router-owned direct_tool fast path', async (t) => {
-  const originals = setupConfig({
-    workspacessh: buildToolDefinition('WorkspaceSSH', 'test_tool_workspace', {
-      command: { type: 'string' },
-      userMessage: { type: 'string' },
-      timeoutSeconds: { type: 'number' },
-    }),
-    viewimages: buildToolDefinition('ViewImages', 'test_tool_view_images', {
-      files: { type: 'array' },
-      userMessage: { type: 'string' },
-    }),
-    setbaseavatar: buildToolDefinition('SetBaseAvatar', 'test_tool_avatar', {
-      file: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let routePromptArgs;
-  let directToolPromptArgs;
-  let finalPromptArgs;
-  let directToolCallCount = 0;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        routePromptArgs = args;
-        return JSON.stringify({
-          mode: 'direct_tool',
-          confidence: 'high',
-          toolCategory: 'images',
-          planningEffort: 'low',
-          synthesisEffort: 'low',
-          conversationMode: 'agentic',
-          modeAction: 'switch',
-          reason: 'media_browse',
-          modeReason: 'workspace_request',
-        });
-      }
-      if (Array.isArray(args.tools) && args.tools.some((tool) => tool.function?.name === 'ViewImages')) {
-        directToolPromptArgs = args;
-        directToolCallCount += 1;
-        return {
-          tool_calls: [
-            buildToolCall('ViewImages', {
-              files: ['media/media.png', 'media/media-2.png'],
-              userMessage: 'Opening the media vault.',
-            }, 'view-images-call-1'),
-          ],
-        };
-      }
-      finalPromptArgs = args;
-      return 'media folder answer';
-    },
-  });
-
-  let plannerCalled = false;
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'Oooh show me some of the media folder.',
-      chatHistory: [{ role: 'user', content: 'Oooh show me some of the media folder.' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-direct-tool',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'agentic',
-      runtimeConversationModeConfidence: 'high',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async (args) => {
-      plannerCalled = true;
-      finalPromptArgs = args;
-      return 'unexpected planner call';
-    },
-    resolver,
-  });
-
-  t.is(result, 'media folder answer');
-  t.false(plannerCalled);
-  t.truthy(routePromptArgs);
-  t.truthy(directToolPromptArgs);
-  t.is(directToolCallCount, 1);
-  t.deepEqual(
-    directToolPromptArgs.tools.map((tool) => tool.function?.name).sort(),
-    ['SetBaseAvatar', 'ViewImages', 'WorkspaceSSH'],
-  );
-  t.deepEqual(finalPromptArgs.tools, []);
-  t.is(finalPromptArgs.latencyRouteMode, 'media_browse');
   t.true(finalPromptArgs.chatHistory.some((message) => (
-    message.role === 'tool' && String(message.content).includes('media/media.png')
+    String(message.content || '').includes('fast-search-finalize')
   )));
-});
-
-test.serial('executeEntityAgentCore uses the model router for ambiguous workspace inspection turns', async (t) => {
-  const originals = setupConfig({
-    workspacessh: buildToolDefinition('WorkspaceSSH', 'test_tool_workspace', {
-      command: { type: 'string' },
-      userMessage: { type: 'string' },
-      timeoutSeconds: { type: 'number' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let routePromptArgs;
-  let finalPromptArgs;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        routePromptArgs = args;
-        return JSON.stringify({
-          mode: 'plan',
-          confidence: 'high',
-          toolCategory: 'workspace',
-          planningEffort: 'low',
-          synthesisEffort: 'low',
-          conversationMode: 'agentic',
-          modeAction: 'switch',
-          reason: 'workspace_task',
-          modeReason: 'workspace_request',
-        });
-      }
-      if (!finalPromptArgs) {
-        finalPromptArgs = args;
-      }
-      return 'workspace answer';
-    },
-  });
-
-  let plannerCalled = false;
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'What do you see in your workspace?',
-      chatHistory: [{ role: 'user', content: 'What do you see in your workspace?' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-    },
-    runAllPrompts: async (args) => {
-      plannerCalled = true;
-      finalPromptArgs = args;
-      return 'unexpected planner call';
-    },
-    resolver,
-  });
-
-  t.is(result, 'workspace answer');
-  t.true(plannerCalled);
-  t.truthy(routePromptArgs);
-  t.deepEqual(routePromptArgs.tools.map((tool) => tool.function?.name), ['SelectRoute']);
-  t.deepEqual(routePromptArgs.tool_choice, { type: 'function', function: { name: 'SelectRoute' } });
-  t.is(routePromptArgs.reasoningEffort, 'none');
-  t.truthy(finalPromptArgs);
-  t.deepEqual(finalPromptArgs.tools.map((tool) => tool.function?.name), ['WorkspaceSSH', 'SetGoals']);
-  t.is(finalPromptArgs.latencyRouteMode, 'plan');
-  t.is(finalPromptArgs.latencyRouteReason, 'workspace_task');
-  t.is(finalPromptArgs.reasoningEffort, 'low');
-  t.true(finalPromptArgs.promptContext.includeAvailableFiles);
-  t.true(finalPromptArgs.promptContext.includeDateTime);
-  t.is(resolver.pathwayResultData?.entityRuntime?.conversationMode, 'agentic');
-});
-
-test.serial('executeEntityAgentCore routes avatar changes into planning with image tools', async (t) => {
-  const originals = setupConfig({
-    setbaseavatar: buildToolDefinition('SetBaseAvatar', 'test_tool_avatar', {
-      file: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let routePromptArgs;
-  let finalPromptArgs;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        routePromptArgs = args;
-        return buildRouteToolCallResponse({
-          mode: 'plan',
-          confidence: 'high',
-          toolCategory: 'images',
-          planningEffort: 'low',
-          synthesisEffort: 'low',
-          conversationMode: 'agentic',
-          modeAction: 'switch',
-          reason: 'image_task',
-          modeReason: 'avatar_change',
-        });
-      }
-      if (!finalPromptArgs) {
-        finalPromptArgs = args;
-      }
-      return 'avatar updated';
-    },
-  });
-
-  let plannerCalled = false;
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'Use jinx_avatar.png as the base avatar.',
-      chatHistory: [{ role: 'user', content: 'Use jinx_avatar.png as the base avatar.' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-avatar-route',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      runtimeConversationModeConfidence: 'low',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async () => {
-      plannerCalled = true;
-      return 'unexpected planner call';
-    },
-    resolver,
-  });
-
-  t.is(result, 'avatar updated');
-  t.true(plannerCalled);
-  t.deepEqual(routePromptArgs.tools.map((tool) => tool.function?.name), ['SelectRoute']);
-  t.deepEqual(resolver.args.initialPlanningToolNames, ['SetBaseAvatar']);
-  t.is(resolver.args.latencyRouteMode, 'plan');
-  t.is(resolver.args.latencyRouteReason, 'image_task');
-  t.true(resolver.args.promptContext.includeAvailableFiles);
-  t.true(resolver.args.promptContext.includeDateTime);
-  t.is(resolver.pathwayResultData?.entityRuntime?.conversationMode, 'agentic');
-});
-
-test.serial('executeEntityAgentCore routes image inspection into planning with image tools', async (t) => {
-  const originals = setupConfig({
-    viewimages: buildToolDefinition('ViewImages', 'test_tool_view_images', {
-      files: { type: 'array', items: { type: 'string' } },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let routePromptArgs;
-  let finalPromptArgs;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        routePromptArgs = args;
-        return buildRouteToolCallResponse({
-          mode: 'plan',
-          confidence: 'high',
-          toolCategory: 'images',
-          planningEffort: 'low',
-          synthesisEffort: 'low',
-          conversationMode: 'research',
-          modeAction: 'switch',
-          reason: 'image_task',
-          modeReason: 'image_inspection',
-        });
-      }
-      if (!finalPromptArgs) {
-        finalPromptArgs = args;
-      }
-      return 'image analysis';
-    },
-  });
-
-  let plannerCalled = false;
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'Take a close look at moodboard.webp for me.',
-      chatHistory: [{ role: 'user', content: 'Take a close look at moodboard.webp for me.' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-view-image-route',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      runtimeConversationModeConfidence: 'low',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async () => {
-      plannerCalled = true;
-      return 'unexpected planner call';
-    },
-    resolver,
-  });
-
-  t.is(result, 'image analysis');
-  t.true(plannerCalled);
-  t.deepEqual(routePromptArgs.tools.map((tool) => tool.function?.name), ['SelectRoute']);
-  t.deepEqual(resolver.args.initialPlanningToolNames, ['ViewImages']);
-  t.is(resolver.args.latencyRouteMode, 'plan');
-  t.is(resolver.args.latencyRouteReason, 'image_task');
-  t.true(resolver.args.promptContext.includeAvailableFiles);
-  t.true(resolver.args.promptContext.includeDateTime);
-  t.is(resolver.pathwayResultData?.entityRuntime?.conversationMode, 'research');
-});
-
-test.serial('executeEntityAgentCore lets the model router choose planning effort and tool family', async (t) => {
-  const originals = setupConfig({
-    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
-      q: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-    fetchwebpagecontentjina: buildToolDefinition('FetchWebPageContentJina', 'test_tool_fetch', {
-      url: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-    createchart: buildToolDefinition('CreateChart', 'test_tool_chart', {
-      detailedInstructions: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-    workspacessh: buildToolDefinition('WorkspaceSSH', 'test_tool_workspace', {
-      command: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let initialPromptArgs;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        return JSON.stringify({
-          mode: 'plan',
-          confidence: 'high',
-          toolCategory: 'web',
-          planningEffort: 'low',
-          synthesisEffort: 'medium',
-          reason: 'current_info',
-        });
-      }
-      return 'unexpected direct model call';
-    },
-  });
-
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'Give me the latest AI headlines in a quick chart.',
-      chatHistory: [{ role: 'user', content: 'Give me the latest AI headlines in a quick chart.' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-    },
-    runAllPrompts: async (args) => {
-      initialPromptArgs = args;
-      return 'planner answer';
-    },
-    resolver,
-  });
-
-  t.is(result, 'unexpected direct model call');
-  t.truthy(initialPromptArgs);
-  t.is(initialPromptArgs.reasoningEffort, 'low');
-  t.deepEqual(
-    initialPromptArgs.tools.map((tool) => tool.function?.name),
-    ['SearchInternet', 'FetchWebPageContentJina', 'CreateChart', 'SetGoals'],
-  );
-});
-
-test.serial('executeEntityAgentCore publishes sticky conversation mode changes into runtime result data', async (t) => {
-  const originals = setupConfig({
-    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
-      q: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        return JSON.stringify({
-          mode: 'plan',
-          confidence: 'high',
-          toolCategory: 'web',
-          planningEffort: 'low',
-          synthesisEffort: 'medium',
-          conversationMode: 'research',
-          modeAction: 'switch',
-          reason: 'current_info',
-          modeReason: 'current_info_request',
-        });
-      }
-      return 'planner answer';
-    },
-  });
-
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'What happened in AI today?',
-      chatHistory: [{ role: 'user', content: 'What happened in AI today?' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-1',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async () => 'planner answer',
-    resolver,
-  });
-
-  t.is(result, 'planner answer');
-  t.is(resolver.pathwayResultData?.entityRuntime?.conversationMode, 'research');
-  t.is(resolver.pathwayResultData?.entityRuntime?.modeMessage?.mode, 'research');
-  t.is(resolver.pathwayResultData?.entityRuntime?.modeMessage?.previousMode, 'chat');
-  t.is(resolver.pathwayResultData?.entityRuntime?.routeMode, 'plan');
-  t.is(resolver.pathwayResultData?.entityRuntime?.routeReason, 'current_info');
-  t.is(resolver.pathwayResultData?.entityRuntime?.routeSource, 'model');
-});
-
-test.serial('executeEntityAgentCore fails safe to plan when a high-confidence chat router response is invalid', async (t) => {
-  const originals = setupConfig({
-    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
-      q: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let plannerArgs;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        return '';
-      }
-      return 'unexpected direct model call';
-    },
-  });
-
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'What happened in AI today?',
-      chatHistory: [{ role: 'user', content: 'What happened in AI today?' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: true,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-router-invalid',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      runtimeConversationModeConfidence: 'high',
-      styleNeutralizationPatch: 'none',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async (args) => {
-      plannerArgs = args;
-      return 'planner answer';
-    },
-    resolver,
-  });
-
-  t.is(result, 'planner answer');
-  t.truthy(plannerArgs);
-  t.is(plannerArgs.latencyRouteMode, 'plan');
-  t.is(resolver.pathwayResultData?.entityRuntime?.conversationMode, 'chat');
-  t.is(resolver.pathwayResultData?.entityRuntime?.conversationModeConfidence, 'low');
-  t.is(resolver.pathwayResultData?.entityRuntime?.routeMode, 'plan');
-});
-
-test.serial('executeEntityAgentCore fails safe to plan when a direct reply router response is low confidence', async (t) => {
-  const originals = setupConfig({
-    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
-      q: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let plannerArgs;
-  let fastChatCalled = false;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        return buildRouteToolCallResponse({
-          mode: 'direct_reply',
-          confidence: 'low',
-          toolCategory: 'general',
-          planningEffort: 'low',
-          synthesisEffort: 'low',
-          conversationMode: 'chat',
-          modeAction: 'stay',
-          reason: 'chat_mode',
-          modeReason: 'unclear_referent',
-        });
-      }
-      fastChatCalled = true;
-      return 'unexpected direct reply';
-    },
-  });
-
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'Who owns that beast?',
-      chatHistory: [{ role: 'user', content: 'Who owns that beast?' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: true,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-router-low-confidence',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      runtimeConversationModeConfidence: 'high',
-      styleNeutralizationPatch: 'none',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async (args) => {
-      plannerArgs = args;
-      return 'planner answer';
-    },
-    resolver,
-  });
-
-  t.is(result, 'planner answer');
-  t.false(fastChatCalled);
-  t.truthy(plannerArgs);
-  t.is(plannerArgs.latencyRouteMode, 'plan');
-  t.is(resolver.pathwayResultData?.entityRuntime?.conversationMode, 'chat');
-  t.is(resolver.pathwayResultData?.entityRuntime?.conversationModeConfidence, 'low');
-});
-
-test.serial('executeEntityAgentCore runs router first and then direct reply fast path', async (t) => {
-  const originals = setupConfig({
-    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
-      q: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let routeCalls = 0;
-  let chatCalls = 0;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        routeCalls += 1;
-        await new Promise(resolve => setTimeout(resolve, 25));
-        return JSON.stringify({
-          mode: 'direct_reply',
-          confidence: 'high',
-          toolCategory: 'general',
-          planningEffort: 'low',
-          synthesisEffort: 'low',
-          conversationMode: 'chat',
-          modeAction: 'stay',
-          reason: 'casual_chat',
-          modeReason: 'casual_chat',
-        });
-      }
-      chatCalls += 1;
-      t.false(args.stream);
-      t.is(args.modelOverride, 'oai-gpt54-mini');
-      return 'direct reply answer';
-    },
-  });
-
-  let plannerCalled = false;
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'heh nice',
-      chatHistory: [{ role: 'user', content: 'heh nice' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-direct-reply',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      runtimeConversationModeConfidence: 'high',
-      styleNeutralizationPatch: 'none',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async () => {
-      plannerCalled = true;
-      return 'unexpected planner answer';
-    },
-    resolver,
-  });
-
-  t.is(result, 'direct reply answer');
-  t.false(plannerCalled);
-  t.is(routeCalls, 1);
-  t.is(chatCalls, 1);
-});
-
-test.serial('executeEntityAgentCore preserves streaming on direct reply fast path after routing', async (t) => {
-  const originals = setupConfig({
-    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
-      q: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let routeCalls = 0;
-  let chatCalls = 0;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        routeCalls += 1;
-        await new Promise(resolve => setTimeout(resolve, 25));
-        return buildRouteToolCallResponse({
-          mode: 'direct_reply',
-          confidence: 'high',
-          toolCategory: 'general',
-          planningEffort: 'low',
-          synthesisEffort: 'low',
-          conversationMode: 'chat',
-          modeAction: 'stay',
-          reason: 'casual_chat',
-          modeReason: 'casual_chat',
-        });
-      }
-      chatCalls += 1;
-      t.true(args.stream);
-      t.is(args.modelOverride, 'oai-gpt54-mini');
-      return 'streamed direct reply answer';
-    },
-  });
-
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'lol nice',
-      chatHistory: [{ role: 'user', content: 'lol nice' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: true,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-stream-direct-reply',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      runtimeConversationModeConfidence: 'high',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async () => 'unexpected planner answer',
-    resolver,
-  });
-
-  t.is(result, 'streamed direct reply answer');
-  t.is(routeCalls, 1);
-  t.is(chatCalls, 1);
-});
-
-test.serial('executeEntityAgentCore does not run direct reply fast path when router selects plan', async (t) => {
-  const originals = setupConfig({
-    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
-      q: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let chatCalls = 0;
-  const resolver = buildResolver({
-    promptAndParse: async (args) => {
-      if (isRouteCall(args)) {
-        return buildRouteToolCallResponse({
-          mode: 'plan',
-          confidence: 'high',
-          toolCategory: 'web',
-          planningEffort: 'low',
-          synthesisEffort: 'medium',
-          conversationMode: 'research',
-          modeAction: 'switch',
-          reason: 'current_info',
-          modeReason: 'current_info_request',
-        });
-      }
-      chatCalls += 1;
-      return 'unexpected direct reply answer';
-    },
-  });
-
-  let plannerArgs;
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'what happened in ai today',
-      chatHistory: [{ role: 'user', content: 'what happened in ai today' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-route-plan',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      runtimeConversationModeConfidence: 'high',
-      styleNeutralizationPatch: 'none',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async (args) => {
-      plannerArgs = args;
-      return 'planner answer';
-    },
-    resolver,
-  });
-
-  t.is(result, 'planner answer');
-  t.truthy(plannerArgs);
-  t.is(chatCalls, 0);
-  t.is(resolver.pathwayResultData?.entityRuntime?.conversationMode, 'research');
-});
-
-test.serial('executeEntityAgentCore preserves prototype promptAndParse for router and direct reply fast path', async (t) => {
-  const originals = setupConfig({
-    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
-      q: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let routeCalls = 0;
-  let chatCalls = 0;
-  const resolver = new PrototypePromptResolver({
-    _promptAndParseImpl: async (args) => {
-      if (isRouteCall(args)) {
-        routeCalls += 1;
-        await new Promise(resolve => setTimeout(resolve, 25));
-        return JSON.stringify({
-          mode: 'direct_reply',
-          confidence: 'high',
-          toolCategory: 'general',
-          planningEffort: 'low',
-          synthesisEffort: 'low',
-          conversationMode: 'chat',
-          modeAction: 'stay',
-          reason: 'casual_chat',
-          modeReason: 'casual_chat',
-        });
-      }
-      chatCalls += 1;
-      return 'prototype direct reply answer';
-    },
-  });
-
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'nice',
-      chatHistory: [{ role: 'user', content: 'nice' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-prototype',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      runtimeConversationModeConfidence: 'high',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async () => 'unexpected planner answer',
-    resolver,
-  });
-
-  t.is(result, 'prototype direct reply answer');
-  t.is(routeCalls, 1);
-  t.is(chatCalls, 1);
-});
-
-test.serial('executeEntityAgentCore shadow router uses the router prompt instead of inheriting the parent prompt state', async (t) => {
-  const originals = setupConfig({
-    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
-      q: { type: 'string' },
-      userMessage: { type: 'string' },
-    }),
-  });
-  t.teardown(() => restoreConfig(originals));
-
-  let sawRouterPrompt = false;
-  const resolver = new PrototypePromptResolver({
-    prompts: [{ messages: [{ role: 'system', content: 'ORIGINAL_PROMPT_SHOULD_NOT_BE_USED' }] }],
-    _promptAndParseImpl: async function (args) {
-      if (isRouteCall(args)) {
-        const routerSystemPrompt = this.prompts?.[0]?.messages?.[0]?.content || '';
-        sawRouterPrompt = routerSystemPrompt.includes('You are a latency router for an agent runtime');
-        return buildRouteToolCallResponse({
-          mode: 'direct_reply',
-          confidence: 'high',
-          toolCategory: 'general',
-          planningEffort: 'low',
-          synthesisEffort: 'low',
-          conversationMode: 'chat',
-          modeAction: 'stay',
-          reason: 'casual_chat',
-          modeReason: 'casual_chat',
-        });
-      }
-      return 'chat answer';
-    },
-  });
-
-  const result = await executeEntityAgentCore({
-    args: {
-      text: 'hey',
-      chatHistory: [{ role: 'user', content: 'hey' }],
-      agentContext: [],
-      entityId: originals.entityId,
-      invocationType: 'chat',
-      stream: false,
-      useMemory: false,
-      runtimeMode: 'entity-runtime',
-      runtimeRunId: 'run-test-shadow-router-prompt',
-      runtimeStage: 'research_batch',
-      runtimeConversationMode: 'chat',
-      runtimeConversationModeConfidence: 'low',
-      authorityEnvelope: { maxToolBudget: 100, maxResearchRounds: 4, maxSearchCalls: 4, maxFetchCalls: 4, maxChildRuns: 1, maxToolCallsPerRound: 4, maxRepeatedSearches: 2, noveltyWindow: 2, minNewEvidencePerWindow: 1, maxEvidenceItems: 10, maxWallClockMs: 60000 },
-      modelPolicy: { routingModel: 'oai-gpt54-mini', primaryModel: 'oai-gpt54', planningModel: 'oai-gpt54', synthesisModel: 'oai-gpt54', verificationModel: 'oai-gpt54' },
-    },
-    runAllPrompts: async () => 'unexpected planner answer',
-    resolver,
-  });
-
-  t.is(result, 'chat answer');
-  t.true(sawRouterPrompt);
 });
 
 test.serial('executeEntityAgentCore preloads continuity before building a direct-reply prompt', async (t) => {
@@ -2017,10 +980,203 @@ test.serial('prepareEntityLatencyCore warms continuity and fast chat prompt cach
   const warmCall = promptCalls.find((args) => !isRouteCall(args));
   t.truthy(warmCall);
   t.is(warmCall.stream, false);
-  t.is(warmCall.max_output_tokens, 1);
-  t.is(warmCall.max_tokens, 1);
+  t.is(warmCall.max_output_tokens, 16);
+  t.is(warmCall.max_tokens, 16);
   t.deepEqual(warmCall.tools, []);
   t.truthy(warmCall.promptCache?.key);
+  t.is(preparation.artifacts.preparedText, 'hey there');
+  t.is(preparation.artifacts.route.mode, 'direct_reply');
+  t.true(String(preparation.artifacts.continuityContext || '').includes('Ready.'));
+});
+
+test.serial('prepareEntityLatencyCore predicts likely next turns for view warmups and warms each branch', async (t) => {
+  const originals = setupConfig({});
+  t.teardown(() => restoreConfig(originals));
+
+  const promptCalls = [];
+  const resolver = buildResolver({
+    ensureMemoryLoaded: async (args) => {
+      resolver.continuityContext = '## Current Expression State\nReady.';
+      resolver.continuityEntityId = originals.entityId;
+      resolver.continuityUserId = args.contextId;
+      resolver._continuityPreloaded = true;
+      return { enabled: true, attempted: true, loaded: true, source: 'test' };
+    },
+    promptAndParse: async (args) => {
+      promptCalls.push(args);
+      if (isRouteCall(args)) {
+        return buildRouteToolCallResponse({
+          mode: 'direct_reply',
+          confidence: 'high',
+          toolCategory: 'general',
+          planningEffort: 'low',
+          synthesisEffort: 'low',
+          conversationMode: 'chat',
+          modeAction: 'stay',
+          reason: 'casual_chat',
+          modeReason: 'casual_chat',
+        });
+      }
+      if (Array.isArray(args.tools) && args.tools.some((tool) => tool.function?.name === 'PredictNextTurns')) {
+        return {
+          tool_calls: [
+            buildPredictNextTurnsCall([
+              'show me more',
+              'what else do you know about Kyoto?',
+            ]),
+          ],
+        };
+      }
+      return 'warm';
+    },
+  });
+
+  const preparation = await prepareEntityLatencyCore({
+    args: {
+      requestedOutput: 'latency_prepare',
+      text: '',
+      trigger: 'view',
+      chatHistory: [
+        { role: 'user', content: 'Tell me about Kyoto.' },
+        { role: 'assistant', content: 'Kyoto is calm, old, and beautiful.' },
+      ],
+      agentContext: [{ contextId: 'user-ctx', contextKey: '', default: true }],
+      entityId: originals.entityId,
+      invocationType: 'anticipate',
+      stream: false,
+      useMemory: true,
+      runtimeMode: 'entity-runtime',
+      runtimeConversationMode: 'chat',
+      runtimeConversationModeConfidence: 'low',
+    },
+    resolver,
+  });
+
+  t.true(preparation.prepared);
+  t.is(preparation.routeMode, 'direct_reply');
+  t.deepEqual(preparation.warmedPurposes, ['fast_chat']);
+  t.deepEqual(
+    preparation.predictedBranches.map((branch) => branch.text),
+    ['show me more', 'what else do you know about Kyoto?'],
+  );
+  t.true(preparation.predictedBranches.every((branch) => branch.routeMode === 'direct_reply'));
+  t.true(preparation.predictedBranches.every((branch) => (
+    Array.isArray(branch.warmedPurposes) && branch.warmedPurposes[0] === 'fast_chat'
+  )));
+  t.true(preparation.predictedBranches.every((branch) => branch.artifacts?.route?.mode === 'direct_reply'));
+  t.is(
+    promptCalls.filter((args) => Array.isArray(args.tools) && args.tools.some((tool) => tool.function?.name === 'PredictNextTurns')).length,
+    1,
+  );
+  t.is(
+    promptCalls.find((args) => Array.isArray(args.tools) && args.tools.some((tool) => tool.function?.name === 'PredictNextTurns'))?.reasoningEffort,
+    'none',
+  );
+  t.is(promptCalls.filter((args) => isRouteCall(args)).length, 3);
+});
+
+test.serial('prepareEntityLatencyCore strips tool transcript from fast search warmups across providers and ignores warm failures', async (t) => {
+  const originals = setupConfig({
+    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
+      q: { type: 'string' },
+      userMessage: { type: 'string' },
+    }),
+  }, {
+    modelPolicy: {
+      primaryModel: 'gemini-flash-31-lite-vision',
+      planningModel: 'gemini-flash-31-lite-vision',
+      researchModel: 'gemini-flash-31-lite-vision',
+      synthesisModel: 'gemini-flash-31-lite-vision',
+      routingModel: 'gemini-flash-31-lite-vision',
+    },
+  });
+  t.teardown(() => restoreConfig(originals));
+
+  for (const modelName of ['gemini-flash-31-lite-vision', 'claude-45-haiku']) {
+    const fastSearchCalls = [];
+    const resolver = buildResolver({
+      ensureMemoryLoaded: async (args) => {
+        resolver.continuityContext = '## Current Expression State\nReady.';
+        resolver.continuityEntityId = originals.entityId;
+        resolver.continuityUserId = args.contextId;
+        resolver._continuityPreloaded = true;
+        return { enabled: true, attempted: true, loaded: true, source: 'test' };
+      },
+      promptAndParse: async (args) => {
+        if (isRouteCall(args)) {
+          return buildRouteToolCallResponse({
+            mode: 'direct_search',
+            confidence: 'high',
+            toolCategory: 'web',
+            planningEffort: 'low',
+            synthesisEffort: 'low',
+            conversationMode: 'research',
+            modeAction: 'stay',
+            reason: 'fact_lookup',
+            modeReason: 'fact_lookup',
+          });
+        }
+        if (Array.isArray(args.tools) && args.tools.some((tool) => tool.function?.name === 'PredictNextTurns')) {
+          return {
+            tool_calls: [
+              buildPredictNextTurnsCall([
+                'what is the quarter mile time exactly?',
+              ]),
+            ],
+          };
+        }
+        if (Array.isArray(args.tools) && args.tools.some((tool) => tool.function?.name === 'SearchInternet')) {
+          fastSearchCalls.push(args);
+          throw new Error('synthetic warm failure');
+        }
+        return 'warm';
+      },
+    });
+
+    const preparation = await prepareEntityLatencyCore({
+      args: {
+        requestedOutput: 'latency_prepare',
+        text: '',
+        trigger: 'post_reply',
+        chatHistory: [
+          { role: 'user', content: 'What is the quarter mile on a new Model Y Performance?' },
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [buildToolCall('SearchInternet', { q: 'Model Y Performance quarter mile' }, 'tool-call-search-1')],
+          },
+          { role: 'tool', content: '{"result":"stale tool output"}' },
+          { role: 'user', content: '[Prior tool result: SearchInternet]\n{"result":"old"}' },
+          { role: 'assistant', content: 'Looks like my last attempt glitched. Ask again and I will rerun it clean.' },
+        ],
+        agentContext: [{ contextId: 'user-ctx', contextKey: '', default: true }],
+        entityId: originals.entityId,
+        invocationType: 'anticipate',
+        stream: false,
+        useMemory: true,
+        runtimeMode: 'entity-runtime',
+        runtimeConversationMode: 'research',
+        runtimeConversationModeConfidence: 'high',
+        modelPolicy: {
+          primaryModel: modelName,
+          planningModel: modelName,
+          researchModel: modelName,
+          synthesisModel: modelName,
+          routingModel: modelName,
+        },
+      },
+      resolver,
+    });
+
+    t.true(preparation.prepared, modelName);
+    t.deepEqual(preparation.warmedPurposes, [], modelName);
+    t.true(fastSearchCalls.length >= 1, modelName);
+    for (const call of fastSearchCalls) {
+      t.false(call.chatHistory.some((message) => message.role === 'tool'), modelName);
+      t.false(call.chatHistory.some((message) => Array.isArray(message.tool_calls) && message.tool_calls.length > 0), modelName);
+      t.false(call.chatHistory.some((message) => String(message.content || '').startsWith('[Prior tool result:')), modelName);
+    }
+  }
 });
 
 test.serial('prepareEntityLatencyCore skips heavy planner speculation for plan routes', async (t) => {
@@ -2081,5 +1237,276 @@ test.serial('prepareEntityLatencyCore skips heavy planner speculation for plan r
   t.true(preparation.speculationSkipped);
   t.deepEqual(preparation.warmedPurposes, []);
   t.true(promptCalls.some((args) => isRouteCall(args)));
-  t.is(promptCalls.filter((args) => !isRouteCall(args)).length, 0);
+  const nonRouteCalls = promptCalls.filter((args) => !isRouteCall(args));
+  t.true(nonRouteCalls.length <= 1);
+  if (nonRouteCalls.length === 1) {
+    t.true(Array.isArray(nonRouteCalls[0].tools));
+    t.true(nonRouteCalls[0].tools.every((tool) => tool.function?.name === 'SearchMemory'));
+  }
+});
+
+test.serial('prepareEntityLatencyCore stores speculative read-only research results as reusable evidence', async (t) => {
+  const originals = setupConfig({
+    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
+      q: { type: 'string' },
+      userMessage: { type: 'string' },
+    }),
+  });
+  t.teardown(() => restoreConfig(originals));
+
+  const promptCalls = [];
+  const resolver = buildResolver({
+    ensureMemoryLoaded: async (args) => {
+      resolver.continuityContext = '## Current Expression State\nReady.';
+      resolver.continuityEntityId = originals.entityId;
+      resolver.continuityUserId = args.contextId;
+      resolver._continuityPreloaded = true;
+      return { enabled: true, attempted: true, loaded: true, source: 'test' };
+    },
+    promptAndParse: async (args) => {
+      promptCalls.push(args);
+      if (isRouteCall(args)) {
+        return buildRouteToolCallResponse({
+          mode: 'direct_search',
+          confidence: 'high',
+          toolCategory: 'web',
+          planningEffort: 'low',
+          synthesisEffort: 'low',
+          conversationMode: 'research',
+          modeAction: 'stay',
+          reason: 'fact_lookup',
+          modeReason: 'fact_lookup',
+        });
+      }
+      if (
+        Array.isArray(args.tools)
+        && args.tools.some((tool) => tool.function?.name === 'SearchInternet')
+        && Array.isArray(args.chatHistory)
+        && args.chatHistory.some((message) => String(message.content || '').includes('[system message: speculative-research]'))
+      ) {
+        return {
+          tool_calls: [
+            buildToolCall('SearchInternet', { q: 'quarter mile record runs', userMessage: 'Checking latest record runs.' }, 'spec-search-1'),
+          ],
+        };
+      }
+      return 'warm';
+    },
+  });
+
+  const preparation = await prepareEntityLatencyCore({
+    args: {
+      requestedOutput: 'latency_prepare',
+      text: 'look for record runs',
+      chatHistory: [{ role: 'user', content: 'look for record runs' }],
+      agentContext: [{ contextId: 'user-ctx', contextKey: '', default: true }],
+      entityId: originals.entityId,
+      invocationType: 'chat',
+      stream: false,
+      useMemory: true,
+      runtimeMode: 'entity-runtime',
+      runtimeConversationMode: 'research',
+      runtimeConversationModeConfidence: 'high',
+    },
+    resolver,
+  });
+
+  t.true(preparation.prepared);
+  t.is(preparation.routeMode, 'direct_search');
+  t.true(Array.isArray(preparation.artifacts.speculativeEvidence));
+  t.is(preparation.artifacts.speculativeEvidence.length, 1);
+  t.is(preparation.artifacts.speculativeEvidence[0].toolName, 'SearchInternet');
+  t.true(preparation.artifacts.speculativeEvidence[0].content.includes('quarter mile record runs'));
+});
+
+test.serial('executeEntityAgentCore reuses speculative preparation artifacts for matched predicted branches', async (t) => {
+  const originals = setupConfig({});
+  t.teardown(() => restoreConfig(originals));
+
+  let memoryLoadCount = 0;
+  let routeCallCount = 0;
+  let finalCallArgs = null;
+  const resolver = buildResolver({
+    ensureMemoryLoaded: async () => {
+      memoryLoadCount += 1;
+      resolver.continuityContext = 'should not be loaded';
+      resolver._continuityPreloaded = true;
+      return { enabled: true, attempted: true, loaded: true, source: 'test' };
+    },
+    promptAndParse: async (args) => {
+      if (isRouteCall(args)) {
+        routeCallCount += 1;
+        return buildRouteToolCallResponse({
+          mode: 'direct_reply',
+          confidence: 'high',
+          toolCategory: 'general',
+          planningEffort: 'low',
+          synthesisEffort: 'low',
+          conversationMode: 'chat',
+          modeAction: 'stay',
+          reason: 'casual_chat',
+          modeReason: 'casual_chat',
+        });
+      }
+      finalCallArgs = args;
+      return 'reused speculative reply';
+    },
+  });
+
+  const speculativePreparation = {
+    prepared: true,
+    preparedText: '',
+    predictedBranches: [
+      {
+        text: 'show me more',
+        artifacts: {
+          preparedText: 'show me more',
+          preparedTextKey: 'show me more',
+          route: {
+            mode: 'direct_reply',
+            reason: 'casual_chat',
+            routeSource: 'speculative_prepare',
+            toolCategory: 'general',
+            toolName: '',
+            initialToolNames: [],
+            planningReasoningEffort: 'low',
+            synthesisReasoningEffort: 'low',
+          },
+          continuityContext: '## Current Expression State\nSpeculative continuity.',
+          continuityLoaded: true,
+          conversationMode: 'chat',
+          conversationModeConfidence: 'high',
+        },
+      },
+    ],
+  };
+
+  const result = await executeEntityAgentCore({
+    args: {
+      text: 'show me more',
+      chatHistory: [
+        { role: 'user', content: 'Tell me about Kyoto.' },
+        { role: 'assistant', content: 'Kyoto is calm, old, and beautiful.' },
+        { role: 'user', content: 'show me more' },
+      ],
+      agentContext: [{ contextId: 'user-ctx', contextKey: '', default: true }],
+      entityId: originals.entityId,
+      invocationType: 'chat',
+      stream: false,
+      useMemory: true,
+      speculativePreparation: JSON.stringify(speculativePreparation),
+    },
+    runAllPrompts: async () => 'unexpected planner call',
+    resolver,
+  });
+
+  t.is(result, 'reused speculative reply');
+  t.is(routeCallCount, 0);
+  t.is(memoryLoadCount, 0);
+  t.truthy(finalCallArgs);
+  t.true(Array.isArray(finalCallArgs.chatHistory));
+  t.true(String(resolver.continuityContext || '').includes('Speculative continuity.'));
+});
+
+test.serial('executeEntityAgentCore injects speculative research evidence into the first live fast-search call', async (t) => {
+  const originals = setupConfig({
+    searchinternet: buildToolDefinition('SearchInternet', 'test_tool_search', {
+      q: { type: 'string' },
+      userMessage: { type: 'string' },
+    }),
+  });
+  t.teardown(() => restoreConfig(originals));
+
+  let routeCallCount = 0;
+  let memoryLoadCount = 0;
+  let fastSearchCall = null;
+  const resolver = buildResolver({
+    ensureMemoryLoaded: async () => {
+      memoryLoadCount += 1;
+      resolver.continuityContext = 'should not be loaded';
+      resolver._continuityPreloaded = true;
+      return { enabled: true, attempted: true, loaded: true, source: 'test' };
+    },
+    promptAndParse: async (args) => {
+      if (isRouteCall(args)) {
+        routeCallCount += 1;
+        return buildRouteToolCallResponse({
+          mode: 'direct_search',
+          confidence: 'high',
+          toolCategory: 'web',
+          planningEffort: 'low',
+          synthesisEffort: 'low',
+          conversationMode: 'research',
+          modeAction: 'stay',
+          reason: 'fact_lookup',
+          modeReason: 'fact_lookup',
+        });
+      }
+      if (Array.isArray(args.tools) && args.tools.some((tool) => tool.function?.name === 'SearchInternet')) {
+        fastSearchCall = args;
+        return 'The cached research already shows the current record runs.';
+      }
+      return 'The cached research already shows the current record runs.';
+    },
+  });
+
+  const speculativePreparation = {
+    prepared: true,
+    predictedBranches: [
+      {
+        text: 'look in the forums for record runs',
+        artifacts: {
+          preparedText: 'look in the forums for record runs',
+          preparedTextKey: 'look in the forums for record runs',
+          route: {
+            mode: 'direct_search',
+            reason: 'fact_lookup',
+            routeSource: 'speculative_prepare',
+            toolCategory: 'web',
+            toolName: '',
+            initialToolNames: ['SearchInternet'],
+            planningReasoningEffort: 'low',
+            synthesisReasoningEffort: 'low',
+          },
+          continuityContext: '## Current Expression State\nSpeculative continuity.',
+          continuityLoaded: true,
+          conversationMode: 'research',
+          conversationModeConfidence: 'high',
+          speculativeEvidence: [
+            {
+              toolName: 'SearchInternet',
+              content: '{"success":true,"query":"quarter mile record runs","message":"Found forum results."}',
+            },
+          ],
+        },
+      },
+    ],
+  };
+
+  const result = await executeEntityAgentCore({
+    args: {
+      text: 'look in the forums for record runs',
+      chatHistory: [
+        { role: 'user', content: 'What is the record quarter mile?' },
+        { role: 'assistant', content: 'I can check the forums if you want.' },
+        { role: 'user', content: 'look in the forums for record runs' },
+      ],
+      agentContext: [{ contextId: 'user-ctx', contextKey: '', default: true }],
+      entityId: originals.entityId,
+      invocationType: 'chat',
+      stream: false,
+      useMemory: true,
+      speculativePreparation: JSON.stringify(speculativePreparation),
+    },
+    runAllPrompts: async () => 'unexpected planner call',
+    resolver,
+  });
+
+  t.is(result, 'The cached research already shows the current record runs.');
+  t.is(routeCallCount, 0);
+  t.is(memoryLoadCount, 0);
+  t.truthy(fastSearchCall);
+  t.true(fastSearchCall.chatHistory.some((message) => (
+    String(message.content || '').includes('[Prior tool result: SearchInternet]')
+  )));
 });

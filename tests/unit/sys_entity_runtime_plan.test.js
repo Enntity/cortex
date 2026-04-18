@@ -10,6 +10,7 @@ import {
   buildDefaultToolUserMessage,
   buildInitialPlanningTools,
   buildDelegateOnlyPlanningHistory,
+  buildDirectReplyHistory,
   buildWorkerStartingHistory,
   buildRuntimeEvidenceLedgerText,
   shouldBreakForInsufficientGrounding,
@@ -1768,22 +1769,29 @@ test('buildInitialPlanningTools keeps one runtime code path for direct work and 
   );
 });
 
-test('buildDelegateOnlyPlanningHistory narrows the delegator context to the current ask', (t) => {
+test('buildDelegateOnlyPlanningHistory keeps a broad recent conversational tail for referential follow-ups', (t) => {
   const resolver = buildResolver();
   const history = buildDelegateOnlyPlanningHistory([
     { role: 'assistant', content: 'Old answer' },
     { role: 'user', content: 'Old question' },
     { role: 'assistant', content: '', tool_calls: [buildToolCall('SearchTool', { userMessage: 'search' }, 'call-old')] },
     { role: 'tool', tool_call_id: 'call-old', name: 'SearchTool', content: 'Old tool output' },
+    { role: 'assistant', content: 'Hero runs means quarter-mile runs for the Model Y Performance.' },
+    { role: 'user', content: 'Right, check the forums.' },
     { role: 'user', content: 'Who is in my orbit?' },
   ], resolver, {
     initialToolNames: ['SearchMemory', 'WorkspaceSSH'],
   });
 
-  t.is(history.length, 2);
-  t.is(history[0].content, 'Who is in my orbit?');
-  t.true(history[1].content.includes('Delegate the research only.'));
-  t.true(history[1].content.includes('Prefer these source families first: memory.'));
+  t.is(history.length, 5);
+  t.is(history[0].content, 'Old question');
+  t.is(history[1].content, 'Hero runs means quarter-mile runs for the Model Y Performance.');
+  t.is(history[2].content, 'Right, check the forums.');
+  t.is(history[3].content, 'Who is in my orbit?');
+  t.true(history[history.length - 1].content.includes('Delegate the research only.'));
+  const insertedSystem = history.find((message) => typeof message.content === 'string' && message.content.includes('Delegate the research only.'));
+  t.truthy(insertedSystem);
+  t.true(insertedSystem.content.includes('Prefer these source families first: memory.'));
 });
 
 test('buildWorkerStartingHistory keeps system instructions and trims conversational history', (t) => {
@@ -1805,6 +1813,33 @@ test('buildWorkerStartingHistory keeps system instructions and trims conversatio
       'Old answer',
       'Recent answer framing',
       'Who is in my orbit?',
+    ],
+  );
+});
+
+test('buildDirectReplyHistory keeps broad recent conversational context without tool transcript', (t) => {
+  const history = buildDirectReplyHistory([
+    { role: 'assistant', content: 'Earlier framing' },
+    { role: 'user', content: 'We are talking about the Model Y Performance.' },
+    { role: 'assistant', content: '', tool_calls: [buildToolCall('SearchTool', { userMessage: 'search' }, 'call-old')] },
+    { role: 'tool', tool_call_id: 'call-old', name: 'SearchTool', content: 'Old tool output' },
+    { role: 'assistant', content: 'Hero runs means quarter-mile runs.' },
+    { role: 'user', content: 'Right.' },
+    { role: 'assistant', content: 'Forums will probably have the best recent slips.' },
+    { role: 'user', content: 'What were the record runs again?' },
+  ], {
+    maxTurns: 10,
+    maxMessages: 20,
+  });
+
+  t.deepEqual(
+    history.map((message) => message.content),
+    [
+      'We are talking about the Model Y Performance.',
+      'Hero runs means quarter-mile runs.',
+      'Right.',
+      'Forums will probably have the best recent slips.',
+      'What were the record runs again?',
     ],
   );
 });

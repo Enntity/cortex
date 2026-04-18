@@ -13,13 +13,21 @@ const TOOL_LOOP_MODEL = 'xai-grok-4-1-fast-non-reasoning';
 const MAX_REPLAN_SAFETY_CAP = 10;
 const ROUTER_MAX_INPUT_CHARS = 280;
 const ROUTER_MAX_RECENT_FILES = 3;
-const FAST_CHAT_MAX_TURNS = 3;
+const DIRECT_REPLY_HISTORY_MAX_TURNS = 10;
+const DIRECT_REPLY_HISTORY_MAX_MESSAGES = 20;
 const FAST_REACTION_MAX_TURNS = 2;
 const FAST_REACTION_MAX_MESSAGES = 4;
 const FAST_TOOL_MAX_TURNS = 2;
 const FAST_TOOL_MAX_MESSAGES = 8;
+const DELEGATOR_HISTORY_MAX_TURNS = 10;
+const DELEGATOR_HISTORY_MAX_MESSAGES = 20;
 const FAST_CHAT_REASONING_EFFORT = 'low';
 const LATENCY_PREPARE_REQUESTED_OUTPUT = 'latency_prepare';
+const ANTICIPATE_NEXT_TURNS_TOOL_NAME = 'PredictNextTurns';
+const ANTICIPATION_BRANCH_LIMIT = 3;
+const ANTICIPATION_HISTORY_MAX_TURNS = 3;
+const ANTICIPATION_HISTORY_MAX_MESSAGES = 8;
+const ANTICIPATION_TRIGGER_PREDICTIVE = new Set(['view', 'post_reply']);
 const SYNTHESIS_REVIEW_MARKER = '[runtime review]';
 const EVIDENCE_LEDGER_MARKER = '[runtime evidence]';
 const MAX_CHILD_WORKER_ROUNDS = 3;
@@ -47,6 +55,14 @@ const RESEARCH_DELEGATION_TOOL_NAMES = new Set([
     'analyzevideo',
 ]);
 const RESEARCH_RETRIEVAL_TOOL_NAMES = new Set([
+    'searchmemory',
+    'searchinternet',
+    'searchxplatform',
+    'fetchwebpagecontentjina',
+    'analyzepdf',
+    'analyzevideo',
+]);
+const SPECULATIVE_READ_ONLY_TOOL_NAMES = new Set([
     'searchmemory',
     'searchinternet',
     'searchxplatform',
@@ -171,6 +187,27 @@ const ROUTER_DECISION_OPENAI_DEF = {
     },
 };
 
+const ANTICIPATE_NEXT_TURNS_OPENAI_DEF = {
+    type: 'function',
+    function: {
+        name: ANTICIPATE_NEXT_TURNS_TOOL_NAME,
+        description: 'Predict the most likely next user turns for latency warmup.',
+        parameters: {
+            type: 'object',
+            properties: {
+                predictions: {
+                    type: 'array',
+                    items: {
+                        type: 'string',
+                    },
+                    description: '1-3 short likely next user turns, written as the user would say them.',
+                },
+            },
+            required: ['predictions'],
+        },
+    },
+};
+
 const VOICE_FALLBACKS = {
     'GoogleSearch': 'Let me look that up.',
     'GoogleNews': 'Checking the news.',
@@ -211,12 +248,14 @@ import {
     ENTITY_RUNTIME_MODE,
     buildPromptCacheHint,
     buildSemanticToolKey,
+    extractRecentConversation,
     extractRecentFileReferences,
     getConversationModeAffiliationPolicy,
     getEntityRuntime,
     getEntityRuntimeStore,
     isEntityRuntimeEnabled,
     normalizeConversationMode,
+    normalizeTextKey,
     normalizeToolFamily,
     routeEntityTurn,
     resolveAuthorityEnvelope,
@@ -444,6 +483,23 @@ function buildFastSearchPromptTemplate({
     ];
 }
 
+function buildAnticipationPredictionPromptTemplate() {
+    return [
+        {
+            role: 'system',
+            content: [
+                'You are predicting likely immediate next user turns for speculative latency warmup.',
+                `Call ${ANTICIPATE_NEXT_TURNS_TOOL_NAME} exactly once.`,
+                'Do not answer the user.',
+                'Return 1-3 short, concrete user utterances written exactly as the user might say them next.',
+                'Prefer immediate follow-ups, clarifications, “show me more”, adjacent questions, or obvious next actions.',
+                'Keep predictions concise and distinct.',
+            ].join('\n\n'),
+        },
+        '{{chatHistory}}',
+    ];
+}
+
 export function buildInitialPlanningTools({
     planningToolsOpenAiFormat = [],
     entityToolsOpenAiFormat = [],
@@ -550,6 +606,10 @@ function buildChildWorkerPromptTemplate({
 }
 
 export function buildPurposePromptOverride(callArgs = {}, purpose = '') {
+    if (purpose === 'anticipate_next_turns') {
+        return buildAnticipationPredictionPromptTemplate();
+    }
+
     const promptMeta = callArgs.promptTemplateMeta || {};
     if (!promptMeta || typeof promptMeta !== 'object') return null;
     const hasDelegateResearch = hasToolName(callArgs.tools, 'DelegateResearch');
@@ -1595,7 +1655,7 @@ function shouldUseModelRouter({ text = '', invocationType = '', initialRoute = n
     return true;
 }
 
-function buildRoutingPrompt({ text = '', recentFiles = [], availableToolNames = [], initialRoute = null, currentMode = 'chat' } = {}) {
+function buildRoutingPrompt({ text = '', recentFiles = [], recentConversation = [], availableToolNames = [], initialRoute = null, currentMode = 'chat' } = {}) {
     return [
         {
             role: 'system',
@@ -1632,6 +1692,7 @@ Rules:
 - Prefer "direct_tool" for simple local single-action turns like showing files, opening images/media, listing a folder, or making one obvious workspace/image action where one focused tool round should be enough.
 - Use "plan" if the turn has real ambiguity, entity-identification uncertainty, multiple plausible targets, broad or comparative scope, likely follow-on searches/fetches, likely iterative research, action-taking, or file/workspace handling.
 - If you suspect the model may need a second tool/research round to be reliable, choose "plan", not "direct_search" or "direct_tool".
+- Use recentConversation to resolve short referential follow-ups like "yeah", "do it", "check it out", "show me", or "what about that".
 - planningEffort: "low" for straightforward inspection/reporting/tool-routing turns, "medium" for normal tasks, "high" for broad research or complex problem-solving.
 - synthesisEffort: "low" for short direct answers or simple summaries, otherwise "medium" unless nuanced synthesis clearly needs "high".
 - modeAction: "stay" if the current sticky mode still fits, otherwise "switch".
@@ -1644,6 +1705,7 @@ Rules:
             content: JSON.stringify({
                 userText: text,
                 currentMode,
+                recentConversation: recentConversation.slice(-6),
                 recentFiles: recentFiles.slice(0, ROUTER_MAX_RECENT_FILES),
                 availableTools: availableToolNames,
                 heuristic: {
@@ -1688,6 +1750,43 @@ function extractRoutingDecisionPayload(response) {
     return null;
 }
 
+function extractPredictedNextTurnsPayload(response) {
+    const toolCalls = extractToolCalls(response);
+    const predictToolCall = toolCalls.find((toolCall) => (
+        String(toolCall?.function?.name || '').trim() === ANTICIPATE_NEXT_TURNS_TOOL_NAME
+    ));
+    const toolArgs = predictToolCall?.function?.arguments;
+    const parsedToolArgs = toolArgs ? safeParse(toolArgs) : null;
+    if (parsedToolArgs && typeof parsedToolArgs === 'object' && !Array.isArray(parsedToolArgs)) {
+        return parsedToolArgs;
+    }
+
+    const raw = extractJsonObjectCandidate(extractResponseText(response));
+    const parsedText = raw ? safeParse(raw) : null;
+    if (parsedText && typeof parsedText === 'object' && !Array.isArray(parsedText)) {
+        return parsedText;
+    }
+
+    return null;
+}
+
+function parsePredictedNextTurns(response) {
+    const parsed = extractPredictedNextTurnsPayload(response);
+    if (!parsed || !Array.isArray(parsed.predictions)) return [];
+
+    const seen = new Set();
+    return parsed.predictions
+        .map((value) => String(value || '').trim())
+        .filter((value) => value.length > 0)
+        .filter((value) => {
+            const key = value.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        })
+        .slice(0, ANTICIPATION_BRANCH_LIMIT);
+}
+
 function parseRoutingDecision(response) {
     const parsed = extractRoutingDecisionPayload(response);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
@@ -1721,10 +1820,401 @@ function parseRoutingDecision(response) {
     };
 }
 
+function hasExplicitInspectionVerb(text = '') {
+    return /\b(show|see|look|check|open|inspect|browse|peek|scan|list|what(?:'s| is)?|anything)\b/i.test(String(text || ''));
+}
+
+function inferExplicitDirectToolCategory(text = '', availableToolNames = []) {
+    const normalized = String(text || '').trim().toLowerCase();
+    if (!normalized || !hasExplicitInspectionVerb(normalized)) return null;
+
+    const asksImages = /\b(media|image|images|photo|photos|picture|pictures|avatar|gallery)\b/i.test(normalized);
+    const asksWorkspace = /\b(workspace|repo|repository|folder|directory|files?|codebase|project)\b/i.test(normalized);
+
+    if (asksImages) {
+        const imageTools = shortlistToolsForCategory('images', availableToolNames);
+        if (imageTools.length > 0) {
+            return {
+                toolCategory: 'images',
+                reason: 'media_browse',
+                modeReason: 'workspace_request',
+            };
+        }
+    }
+
+    if (asksWorkspace) {
+        const workspaceTools = shortlistToolsForCategory('workspace', availableToolNames);
+        if (workspaceTools.length > 0) {
+            return {
+                toolCategory: 'workspace',
+                reason: 'workspace_check',
+                modeReason: 'workspace_request',
+            };
+        }
+    }
+
+    return null;
+}
+
+function normalizeRoutingDecisionForExplicitToolTurns(decision, { text = '', availableToolNames = [] } = {}) {
+    if (!decision || decision.mode !== 'direct_reply') return decision;
+    const inferredCategory = inferExplicitDirectToolCategory(text, availableToolNames);
+    if (!inferredCategory) return decision;
+    return {
+        ...decision,
+        mode: 'direct_tool',
+        toolCategory: inferredCategory.toolCategory,
+        conversationMode: 'agentic',
+        modeAction: 'switch',
+        reason: inferredCategory.reason,
+        modeReason: inferredCategory.modeReason,
+        planningEffort: 'low',
+    };
+}
+
 function trimFastPathHistory(messages = [], maxTurns = FAST_CHAT_MAX_TURNS, maxMessages = null) {
     const sliced = sliceByTurns(cloneMessages(messages || []), maxTurns) || [];
     if (!maxMessages || sliced.length <= maxMessages) return sliced;
     return sliced.slice(-maxMessages);
+}
+
+function buildProviderSafeFastPathHistory(messages = [], model = '', maxTurns = DIRECT_REPLY_HISTORY_MAX_TURNS, maxMessages = null) {
+    const trimmed = trimFastPathHistory(messages, maxTurns, maxMessages);
+    return stripToolTranscriptMessages(trimmed);
+}
+
+function buildSpeculativeRouteSnapshot(route = null) {
+    if (!route || typeof route !== 'object') return null;
+    return {
+        mode: route.mode || 'plan',
+        reason: route.reason || 'default',
+        routeSource: route.routeSource || 'speculative_prepare',
+        toolCategory: route.toolCategory || 'general',
+        toolName: route.toolName || '',
+        initialToolNames: Array.isArray(route.initialToolNames) ? route.initialToolNames.filter(Boolean) : [],
+        planningReasoningEffort: route.planningReasoningEffort || null,
+        synthesisReasoningEffort: route.synthesisReasoningEffort || null,
+    };
+}
+
+function buildSpeculativeArtifact({ text = '', route = null, args = {}, resolver = null, continuityPreload = null } = {}) {
+    const preparedText = String(text || '').trim();
+    return {
+        preparedText,
+        preparedTextKey: normalizeTextKey(preparedText),
+        route: buildSpeculativeRouteSnapshot(route),
+        continuityContext: typeof resolver?.continuityContext === 'string'
+            ? resolver.continuityContext
+            : '',
+        continuityLoaded: !!continuityPreload?.loaded || hasInlineContinuityContext({}, resolver),
+        conversationMode: normalizeConversationMode(args.runtimeConversationMode || 'chat'),
+        conversationModeConfidence: normalizeModeConfidence(args.runtimeConversationModeConfidence || 'low'),
+        speculativeEvidence: [],
+    };
+}
+
+function parseSpeculativePreparation(value = null) {
+    const parsed = safeParseRuntimeValue(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed;
+}
+
+function scoreSpeculativeArtifactMatch(artifact = null, textKey = '', rawText = '') {
+    if (!artifact?.route || !textKey) return -1;
+    const artifactKey = normalizeTextKey(artifact.preparedTextKey || artifact.preparedText || '');
+    if (!artifactKey) return -1;
+    if (artifactKey === textKey) return 10_000 + artifactKey.length;
+
+    const raw = String(rawText || '').trim().toLowerCase();
+    const artifactRaw = String(artifact.preparedText || '').trim().toLowerCase();
+    if (
+        artifactRaw.length >= 12
+        && raw.length > artifactRaw.length
+        && raw.startsWith(artifactRaw)
+    ) {
+        return 1_000 + artifactRaw.length;
+    }
+
+    return -1;
+}
+
+function resolveSpeculativePreparationMatch(preparation = null, text = '') {
+    const parsed = parseSpeculativePreparation(preparation);
+    const normalizedText = normalizeTextKey(text);
+    if (!parsed || !normalizedText) return null;
+
+    const candidates = [];
+    if (parsed.artifacts) {
+        candidates.push({ source: 'prepared', artifact: parsed.artifacts });
+    }
+    for (const branch of parsed.predictedBranches || []) {
+        if (branch?.artifacts) {
+            candidates.push({ source: 'predicted', artifact: branch.artifacts });
+        }
+    }
+
+    let best = null;
+    let bestScore = -1;
+    for (const candidate of candidates) {
+        const score = scoreSpeculativeArtifactMatch(candidate.artifact, normalizedText, text);
+        if (score > bestScore) {
+            best = candidate;
+            bestScore = score;
+        }
+    }
+
+    if (!best?.artifact?.route || bestScore < 0) return null;
+    return {
+        source: best.source,
+        score: bestScore,
+        artifact: best.artifact,
+    };
+}
+
+function applySpeculativePreparationMatch({ match = null, args = {}, resolver = null } = {}) {
+    if (!match?.artifact?.route) return null;
+
+    const artifact = match.artifact;
+    const route = {
+        ...artifact.route,
+        routeSource: 'speculative_prepare',
+    };
+
+    if (artifact.continuityLoaded && typeof artifact.continuityContext === 'string' && artifact.continuityContext.trim()) {
+        resolver.continuityContext = artifact.continuityContext;
+        resolver._continuityPreloaded = true;
+    }
+
+    if (artifact.conversationMode) {
+        args.runtimeConversationMode = normalizeConversationMode(artifact.conversationMode);
+    }
+    if (artifact.conversationModeConfidence) {
+        args.runtimeConversationModeConfidence = normalizeModeConfidence(artifact.conversationModeConfidence);
+    }
+
+    return route;
+}
+
+function ensureUserTurnInHistory(messages = [], text = '') {
+    const normalized = String(text || '').trim();
+    if (!normalized) return cloneMessages(messages || []);
+    const nextMessages = cloneMessages(messages || []);
+    const last = nextMessages[nextMessages.length - 1];
+    const lastText = stringifyToolHistoryContent(last?.content);
+    if (last?.role === 'user' && String(lastText || '').trim() === normalized) {
+        return nextMessages;
+    }
+    nextMessages.push({ role: 'user', content: normalized });
+    return nextMessages;
+}
+
+function getSpeculativeResearchTools(route = null, entityToolsOpenAiFormat = []) {
+    const allowed = new Set(
+        (route?.initialToolNames || [])
+            .map((name) => String(name || '').trim().toLowerCase())
+            .filter((name) => SPECULATIVE_READ_ONLY_TOOL_NAMES.has(name))
+    );
+    if (allowed.size === 0) return [];
+    return (entityToolsOpenAiFormat || []).filter((tool) => allowed.has(String(tool.function?.name || '').trim().toLowerCase()));
+}
+
+function extractSpeculativeEvidenceEntries(messages = [], startIndex = 0) {
+    const entries = [];
+    for (let i = Math.max(0, startIndex); i < messages.length; i += 1) {
+        const message = messages[i];
+        if (message?.role !== 'tool') continue;
+        const toolName = String(message.name || '').trim();
+        const content = String(message.content || '').trim();
+        if (!toolName || !content || /^error:/i.test(content)) continue;
+        entries.push({
+            toolName,
+            content,
+        });
+    }
+    return entries;
+}
+
+function injectSpeculativeEvidenceIntoChatHistory(args = {}, resolver = null, artifact = null) {
+    const evidence = Array.isArray(artifact?.speculativeEvidence) ? artifact.speculativeEvidence : [];
+    if (evidence.length === 0) return false;
+
+    const messages = cloneMessages(args.chatHistory || []);
+    const existing = new Set(
+        messages
+            .filter((message) => message?.role === 'user')
+            .map((message) => String(message.content || '').trim())
+            .filter((text) => text.startsWith('[Prior tool result:'))
+    );
+
+    let injected = false;
+    appendSanitizedMessage(
+        messages,
+        'user',
+        '[system message: speculative-research] The following read-only research results were prepared speculatively for this likely turn. If they are sufficient, use them directly. If not, continue normally and gather more evidence as needed.',
+    );
+    for (const entry of evidence) {
+        const summary = summarizePriorToolResult(entry.toolName, entry.content);
+        if (existing.has(summary)) continue;
+        appendSanitizedMessage(messages, 'user', summary);
+        existing.add(summary);
+        injected = true;
+    }
+
+    if (injected) {
+        args.chatHistory = messages;
+        if (resolver?.args) resolver.args.chatHistory = messages;
+    }
+    return injected;
+}
+
+function buildSpeculativeAwareFastPathHistory(args = {}, resolver = null, model = '', maxTurns = DIRECT_REPLY_HISTORY_MAX_TURNS, maxMessages = null) {
+    const speculativeArgs = {
+        ...args,
+        chatHistory: cloneMessages(args.chatHistory || []),
+    };
+    const speculativeMatch = resolveSpeculativePreparationMatch(
+        args.speculativePreparation,
+        extractUserMessage(args),
+    );
+    injectSpeculativeEvidenceIntoChatHistory(speculativeArgs, resolver, speculativeMatch?.artifact || null);
+    return buildProviderSafeFastPathHistory(
+        speculativeArgs.chatHistory || [],
+        model,
+        maxTurns,
+        maxMessages,
+    );
+}
+
+async function buildSpeculativeResearchEvidence({
+    route = null,
+    args = {},
+    resolver = null,
+    entityTools = {},
+    entityToolsOpenAiFormat = [],
+} = {}) {
+    const researchTools = getSpeculativeResearchTools(route, entityToolsOpenAiFormat);
+    if (researchTools.length === 0) return [];
+
+    const speculativeModel = args.childModel || args.toolLoopModel || args.researchModel || args.planningModel || args.primaryModel;
+    if (!speculativeModel) return [];
+
+    const userText = extractUserMessage(args);
+    const speculativeHistory = [
+        ...buildProviderSafeFastPathHistory(
+            ensureUserTurnInHistory(args.chatHistory || [], userText),
+            speculativeModel,
+            DELEGATOR_HISTORY_MAX_TURNS,
+            DELEGATOR_HISTORY_MAX_MESSAGES,
+        ),
+        {
+            role: 'user',
+            content: `[system message: speculative-research] This is speculative read-only research for a likely next turn. Use at most one of the available read-only tools if it would add concrete evidence. Do not call more than one tool. Do not answer the user. If no tool is needed, return no tool call.`,
+        },
+    ];
+
+    const speculativeResolver = createShadowResolver(resolver);
+    const speculativeArgs = {
+        ...args,
+        chatHistory: speculativeHistory,
+        stream: false,
+        tools: researchTools,
+        tool_choice: 'auto',
+        reasoningEffort: 'low',
+        useMemory: false,
+        skipMemoryLoad: true,
+        latencyRouteMode: route?.reason || 'speculative_research',
+    };
+
+    try {
+        const researchStep = await callModelLogged(
+            speculativeResolver,
+            withVisibleModel(speculativeArgs, speculativeModel),
+            'speculative_research',
+            {
+                model: speculativeModel,
+                route: route?.reason || 'speculative_research',
+                warmOnly: true,
+            },
+        );
+        const researchToolCalls = extractToolCalls(researchStep);
+        if (researchToolCalls.length === 0) return [];
+
+        const preToolCount = speculativeArgs.chatHistory.length;
+        const roundResult = await processToolCallRound(researchToolCalls, speculativeArgs, speculativeResolver, entityTools);
+        return extractSpeculativeEvidenceEntries(roundResult?.messages || [], preToolCount);
+    } catch (error) {
+        logger.warn(`Speculative research warmup failed for ${getRequestId(resolver)}: ${error.message}`);
+        return [];
+    }
+}
+
+function isPseudoSystemMessage(message = null) {
+    const role = String(message?.role || '').toLowerCase();
+    if (role === 'system') return true;
+    if (role !== 'user' && role !== 'human') return false;
+    const content = String(extractPlainTextFromMessageContent(message?.content) || '').trim();
+    return content.startsWith('[system message:');
+}
+
+function buildAnticipationPredictionHistory(chatHistory = []) {
+    const trimmed = trimFastPathHistory(
+        stripToolTranscriptMessages(cloneMessages(chatHistory || [])),
+        ANTICIPATION_HISTORY_MAX_TURNS,
+        ANTICIPATION_HISTORY_MAX_MESSAGES,
+    );
+    return trimmed.filter((message) => !isPseudoSystemMessage(message));
+}
+
+async function predictLikelyNextTurns({
+    args,
+    resolver,
+    runtimeRoute,
+    modelPolicy = {},
+}) {
+    const trigger = String(args.trigger || '').trim().toLowerCase();
+    if (!ANTICIPATION_TRIGGER_PREDICTIVE.has(trigger)) return [];
+    if (String(args.text || '').trim()) return [];
+    if (args.anticipationPredictionDepth) return [];
+
+    const predictionHistory = buildAnticipationPredictionHistory(args.chatHistory || []);
+    const lastAssistant = [...predictionHistory].reverse().find((message) => message?.role === 'assistant');
+    if (!lastAssistant) return [];
+
+    const predictiveModel = modelPolicy.routingModel
+        || modelPolicy.researchModel
+        || args.routingModel
+        || args.toolLoopModel
+        || args.primaryModel;
+    if (!predictiveModel) return [];
+
+    try {
+        const predictionResponse = await callModelLogged(resolver, withVisibleModel({
+            ...args,
+            chatHistory: predictionHistory,
+            stream: false,
+            useMemory: false,
+            skipMemoryLoad: true,
+            tools: [ANTICIPATE_NEXT_TURNS_OPENAI_DEF],
+            tool_choice: {
+                type: 'function',
+                function: {
+                    name: ANTICIPATE_NEXT_TURNS_TOOL_NAME,
+                },
+            },
+            reasoningEffort: 'none',
+            max_output_tokens: 256,
+            latencyRouteMode: runtimeRoute?.reason || 'anticipation_prediction',
+        }, predictiveModel), 'anticipate_next_turns', {
+            model: predictiveModel,
+            route: runtimeRoute?.reason || 'anticipation_prediction',
+        });
+
+        return parsePredictedNextTurns(predictionResponse)
+            .filter((text) => text.toLowerCase() !== String(args.text || '').trim().toLowerCase())
+            .slice(0, ANTICIPATION_BRANCH_LIMIT);
+    } catch {
+        return [];
+    }
 }
 
 function getFastPathModel(args = {}) {
@@ -1808,10 +2298,12 @@ async function classifyRouteWithModel({
     if (!routingModel) return null;
 
     const recentFiles = extractRecentFileReferences(chatHistory);
+    const recentConversation = extractRecentConversation(chatHistory);
     const shadowResolver = createShadowResolver(resolver, {
         pathwayPrompt: [new Prompt({
             messages: buildRoutingPrompt({
                 text,
+                recentConversation,
                 recentFiles,
                 availableToolNames,
                 initialRoute,
@@ -1841,7 +2333,13 @@ async function classifyRouteWithModel({
             model: routingModel,
         });
 
-        const decision = parseRoutingDecision(routeResponse);
+        const decision = normalizeRoutingDecisionForExplicitToolTurns(
+            parseRoutingDecision(routeResponse),
+            {
+                text,
+                availableToolNames,
+            },
+        );
         if (!decision) return { status: 'invalid', model: routingModel, contentChars: extractResponseText(routeResponse)?.length || 0 };
 
         const confidence = normalizeRouterConfidence(decision.confidence);
@@ -2116,6 +2614,13 @@ async function runDirectSearchFastPath(route, args, resolver, entityTools, entit
     const rid = getRequestId(resolver);
     const fastPathModel = getFastPathModel(args);
     const finalizeModel = getFastFinalizeModel(args);
+    const fastSearchHistory = buildSpeculativeAwareFastPathHistory(
+        args,
+        resolver,
+        fastPathModel,
+        FAST_TOOL_MAX_TURNS,
+        FAST_TOOL_MAX_MESSAGES,
+    );
     const searchTools = (entityToolsOpenAiFormat || []).filter((tool) => (
         (route.initialToolNames || []).includes(tool.function?.name)
     ));
@@ -2128,7 +2633,7 @@ async function runDirectSearchFastPath(route, args, resolver, entityTools, entit
     try {
         const searchStep = await callModelLogged(resolver, withVisibleModel({
             ...args,
-            chatHistory: trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
+            chatHistory: fastSearchHistory,
             stream: false,
             tools: searchTools,
             tool_choice: 'auto',
@@ -2142,9 +2647,13 @@ async function runDirectSearchFastPath(route, args, resolver, entityTools, entit
 
         if (!searchStep) return await handlePromptError(null);
 
+        let postToolHistory = null;
         const searchToolCalls = extractToolCalls(searchStep);
         if (searchToolCalls.length > 0) {
-            await processToolCallRound(searchToolCalls, args, resolver, entityTools);
+            const roundResult = await processToolCallRound(searchToolCalls, args, resolver, entityTools);
+            postToolHistory = Array.isArray(roundResult?.messages)
+                ? cloneMessages(roundResult.messages)
+                : null;
         } else if (hasUsableFastPathResult(searchStep)) {
             const finalizedSearchStep = await maybeFinalizeInitialResponse({
                 response: searchStep,
@@ -2157,7 +2666,7 @@ async function runDirectSearchFastPath(route, args, resolver, entityTools, entit
         }
 
         const forcedHistory = [
-            ...trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
+            ...(postToolHistory || fastSearchHistory),
             {
                 role: 'user',
                 content: `[system message: ${rid}:fast-search-finalize] The search results above are authoritative enough for a direct answer. Answer the user now in your normal voice. Start with the answer itself. Do not call tools again.`,
@@ -2208,7 +2717,12 @@ async function runDirectToolFastPath(route, args, resolver, entityTools, entityT
     try {
         const toolStep = await callModelLogged(resolver, withVisibleModel({
             ...args,
-            chatHistory: trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
+            chatHistory: buildProviderSafeFastPathHistory(
+                args.chatHistory || [],
+                fastPathModel,
+                FAST_TOOL_MAX_TURNS,
+                FAST_TOOL_MAX_MESSAGES,
+            ),
             stream: false,
             tools: directTools,
             tool_choice: 'auto',
@@ -2222,9 +2736,13 @@ async function runDirectToolFastPath(route, args, resolver, entityTools, entityT
 
         if (!toolStep) return await handlePromptError(null);
 
+        let postToolHistory = null;
         const directToolCalls = extractToolCalls(toolStep);
         if (directToolCalls.length > 0) {
-            await processToolCallRound(directToolCalls, args, resolver, entityTools);
+            const roundResult = await processToolCallRound(directToolCalls, args, resolver, entityTools);
+            postToolHistory = Array.isArray(roundResult?.messages)
+                ? cloneMessages(roundResult.messages)
+                : null;
         } else if (hasUsableFastPathResult(toolStep)) {
             const finalizedToolStep = await maybeFinalizeInitialResponse({
                 response: toolStep,
@@ -2237,7 +2755,12 @@ async function runDirectToolFastPath(route, args, resolver, entityTools, entityT
         }
 
         const forcedHistory = [
-            ...trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
+            ...(postToolHistory || buildProviderSafeFastPathHistory(
+                args.chatHistory || [],
+                fastPathModel,
+                FAST_TOOL_MAX_TURNS,
+                FAST_TOOL_MAX_MESSAGES,
+            )),
             {
                 role: 'user',
                 content: `[system message: ${rid}:fast-tool-finalize] The tool results above are sufficient for this simple local action. Answer the user now in your normal voice. Start with the answer itself. Do not call tools again.`,
@@ -2279,7 +2802,7 @@ async function runDirectReplyFastPath(route, args, resolver, handlePromptError) 
     });
 
     const forcedHistory = [
-        ...trimFastPathHistory(args.chatHistory || [], replySettings.maxTurns, replySettings.maxMessages),
+        ...buildDirectReplyHistory(args.chatHistory || [], replySettings),
         {
             role: 'user',
             content: `[system message: ${rid}:fast-reply] This turn is purely conversational and does not require tools. Respond directly to the user in your normal voice. Keep it concise unless the user asked for depth.`,
@@ -2313,6 +2836,12 @@ async function runDirectReplyFastPath(route, args, resolver, handlePromptError) 
 
 async function warmDirectSearchFastPath(route, args, resolver, entityToolsOpenAiFormat = []) {
     const fastPathModel = getFastPathModel(args);
+    const fastSearchHistory = buildProviderSafeFastPathHistory(
+        args.chatHistory || [],
+        fastPathModel,
+        FAST_TOOL_MAX_TURNS,
+        FAST_TOOL_MAX_MESSAGES,
+    );
     const searchTools = (entityToolsOpenAiFormat || []).filter((tool) => (
         (route.initialToolNames || []).includes(tool.function?.name)
     ));
@@ -2321,19 +2850,24 @@ async function warmDirectSearchFastPath(route, args, resolver, entityToolsOpenAi
         return null;
     }
 
-    await callModelLogged(resolver, withVisibleModel(withLatencyWarmOptions({
-        ...args,
-        chatHistory: trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
-        tools: searchTools,
-        tool_choice: 'auto',
-        reasoningEffort: 'low',
-        skipMemoryLoad: true,
-        latencyRouteMode: route.reason,
-    }), fastPathModel), 'fast_search', {
-        model: fastPathModel,
-        route: route.reason,
-        warmOnly: true,
-    });
+    try {
+        await callModelLogged(resolver, withVisibleModel(withLatencyWarmOptions({
+            ...args,
+            chatHistory: fastSearchHistory,
+            tools: searchTools,
+            tool_choice: 'auto',
+            reasoningEffort: 'low',
+            skipMemoryLoad: true,
+            latencyRouteMode: route.reason,
+        }), fastPathModel), 'fast_search', {
+            model: fastPathModel,
+            route: route.reason,
+            warmOnly: true,
+        });
+    } catch (error) {
+        logger.warn(`Latency warmup fast_search failed for ${getRequestId(resolver)}: ${error.message}`);
+        return null;
+    }
 
     return 'fast_search';
 }
@@ -2348,19 +2882,29 @@ async function warmDirectToolFastPath(route, args, resolver, entityToolsOpenAiFo
         return null;
     }
 
-    await callModelLogged(resolver, withVisibleModel(withLatencyWarmOptions({
-        ...args,
-        chatHistory: trimFastPathHistory(args.chatHistory || [], FAST_TOOL_MAX_TURNS, FAST_TOOL_MAX_MESSAGES),
-        stream: false,
-        tools: directTools,
-        tool_choice: 'auto',
-        reasoningEffort: 'low',
-        skipMemoryLoad: true,
-        latencyRouteMode: route.reason,
-    }), fastPathModel), 'fast_tool', {
-        model: fastPathModel,
-        route: route.reason,
-    });
+    try {
+        await callModelLogged(resolver, withVisibleModel(withLatencyWarmOptions({
+            ...args,
+            chatHistory: buildProviderSafeFastPathHistory(
+                args.chatHistory || [],
+                fastPathModel,
+                FAST_TOOL_MAX_TURNS,
+                FAST_TOOL_MAX_MESSAGES,
+            ),
+            stream: false,
+            tools: directTools,
+            tool_choice: 'auto',
+            reasoningEffort: 'low',
+            skipMemoryLoad: true,
+            latencyRouteMode: route.reason,
+        }), fastPathModel), 'fast_tool', {
+            model: fastPathModel,
+            route: route.reason,
+        });
+    } catch (error) {
+        logger.warn(`Latency warmup fast_tool failed for ${getRequestId(resolver)}: ${error.message}`);
+        return null;
+    }
 
     return 'fast_tool';
 }
@@ -2370,25 +2914,30 @@ async function warmDirectReplyFastPath(route, args, resolver) {
     const fastPathModel = getFastFinalizeModel(args);
     const replySettings = getDirectReplySettings(route);
     const forcedHistory = [
-        ...trimFastPathHistory(args.chatHistory || [], replySettings.maxTurns, replySettings.maxMessages),
+        ...buildDirectReplyHistory(args.chatHistory || [], replySettings),
         {
             role: 'user',
             content: `[system message: ${rid}:fast-reply] This turn is purely conversational and does not require tools. Respond directly to the user in your normal voice. Keep it concise unless the user asked for depth.`,
         },
     ];
 
-    await callModelLogged(resolver, withVisibleModel(withLatencyWarmOptions({
-        ...args,
-        chatHistory: forcedHistory,
-        tools: [],
-        reasoningEffort: replySettings.reasoningEffort,
-        skipMemoryLoad: true,
-        latencyRouteMode: route.reason,
-    }), fastPathModel), 'fast_chat', {
-        model: fastPathModel,
-        route: route.reason,
-        warmOnly: true,
-    });
+    try {
+        await callModelLogged(resolver, withVisibleModel(withLatencyWarmOptions({
+            ...args,
+            chatHistory: forcedHistory,
+            tools: [],
+            reasoningEffort: replySettings.reasoningEffort,
+            skipMemoryLoad: true,
+            latencyRouteMode: route.reason,
+        }), fastPathModel), 'fast_chat', {
+            model: fastPathModel,
+            route: route.reason,
+            warmOnly: true,
+        });
+    } catch (error) {
+        logger.warn(`Latency warmup fast_chat failed for ${getRequestId(resolver)}: ${error.message}`);
+        return null;
+    }
 
     return 'fast_chat';
 }
@@ -2797,6 +3346,15 @@ async function preloadRuntimeContinuity(resolver, args = {}) {
     if (args.useMemory === false) {
         return { enabled: false, attempted: false, loaded: false, skipped: true };
     }
+    if (hasInlineContinuityContext(args, resolver)) {
+        return {
+            enabled: true,
+            attempted: false,
+            loaded: true,
+            skipped: true,
+            source: 'inline',
+        };
+    }
     if (!resolver || typeof resolver.ensureMemoryLoaded !== 'function') {
         return {
             enabled: true,
@@ -2838,12 +3396,25 @@ function isLatencyPrepareRequest(args = {}) {
         .toLowerCase() === LATENCY_PREPARE_REQUESTED_OUTPUT;
 }
 
+function buildLatencyPrepareFailure(error = null) {
+    return {
+        prepared: false,
+        routeMode: null,
+        routeReason: null,
+        routeSource: null,
+        warmedPurposes: [],
+        predictedBranches: [],
+        speculationSkipped: true,
+        error: error?.message || null,
+    };
+}
+
 function withLatencyWarmOptions(callArgs = {}) {
     return {
         ...callArgs,
         stream: false,
-        max_tokens: 1,
-        max_output_tokens: 1,
+        max_tokens: 16,
+        max_output_tokens: 16,
     };
 }
 
@@ -2863,8 +3434,11 @@ function stripToolTranscriptMessages(history = []) {
 
 export function buildDelegateOnlyPlanningHistory(chatHistory = [], resolver = null, route = {}) {
     const history = stripToolTranscriptMessages(cloneMessages(chatHistory || []));
-    const lastUserIdx = findLastConversationalUserIndex(history);
-    const focusedHistory = lastUserIdx >= 0 ? history.slice(lastUserIdx) : trimFastPathHistory(history, 1, 3);
+    const focusedHistory = trimFastPathHistory(
+        history.filter((message) => !isPseudoSystemMessage(message)),
+        DELEGATOR_HISTORY_MAX_TURNS,
+        DELEGATOR_HISTORY_MAX_MESSAGES,
+    );
     const sourceFamilies = Array.from(new Set(
         (Array.isArray(route?.initialToolNames) ? route.initialToolNames : [])
             .map((toolName) => normalizeToolFamily(String(toolName || '').trim()))
@@ -2965,10 +3539,25 @@ function getDirectReplySettings(route = {}) {
         };
     }
     return {
-        maxTurns: FAST_CHAT_MAX_TURNS,
-        maxMessages: null,
+        maxTurns: DIRECT_REPLY_HISTORY_MAX_TURNS,
+        maxMessages: DIRECT_REPLY_HISTORY_MAX_MESSAGES,
         reasoningEffort: FAST_CHAT_REASONING_EFFORT,
     };
+}
+
+export function buildDirectReplyHistory(chatHistory = [], replySettings = {}) {
+    const conversationalHistory = stripToolTranscriptMessages(cloneMessages(chatHistory || []))
+        .filter((message) => {
+            if (!message || typeof message !== 'object') return false;
+            const role = String(message.role || '').toLowerCase();
+            if (role !== 'assistant' && role !== 'user' && role !== 'human') return false;
+            return !isPseudoSystemMessage(message);
+        });
+    return trimFastPathHistory(
+        conversationalHistory,
+        replySettings.maxTurns,
+        replySettings.maxMessages,
+    );
 }
 
 function extractLatestUsableAssistantDraft(history = [], response = null) {
@@ -4797,7 +5386,7 @@ export async function prepareEntityLatencyCore({ args, resolver }) {
     }
 
     const entityConfig = await loadEntityConfig(entityId);
-    const { entityToolsOpenAiFormat } = getToolsForEntity(entityConfig, { invocationType });
+    const { entityTools, entityToolsOpenAiFormat } = getToolsForEntity(entityConfig, { invocationType });
     const {
         entityName,
         entityInstructions,
@@ -4870,25 +5459,40 @@ export async function prepareEntityLatencyCore({ args, resolver }) {
     args.verificationModel = currentModeModelPolicy.verificationModel;
     resolver.args = { ...args };
 
-    let runtimeRoute = routeEntityTurn({
-        text: extractUserMessage(args),
-        chatHistory: args.chatHistory || [],
-        availableToolNames: entityToolsOpenAiFormat.map(tool => tool.function?.name || ''),
-        invocationType,
-        conversationMode: currentConversationMode,
-        conversationModeConfidence: currentConversationModeConfidence,
-    });
     const userText = extractUserMessage(args);
     const availableToolNames = entityToolsOpenAiFormat.map(tool => tool.function?.name || '');
-    runtimeRoute = await maybeRefineRouteWithModel({
-        initialRoute: runtimeRoute,
-        text: userText,
-        chatHistory: args.chatHistory || [],
-        availableToolNames,
+    const speculativeMatch = resolveSpeculativePreparationMatch(args.speculativePreparation, userText);
+    let runtimeRoute = applySpeculativePreparationMatch({
+        match: speculativeMatch,
         args,
         resolver,
+    });
+    if (!runtimeRoute) {
+        runtimeRoute = routeEntityTurn({
+            text: userText,
+            chatHistory: args.chatHistory || [],
+            availableToolNames,
+            invocationType,
+            conversationMode: currentConversationMode,
+            conversationModeConfidence: currentConversationModeConfidence,
+        });
+        runtimeRoute = await maybeRefineRouteWithModel({
+            initialRoute: runtimeRoute,
+            text: userText,
+            chatHistory: args.chatHistory || [],
+            availableToolNames,
+            args,
+            resolver,
+            modelPolicy,
+            currentMode: currentConversationMode,
+        });
+    }
+
+    const predictedTurns = await predictLikelyNextTurns({
+        args,
+        resolver,
+        runtimeRoute,
         modelPolicy,
-        currentMode: currentConversationMode,
     });
 
     const effectiveConversationMode = normalizeConversationMode(args.runtimeConversationMode || currentConversationMode);
@@ -4931,6 +5535,19 @@ export async function prepareEntityLatencyCore({ args, resolver }) {
         contextId,
         useMemory: useContinuityMemory,
     });
+    const speculativeEvidenceInjected = injectSpeculativeEvidenceIntoChatHistory(
+        args,
+        resolver,
+        speculativeMatch?.artifact || null,
+    );
+    if (speculativeEvidenceInjected) {
+        logEvent(rid, 'route.speculative_evidence_injected', {
+            source: speculativeMatch?.source || 'prepared',
+            evidenceCount: speculativeMatch?.artifact?.speculativeEvidence?.length || 0,
+            mode: runtimeRoute.mode,
+            reason: runtimeRoute.reason,
+        });
+    }
     const routeRuntimeStage = ['direct_reply', 'direct_search', 'direct_tool'].includes(runtimeRoute.mode)
         ? runtimeRoute.mode
         : (args.runtimeStage || 'plan');
@@ -5015,6 +5632,7 @@ export async function prepareEntityLatencyCore({ args, resolver }) {
     resolver.args = { ...args };
 
     const warmedPurposes = [];
+    const predictedBranches = [];
     let speculationSkipped = false;
     if (runtimeRoute.mode === 'direct_reply') {
         warmedPurposes.push(await warmDirectReplyFastPath(runtimeRoute, args, resolver));
@@ -5028,19 +5646,69 @@ export async function prepareEntityLatencyCore({ args, resolver }) {
         speculationSkipped = true;
     }
 
+    const speculativeEvidence = await buildSpeculativeResearchEvidence({
+        route: runtimeRoute,
+        args,
+        resolver,
+        entityTools,
+        entityToolsOpenAiFormat,
+    });
+
+    for (const predictedText of predictedTurns) {
+        let branchPreparation = null;
+        try {
+            branchPreparation = await prepareEntityLatencyCore({
+                args: {
+                    ...args,
+                    text: predictedText,
+                    trigger: 'prediction_branch',
+                    anticipationPredictionDepth: (args.anticipationPredictionDepth || 0) + 1,
+                    invocationType: args.invocationType || 'anticipate',
+                },
+                resolver: createShadowResolver(resolver),
+            });
+        } catch (error) {
+            logger.warn(`Latency prediction branch warmup failed for ${getRequestId(resolver)}: ${error.message}`);
+            branchPreparation = buildLatencyPrepareFailure(error);
+        }
+
+        predictedBranches.push({
+            text: predictedText,
+            routeMode: branchPreparation?.routeMode || null,
+            routeReason: branchPreparation?.routeReason || null,
+            warmedPurposes: Array.isArray(branchPreparation?.warmedPurposes)
+                ? branchPreparation.warmedPurposes
+                : [],
+            speculationSkipped: !!branchPreparation?.speculationSkipped,
+            artifacts: branchPreparation?.artifacts || null,
+        });
+    }
+
     const preparation = {
         prepared: true,
+        preparedText: userText,
         routeMode: runtimeRoute.mode,
         routeReason: runtimeRoute.reason,
         routeSource: runtimeRoute.routeSource || 'heuristic',
         continuityPreload,
         warmedPurposes,
+        predictedBranches,
         speculationSkipped,
         models: {
             routingModel: modelPolicy.routingModel || null,
             primaryModel: args.primaryModel || null,
             planningModel: args.planningModel || null,
             synthesisModel: args.synthesisModel || null,
+        },
+        artifacts: {
+            ...buildSpeculativeArtifact({
+                text: userText,
+                route: runtimeRoute,
+                args,
+                resolver,
+                continuityPreload,
+            }),
+            speculativeEvidence,
         },
     };
 
@@ -5634,7 +6302,13 @@ export async function toolCallbackCore(args, message, resolver) {
 
 export async function executeEntityAgentCore({ args, runAllPrompts, resolver, toolCallbackOverride = null }) {
     if (isLatencyPrepareRequest(args)) {
-        const preparation = await prepareEntityLatencyCore({ args, resolver });
+        let preparation = null;
+        try {
+            preparation = await prepareEntityLatencyCore({ args, resolver });
+        } catch (error) {
+            logger.warn(`Latency prepare failed for ${getRequestId(resolver)}: ${error.message}`);
+            preparation = buildLatencyPrepareFailure(error);
+        }
         return JSON.stringify(preparation);
     }
 
@@ -5736,26 +6410,41 @@ export async function executeEntityAgentCore({ args, runAllPrompts, resolver, to
         };
     }
 
-    let runtimeRoute = routeEntityTurn({
-        text: extractUserMessage(args),
-        chatHistory: args.chatHistory || [],
-        availableToolNames: entityToolsOpenAiFormat.map(tool => tool.function?.name || ''),
-        invocationType,
-        conversationMode: currentConversationMode,
-        conversationModeConfidence: currentConversationModeConfidence,
-    });
     const userText = extractUserMessage(args);
     const availableToolNames = entityToolsOpenAiFormat.map(tool => tool.function?.name || '');
-    runtimeRoute = await maybeRefineRouteWithModel({
-        initialRoute: runtimeRoute,
-        text: userText,
-        chatHistory: args.chatHistory || [],
-        availableToolNames,
+    const speculativeMatch = resolveSpeculativePreparationMatch(args.speculativePreparation, userText);
+    let runtimeRoute = applySpeculativePreparationMatch({
+        match: speculativeMatch,
         args,
         resolver,
-        modelPolicy,
-        currentMode: currentConversationMode,
     });
+    if (runtimeRoute) {
+        logEvent(rid, 'route.speculative_hit', {
+            source: speculativeMatch?.source || 'prepared',
+            mode: runtimeRoute.mode,
+            reason: runtimeRoute.reason,
+            conversationMode: args.runtimeConversationMode || currentConversationMode,
+        });
+    } else {
+        runtimeRoute = routeEntityTurn({
+            text: userText,
+            chatHistory: args.chatHistory || [],
+            availableToolNames,
+            invocationType,
+            conversationMode: currentConversationMode,
+            conversationModeConfidence: currentConversationModeConfidence,
+        });
+        runtimeRoute = await maybeRefineRouteWithModel({
+            initialRoute: runtimeRoute,
+            text: userText,
+            chatHistory: args.chatHistory || [],
+            availableToolNames,
+            args,
+            resolver,
+            modelPolicy,
+            currentMode: currentConversationMode,
+        });
+    }
     initializeExecutionState(resolver, runtimeRoute.mode);
     const effectiveConversationMode = normalizeConversationMode(args.runtimeConversationMode || currentConversationMode);
     const effectiveModeAffiliationPolicy = await getConversationModeAffiliationPolicy(effectiveConversationMode);

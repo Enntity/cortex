@@ -2,6 +2,7 @@ import test from 'ava';
 import {
     buildPromptCacheKey,
     extractFilenameMentions,
+    extractRecentConversation,
     extractRecentFileReferences,
     routeEntityTurn,
     shortlistInitialTools,
@@ -32,6 +33,48 @@ test('extractRecentFileReferences scans prior chat content and tool arguments', 
     ]);
 
     t.deepEqual(files, ['moodboard.webp', 'avatar-final.png', 'storyboard.jpg']);
+});
+
+test('extractRecentConversation keeps recent conversational context and strips pseudo-system/tool sludge', t => {
+    const recentConversation = extractRecentConversation([
+        { role: 'assistant', content: 'Want me to actually crack it open and look?' },
+        { role: 'user', content: 'Yeah you can check it out.' },
+        { role: 'assistant', tool_calls: [{ function: { name: 'WorkspaceSSH', arguments: '{}' } }], content: '' },
+        { role: 'tool', content: '{"success":true}' },
+        { role: 'user', content: '[system message: abc:fast-reply] This turn is purely conversational.' },
+        { role: 'assistant', content: 'Fast reply only.' },
+    ]);
+
+    t.deepEqual(recentConversation, [
+        { role: 'assistant', text: 'Want me to actually crack it open and look?' },
+        { role: 'user', text: 'Yeah you can check it out.' },
+        { role: 'assistant', text: 'Fast reply only.' },
+    ]);
+});
+
+test('extractRecentConversation decodes structured text-part payloads before filtering pseudo messages', t => {
+    const recentConversation = extractRecentConversation([
+        {
+            role: 'assistant',
+            content: [JSON.stringify({ type: 'text', text: 'Want me to actually crack it open and look?' })],
+        },
+        {
+            role: 'user',
+            content: [JSON.stringify({ type: 'text', text: 'Yeah you can check it out.' })],
+        },
+        {
+            role: 'user',
+            content: [JSON.stringify({
+                type: 'text',
+                text: '[system message: abc:fast-reply] This turn is purely conversational.',
+            })],
+        },
+    ]);
+
+    t.deepEqual(recentConversation, [
+        { role: 'assistant', text: 'Want me to actually crack it open and look?' },
+        { role: 'user', text: 'Yeah you can check it out.' },
+    ]);
 });
 
 test('shortlistInitialTools returns an empty shortlist without heuristic routing', t => {
